@@ -957,12 +957,34 @@ private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 private const val DXVK_VERSION = "2.4.1-wow-aarch64-test"
 
+// custom-thor: every bundled Turnip build, driver id -> its asset zip. The Adreno 740 profile picks one with the game folder's
+// ".ds-driver" switch file (one id from this list; adb-writable, read at each Play), else DEFAULT_DRIVER.
+private val BUNDLED_DRIVERS = linkedMapOf(
+    DEFAULT_DRIVER to "turnip-wow-scheduler-test.zip",
+    ADRENO_8XX_DRIVER to "turnip-V32-RP6sched.zip",
+    "Turnip-Balemuni-Apex-v2" to "turnip-balemuni-apex-v2.zip",
+    "Turnip-MrPurple-T30" to "turnip-mrpurple-t30.zip",
+    "Turnip-StevenMXZ-v27" to "turnip-stevenmxz-v27.zip",
+)
+
+// custom-thor: the Adreno 740 renders at 1280x720 like the 8xx (measured on the Thor: 1080p is GPU-bound at ~41-46 fps);
+// the game folder's ".ds-resolution" switch file ("WIDTHxHEIGHT") overrides it.
+private const val ADRENO_740_SCREEN = "1280x720"
+private val SCREEN_SIZE = Regex("""\d{3,4}x\d{3,4}""")
+
+private fun switchFile(name: String): String? = runCatching {
+    File("/storage/emulated/0/WoW Forever", name).takeIf { it.isFile }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
+}.getOrNull()
+
 private data class GpuProfile(val driver: String, val tuDebug: String, val screenSize: String, val label: String, val edition: String) {
     companion object {
         fun detect(context: Context) = if (isAdreno8xxDevice(context)) {
             GpuProfile(ADRENO_8XX_DRIVER, "noconform,sysmem", "1280x720", "Adreno 8xx", "Snapdragon 8 Elite / Adreno 8xx")
         } else {
-            GpuProfile(DEFAULT_DRIVER, "noconform", "1920x1080", "Adreno 740", "Snapdragon 8 Series / Adreno 740")
+            val driver = switchFile(".ds-driver")?.takeIf { it in BUNDLED_DRIVERS } ?: DEFAULT_DRIVER
+            val screen = switchFile(".ds-resolution")?.takeIf { SCREEN_SIZE.matches(it) } ?: ADRENO_740_SCREEN
+            Timber.i("custom-thor: Adreno 740 profile: driver %s, screen %s", driver, screen)
+            GpuProfile(driver, "noconform", screen, "Adreno 740", "Snapdragon 8 Series / Adreno 740")
         }
 
         private fun isAdreno8xxDevice(context: Context): Boolean {
@@ -1071,8 +1093,7 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
 }
 
 private fun installBundledComponents(context: Context, onStatus: (String) -> Unit) {
-    installDriver(context, DEFAULT_DRIVER, "turnip-wow-scheduler-test.zip", onStatus)
-    installDriver(context, ADRENO_8XX_DRIVER, "turnip-V32-RP6sched.zip", onStatus)
+    for ((driver, zip) in BUNDLED_DRIVERS) installDriver(context, driver, zip, onStatus)
 
     val protonDir = File(ImageFs.getSharedProtonDir(context), PROTON_VERSION)
     if (!File(protonDir, "profile.json").exists() || !File(protonDir, "bin/wine").exists()) {
