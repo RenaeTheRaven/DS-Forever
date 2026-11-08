@@ -170,7 +170,7 @@ class SetupPanel(context: Context) : View(context) {
         val left = (width - w) / 2f
         val title = UiKit.titlePaint(44f)
         val body = UiKit.bodyPaint(30f)
-        val lines = p.text.split('\n').flatMap { wrap(it, body, w - PAD * 2) }
+        val lines = p.text.split('\n').flatMap { wrap(Tr.t(it), body, w - PAD * 2) }      // 2026-11-07: Spanish / French (Tr)
         val h = PAD + 52f + 16f + lines.size * 40f + GAP + p.buttons.size * (BUTTON_H + GAP) + PAD
         val card = RectF(left, (bottom - h).coerceAtLeast(MARGIN), left + w, bottom)
         cardRect.set(card)
@@ -179,10 +179,10 @@ class SetupPanel(context: Context) : View(context) {
         UiKit.border(c, card)
         var y = card.top + PAD + 44f
         title.textAlign = Paint.Align.CENTER
-        c.drawText(p.title, card.centerX(), y, title)
+        c.drawText(Tr.t(p.title), card.centerX(), y, title)
         y += 16f
         body.textAlign = Paint.Align.CENTER
-        for (l in lines) { y += 40f; c.drawText(l, card.centerX(), y, body) }
+        for (l in lines) { y += 40f; c.drawText(Tr.t(l), card.centerX(), y, body) }
         y += GAP + 8f
         for (b in p.buttons) {
             val r = RectF(card.left + PAD, y, card.right - PAD, y + BUTTON_H)

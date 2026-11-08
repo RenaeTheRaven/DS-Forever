@@ -84,6 +84,8 @@ class HomeView(
     private val partyView = PartyModuleView(context, party)
     /** the player menu for a party member (PARTY_BUILD.md 4.6), over the left column; the host drives it */
     val partyMenu = PartyMenuView(context)
+    /** the target radial's More: the target's whole menu as a list, in the party menu's place (TargetRadialView drives it) */
+    val targetMenu = PartyMenuView(context, emptySet())
     /**
      * THE CHAT'S GLIDE (b-chat-slide; the user's pick: chat going full screen should move like the map's morph). The full chat is laid
      * out ONCE at its full size and its box glides between the chat pane's place and the frame, as the map's does: a rounded window
@@ -121,6 +123,7 @@ class HomeView(
         setWillNotDraw(false)
         for ((_, v) in views) { addView(v); v.visibility = View.GONE }
         addView(partyMenu); partyMenu.visibility = View.GONE; partyMenu.translationZ = PARTY_MENU_Z
+        addView(targetMenu); targetMenu.visibility = View.GONE; targetMenu.translationZ = PARTY_MENU_Z
         mapView.onCompactTap = { if (flow.tapMap()) changed() }
         partyView.onCellTap = { i -> onPartyCell?.invoke(i) }
         partyView.onCellLong = { i -> onPartyLong?.invoke(i) }
@@ -354,7 +357,7 @@ class HomeView(
             if (hint != null) {
                 c.drawColor(Color.argb(166, 0, 0, 0))
                 val p = UiKit.bodyPaint(32f, Color.WHITE).apply { textAlign = Paint.Align.CENTER }
-                c.drawText(hint, width / 2f, height / 2f, p)
+                c.drawText(Tr.t(hint), width / 2f, height / 2f, p)
                 return
             }
             // closing (classOpen false while it still shows): the slide-back draws the last radial (the chord is already let go)
@@ -1096,8 +1099,10 @@ class HomeView(
 
     /** Party mode on and routing, while Home's rest page shows (a full module = the add-on suspends it; drawn as off) */
     private fun partyOnHere(): Boolean = party.party?.onLive == true
-    /** the bottom screen's party module (off since 2026-11-05: the game's own party frames show health on the top screen) */
-    private val PARTY_MODULE = false
+    /** the bottom screen's party module (off 2026-11-05 - the game hid every health number; ON again 2026-11-07, the user: "bring back
+     *  the party mode built off of it": the health now comes from the game's combat log, CombatHealth) */
+    // 2026-11-07 (the user: "Make the party mode an experimental toggle that is off by default"): QOL > Experimental > Party mode
+    private val PARTY_MODULE get() = GameUi.partyModeOn()
     /** Party mode holds the D-pad here (its box moves on it): the game's D-pad layout must not also open the bar cursor (2026-11-04,
      *  the user: "pushing down on the Dpad makes the cursor also appear on the bottom bar menu") */
     fun partyHoldsDpad(): Boolean = partyOnHere() && flow.full == null && isShown && !typeWanted
@@ -1113,6 +1118,11 @@ class HomeView(
     private var laidPartyMode = PartyLayout.Mode.REST
     private var laidPartyN = 0
     private var laidPartyOn = false
+    private var laidPartyModule = false
+    init {
+        // QOL > Experimental > Party mode flipped: the module comes or goes at once
+        GameUi.onChange { post { if (PARTY_MODULE != laidPartyModule) partyChanged() } }
+    }
 
     /** a party document (or a box) changed what Home draws: re-placed when the module's size changed, else redrawn */
     fun partyChanged() {
@@ -1124,7 +1134,8 @@ class HomeView(
         val combat = flow.combat(grow.shown(now) && !partyOnHere())
         if (combat && flow.takeover) grewAt = now
         val placed = flow.full == null || flow.takeover
-        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || partyModeNow(flow.screen) != laidPartyMode))) changed()
+        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || partyModeNow(flow.screen) != laidPartyMode
+                || PARTY_MODULE != laidPartyModule))) changed()
         partyView.invalidate()
         shown?.let { partyStripSync(it) }
         onStateChanged?.invoke()                                          // the disc's red B follows
@@ -1164,7 +1175,8 @@ class HomeView(
     private fun withParty(base: Map<Part, RectF>, s: HomeScreen, w: Float): Map<Part, RectF> {
         // 2026-11-05 (the user: "scrap the party mode showing from the bottom screen but keep the party mode toolbar settings for when
         // party is being targeted on the top screen"; the game hides every health number, so the module could only guess): no module
-        if (!PARTY_MODULE) return base
+        laidPartyModule = PARTY_MODULE
+        if (!laidPartyModule) return base
         val p = party.party ?: return base
         val chat = base[Part.CHAT] ?: return base
         val mode = partyModeNow(s)
@@ -1568,6 +1580,7 @@ class HomeView(
         if (classRect.isEmpty) classLayer.layout(0, 0, r - l, b - t) else classLayer.layout(classRect.left, classRect.top, classRect.right, classRect.bottom)
         wheelLayer?.layout(0, 0, r - l, b - t)                              // f-radial-behind: the whole page, under the columns
         PartyMenuView.PLACE.let { m -> partyMenu.layout(m.left.toInt(), m.top.toInt(), m.right.toInt(), m.bottom.toInt()) }
+        PartyMenuView.PLACE.let { m -> targetMenu.layout(m.left.toInt(), m.top.toInt(), m.right.toInt(), m.bottom.toInt()) }
         for ((p, v) in views) {
             if (v.visibility == View.GONE) continue
             val f = now[p] ?: continue
@@ -1784,14 +1797,14 @@ class HomeView(
             val n = noteText
             if (n != null && System.currentTimeMillis() < noteUntil) {
                 val p = UiKit.bodyPaint(24f, Theme.warn)
-                c.drawText(TextUtils.ellipsize(n, p, w - 36f, TextUtils.TruncateAt.END).toString(), 18f, h - 16f, p)
+                c.drawText(Tr.t(TextUtils.ellipsize(n, p, w - 36f, TextUtils.TruncateAt.END).toString()), 18f, h - 16f, p)
                 postInvalidateDelayed(NOTE_MS)
             } else noteText = null
         }
 
         private fun line(c: Canvas, w: Float, h: Float, s: String) {
             val p = UiKit.bodyPaint(27f, Theme.dim)
-            c.drawText(s, 24f, h / 2f - (p.ascent() + p.descent()) / 2f, p)
+            c.drawText(Tr.t(s), 24f, h / 2f - (p.ascent() + p.descent()) / 2f, p)
         }
 
         private fun list(c: Canvas, w: Float, h: Float, top: Float, right: Float, rowH: Float, gap: Float, inset: Float) {
@@ -1890,7 +1903,7 @@ class HomeView(
             val lines = (room / lineH).toInt()
             if (lines < 1) return null
             val s = format(l)
-            return StaticLayout.Builder.obtain(s, 0, s.length, tp, width)
+            return StaticLayout.Builder.obtain(Tr.span(s), 0, Tr.span(s).length, tp, width)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false)
                 .setLineSpacing(0f, 1.12f)
                 .setMaxLines(lines).setEllipsize(TextUtils.TruncateAt.END).build()
@@ -1900,7 +1913,7 @@ class HomeView(
             val key = width * 100 + tp.textSize.toInt()
             cache[l]?.let { if (it.first == key) return it.second }
             val s = format(l)
-            val lay = StaticLayout.Builder.obtain(s, 0, s.length, tp, width)
+            val lay = StaticLayout.Builder.obtain(Tr.span(s), 0, Tr.span(s).length, tp, width)
                 .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false)
                 .setLineSpacing(0f, 1.12f).build()           // spec: line spacing 1.12
             cache[l] = key to lay
@@ -2257,7 +2270,7 @@ class HomeView(
                 rects?.add(RectF(r))
                 if (k >= shown.size) {
                     val pm = UiKit.numberPaint(26f, Theme.text).apply { textAlign = Paint.Align.CENTER; this.alpha = alpha }
-                    c.drawText("+$more", r.centerX(), r.centerY() - (pm.ascent() + pm.descent()) / 2f, pm)
+                    c.drawText(Tr.t("+$more"), r.centerX(), r.centerY() - (pm.ascent() + pm.descent()) / 2f, pm)
                     continue
                 }
                 val a = shown[k]
@@ -2271,12 +2284,12 @@ class HomeView(
                 if (frame != 0) { pEdge.color = frame; pEdge.alpha = alpha; c.drawRect(r, pEdge) }
                 if (a.stacks > 1) {
                     val ps = UiKit.numberPaint(22f, Color.WHITE).apply { textAlign = Paint.Align.RIGHT; this.alpha = alpha }
-                    c.drawText(a.stacks.toString(), r.right - 3f, r.bottom - 4f, ps)
+                    c.drawText(Tr.t(a.stacks.toString()), r.right - 3f, r.bottom - 4f, ps)
                 }
                 // the time left under the icon as the game's buff frame writes it: yellow, white in the last minute
                 auras.leftAt(a, now)?.toInt()?.let { left ->
                     val pt = UiKit.numberPaint(19f, if (left < 60) Color.WHITE else Theme.gold).apply { textAlign = Paint.Align.CENTER; this.alpha = alpha }
-                    c.drawText(shortTime(left), r.centerX(), r.bottom + timeH - 5f, pt)
+                    c.drawText(Tr.t(shortTime(left)), r.centerX(), r.bottom + timeH - 5f, pt)
                 }
                 if (greyed) c.restore()
             }
@@ -2338,10 +2351,10 @@ class HomeView(
             val shown = if (debuff) auras.shownDebuffs else auras.shownBuffs
             val greyed = auras.greyed
             val pt = UiKit.titlePaint(30f)
-            c.drawText(if (debuff) "Debuffs" else "Buffs", inner.left + 12f, inner.top + 36f, pt)
+            c.drawText(Tr.t(if (debuff) "Debuffs" else "Buffs"), inner.left + 12f, inner.top + 36f, pt)
             if (greyed) {
                 val pn = UiKit.bodyPaint(21f, Theme.dim).apply { textAlign = Paint.Align.RIGHT }
-                c.drawText("Before the fight", inner.right - 12f, inner.top + 34f, pn)
+                c.drawText(Tr.t("Before the fight"), inner.right - 12f, inner.top + 34f, pn)
             }
             val selected = shown.firstOrNull { it.id == sel }
             if (selected == null) sel = null
@@ -2377,7 +2390,7 @@ class HomeView(
             val n = noteText
             if (n != null && System.currentTimeMillis() < noteUntil) {
                 val p = UiKit.bodyPaint(22f, Theme.warn)
-                c.drawText(TextUtils.ellipsize(n, p, inner.width() - 24f, TextUtils.TruncateAt.END).toString(),
+                c.drawText(Tr.t(TextUtils.ellipsize(n, p, inner.width() - 24f, TextUtils.TruncateAt.END).toString()),
                     inner.left + 12f, rowsBottom - 10f, p)
                 postInvalidateDelayed(NOTE_MS)
             } else noteText = null
@@ -2395,7 +2408,7 @@ class HomeView(
                 else -> ""
             }
             if (text.isNotEmpty()) {
-                val lay = StaticLayout.Builder.obtain(text, 0, text.length, tp, (textRight - r.left - 24f).toInt().coerceAtLeast(10))
+                val lay = StaticLayout.Builder.obtain(Tr.span(text), 0, Tr.span(text).length, tp, (textRight - r.left - 24f).toInt().coerceAtLeast(10))
                     .setAlignment(Layout.Alignment.ALIGN_NORMAL).setIncludePad(false).setLineSpacing(0f, 1.08f)
                     .setMaxLines(((r.height() - 20f) / 27f).toInt().coerceAtLeast(1)).setEllipsize(TextUtils.TruncateAt.END).build()
                 c.save(); c.translate(r.left + 12f, r.top + 12f); lay.draw(c); c.restore()

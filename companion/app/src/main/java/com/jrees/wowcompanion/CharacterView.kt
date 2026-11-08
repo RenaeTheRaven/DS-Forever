@@ -189,6 +189,97 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         return changed.isNotEmpty()
     }
 
+    // ------------------------------------------------------------------ ARMOR KITS, STONES, ENCHANTS (the user, 2026-11-07: "a way to use them
+    // from both the bags room as well as the charactor room"; pick: the game-style list): X on a worn slot (or the card's Apply) lists the bags'
+    // kits (Bags.lua's `kit` flag); A uses the chosen one (its secure bag cell: the game starts "pick an item"), and once the game says the pick is
+    // on (an `itarget` document) the slot's secure binv cell is its target. B / X closes the list.
+
+    /** the bags' kits: (bag, slot, row) (BagsView.kitItems, the host's) */
+    var kits: () -> List<Triple<Int, Int, JSONObject>> = { emptyList() }
+    private var kitFor: Int? = null                 // the worn slot the list is open for
+    private var kitSel = 0
+    private var kitWait: Pair<Int, Long>? = null    // (slot, since): the kit was used, waiting for the game's pick
+    private var kitLine: String? = null; private var kitLineAt = 0L
+    private val kitHits = ArrayList<Pair<RectF, Int>>()
+
+    private fun tapPad(row: String, col: Int): Boolean {
+        val g = model.grid ?: return false
+        val ok = TapBridge.tap(context, g.pad, row, col)
+        Log.i(TAG, "character: kit tap $row:$col -> ${if (ok) "tapped" else "refused"}")
+        return ok
+    }
+    private fun kitSay(s: String) { kitLine = s; kitLineAt = android.os.SystemClock.uptimeMillis(); invalidate(); postInvalidateDelayed(3100L) }
+
+    private fun openKits(slot: Int) {
+        if (kits().isEmpty()) { kitSay("No armor kits, stones or enchants in your bags"); return }
+        kitFor = slot; kitSel = 0; invalidate()
+    }
+
+    private fun applyKit(i: Int) {
+        val slot = kitFor ?: return
+        val (bag, s, row) = kits().getOrNull(i) ?: return
+        kitFor = null
+        if (!tapPad("bag$bag", s - 1)) { kitSay("The game did not take it"); return }
+        val since = android.os.SystemClock.uptimeMillis()
+        kitWait = slot to since
+        kitSay("Applying ${row.optString("name")}")
+        postDelayed({
+            if (kitWait?.second == since) { kitWait = null; tapPad("binv", 19); kitSay("The game did not ask for an item") }   // /stopspelltarget
+        }, KIT_WAIT_MS)
+    }
+
+    /** Bags.lua's `itarget`: the game's "pick an item" started (or ended); a kit used from here goes on its slot now */
+    fun onItarget(on: Boolean) {
+        val w = kitWait ?: return
+        if (!on) return
+        kitWait = null
+        tapPad("binv", w.first - 1)
+    }
+
+    private fun kitKey(key: String) {
+        val n = kits().size
+        when (key) {
+            "PADDUP" -> kitSel = (kitSel - 1).coerceAtLeast(0)
+            "PADDDOWN" -> kitSel = (kitSel + 1).coerceAtMost(maxOf(0, n - 1))
+            "PAD1" -> applyKit(kitSel)
+            "PAD2", "PAD3" -> kitFor = null
+        }
+        invalidate()
+    }
+
+    /** the list over the room: the kits in your bags, the gold row the controller's, A Apply, B / X Close */
+    private fun kitList(c: Canvas, w: Float, h: Float) {
+        kitHits.clear()
+        val slot = kitFor ?: return
+        val list = kits()
+        UiKit.cover(c, RectF(0f, 0f, w, h))
+        val bw = minOf(760f, w - 80f)
+        val rowH = 84f
+        val shown = list.size.coerceAtMost(7)
+        val box = RectF(w / 2f - bw / 2f, 90f, w / 2f + bw / 2f, 90f + 80f + shown * rowH + 20f)
+        val inner = UiKit.menu(c, box, solid = true)
+        val name = worn()[slot]?.optString("name") ?: ""
+        c.drawText(Tr.t("Apply to"), inner.left + 16f, inner.top + 40f, UiKit.bodyPaint(30f, Theme.gold))
+        if (name.isNotEmpty()) {
+            val np = UiKit.bodyPaint(24f, Theme.dim).apply { textAlign = android.graphics.Paint.Align.RIGHT }
+            c.drawText(android.text.TextUtils.ellipsize(name, android.text.TextPaint(np), inner.width() / 2f, android.text.TextUtils.TruncateAt.END).toString(),
+                inner.right - 16f, inner.top + 40f, np)
+        }
+        val first = (kitSel - shown + 1).coerceAtLeast(0)
+        for (k in first until (first + shown).coerceAtMost(list.size)) {
+            val (_, _, row) = list[k]
+            val y = inner.top + 64f + (k - first) * rowH
+            val r = RectF(inner.left + 8f, y, inner.right - 8f, y + rowH - 6f)
+            val icon = Icons.getOrUnknown(if (row.has("icon")) row.optInt("icon") else null)
+            UiKit.itemPlate(c, r, icon, row.optString("name", "?"), Theme.quality(row.optInt("quality", 1)), row.optInt("count", 0))
+            if (k == kitSel) UiKit.focus(c, r)
+            kitHits.add(RectF(r) to k)
+        }
+        val hy = box.bottom + 46f
+        val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Apply", UiKit.backGlyph() to "Close")
+        kitHits.add(RectF((hs + box.right) / 2f, hy - 36f, box.right, hy + 36f) to -1)
+    }
+
     /** the Bags document (`full.bags`): its `equipped` part feeds the doll and the card */
     fun updateBags(bags: JSONObject) {
         bags.optJSONObject("equipped")?.let { equipped = it; if (model.tab == CharTab.CHARACTER) invalidate() }
@@ -230,6 +321,11 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         }
         setQuestion(c, w, h)
         glow(c)
+        if (kitFor != null) kitList(c, w, h)
+        kitLine?.let { s ->
+            if (android.os.SystemClock.uptimeMillis() - kitLineAt > 3000L) kitLine = null
+            else c.drawText(Tr.t(s), w / 2f, h - 60f, UiKit.bodyPaint(28f, Theme.gold).apply { textAlign = android.graphics.Paint.Align.CENTER })
+        }
         drawnTab = model.tab; drawnSide = model.side
     }
     private var drawnTab: CharTab? = null
@@ -270,6 +366,11 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     /** a press the addon passed on: the D-pad moves the glow, A does what a tap does (SPEC 8); B is the addon's (it closes
      *  the game's window); X and Y do nothing in the first build */
     private fun press(key: String) {
+        if (kitFor != null) { kitKey(key); return }
+        if (key == "PAD3") {
+            val k = current()?.key?.takeIf { it.startsWith("slot:") }?.removePrefix("slot:")?.toIntOrNull()
+            if (k != null && worn()[k] != null) { openKits(k); return }
+        }
         val cur = current() ?: return
         when (key) {
             "PAD1" -> { cur.act(); return }
@@ -367,7 +468,15 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
             ammo = eq?.optBoolean("ammoNeeded") == true, ranged = eq?.let { !it.has("rangedShown") || it.optBoolean("rangedShown") } ?: true)
         val slot = chosenSlot
         if (slot == null || slot !in layout.boxes) { chosenSlot = null; UiKit.emblem(c, middle, model.who?.clsFile ?: "") }
-        else card(c, middle, slot)
+        else {
+            card(c, middle, slot)
+            // the card's Apply (X): the kits for this slot (the same as X on the slot)
+            if (worn()[slot] != null && kits().isNotEmpty()) {
+                val ab = RectF(middle.left + 24f, middle.bottom - 78f, middle.right - 24f, middle.bottom - 8f)
+                UiKit.button(c, ab, "Apply", UiKit.xGlyph(), UiKit.Button.UP)
+                hit(ab) { openKits(slot) }
+            }
+        }
         Doll.draw(c, layout, worn(), eq?.optJSONObject("ammo"), eq?.optBoolean("relic") == true,
             alertColours = eq?.optJSONArray("alertc"))
         chosenSlot?.let { layout.boxes[it]?.let { box -> UiKit.slotFocus(c, box) } }
@@ -398,7 +507,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
             c.save(); c.translate(inner.left + 14f, y); sl.draw(c); c.restore()
             if (right.isNotEmpty()) {
                 val pr = UiKit.bodyPaint(size, rightColour).apply { textAlign = Paint.Align.RIGHT }
-                c.drawText(right, inner.right - 14f, y - pr.ascent(), pr)
+                c.drawText(Tr.t(right), inner.right - 14f, y - pr.ascent(), pr)
             }
             y += sl.height + 6f
         }
@@ -446,12 +555,12 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         val mood = if (p.hunter) p.happy.coerceIn(0, 3) else 0
         val under = UiKit.petPage(c, area, classFile, Icons.get(p.icon), mood)
         val pn = UiKit.titlePaint(44f).apply { textAlign = Paint.Align.CENTER }
-        c.drawText(p.name, under.centerX(), under.top + 40f, pn)
+        c.drawText(Tr.t(p.name), under.centerX(), under.top + 40f, pn)
         val pl = UiKit.bodyPaint(27f, Color.WHITE).apply { textAlign = Paint.Align.CENTER }
-        c.drawText(p.line, under.centerX(), under.top + 86f, pl)
+        c.drawText(Tr.t(p.line), under.centerX(), under.top + 86f, pl)
         if (p.hunter && p.loyalty.isNotEmpty()) {
             val py = UiKit.bodyPaint(24f, Theme.dim).apply { textAlign = Paint.Align.CENTER }
-            c.drawText(p.loyalty, under.centerX(), under.top + 124f, py)
+            c.drawText(Tr.t(p.loyalty), under.centerX(), under.top + 124f, py)
         }
         if (p.xpMax > 0) UiKit.standing(c, RectF(under.left + 30f, under.bottom - 70f, under.right - 30f, under.bottom - 6f),
             Theme.standing(5), p.xpFill, p.xpText)
@@ -682,7 +791,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
             val col = if (e.grey) Theme.dim else if (chosen) Theme.gold else Color.WHITE
             name(c, e.name, box.left + 100f, box.top + 40f, box.right - box.left - 112f, col)
             val pn = UiKit.numberPaint(28f, if (e.grey) Theme.dim else Color.WHITE)
-            c.drawText(e.value, box.left + 100f, box.top + 78f - (pn.ascent() + pn.descent()) / 2f, pn)
+            c.drawText(Tr.t(e.value), box.left + 100f, box.top + 78f - (pn.ascent() + pn.descent()) / 2f, pn)
             return
         }
         val col = when { e.red -> Theme.unusable; chosen -> Theme.gold; else -> Color.WHITE }
@@ -710,7 +819,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     private fun prompt(c: Canvas, r: RectF, word: String, fallback: String) {
         val t = model.word(word, fallback)
         if (t.isEmpty()) return
-        val sl = StaticLayout.Builder.obtain(t, 0, t.length, TextPaint(UiKit.bodyPaint(25f, Theme.dim)), max(1, (r.width() - 48f).toInt()))
+        val sl = StaticLayout.Builder.obtain(Tr.span(t), 0, Tr.span(t).length, TextPaint(UiKit.bodyPaint(25f, Theme.dim)), max(1, (r.width() - 48f).toInt()))
             .setAlignment(Layout.Alignment.ALIGN_CENTER).setLineSpacing(4f, 1f).build()
         c.save(); c.translate(r.left + 24f, r.top + 300f - sl.height / 2f); sl.draw(c); c.restore()
     }
@@ -747,7 +856,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         var y = titleBlock(c, r, e.name, headingOf(model.currency, e))
         UiKit.slot(c, Icons.get(e.icon), r.centerX() - 80f, y, 72f)
         val pn = UiKit.numberPaint(40f, Color.WHITE)
-        c.drawText(e.value, r.centerX() + 10f, y + 50f, pn)
+        c.drawText(Tr.t(e.value), r.centerX() + 10f, y + 50f, pn)
         val foot = r.bottom - e.checks.size * 66f
         y = if (e.desc.isNotEmpty()) prose(c, RectF(r.left, y + 96f, r.right, foot - 8f), e.desc, "cur:" + e.key) + 18f else y + 96f
         for ((i, row) in e.rows.withIndex()) {
@@ -764,7 +873,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         for (row in rows) {
             UiKit.check(c, r.left + 32f, y + 33f, 56f, row.on, enabled = false)
             val p = UiKit.bodyPaint(25f, Theme.dim)
-            c.drawText(row.label, r.left + 74f, y + 33f - (p.ascent() + p.descent()) / 2f, p)
+            c.drawText(Tr.t(row.label), r.left + 74f, y + 33f - (p.ascent() + p.descent()) / 2f, p)
             y += 66f
         }
     }
@@ -843,17 +952,17 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         UiKit.statLine(c, r, "", "", 0, band, icon)
         val x = if (icon != null) r.left + 58f else r.left + 16f
         val pv = UiKit.bodyPaint(26f, Theme.dim).apply { textAlign = Paint.Align.RIGHT }
-        c.drawText(value, r.right - 16f, r.centerY() - 1f - (pv.ascent() + pv.descent()) / 2f, pv)
+        c.drawText(Tr.t(value), r.right - 16f, r.centerY() - 1f - (pv.ascent() + pv.descent()) / 2f, pv)
         val pl = UiKit.bodyPaint(26f, Theme.dim)
         val room = r.right - 16f - pv.measureText(value) - 18f - x
-        c.drawText(TextUtils.ellipsize(label, pl, room, TextUtils.TruncateAt.END).toString(), x,
+        c.drawText(Tr.t(TextUtils.ellipsize(label, pl, room, TextUtils.TruncateAt.END).toString()), x,
             r.centerY() - 1f - (pl.ascent() + pl.descent()) / 2f, pl)
     }
 
     private fun centred(c: Canvas, x: Float, y: Float, t: String, size: Float, colour: Int, number: Boolean = false) {
         if (t.isEmpty()) return
         val p = (if (number) UiKit.numberPaint(size, colour) else UiKit.bodyPaint(size, colour)).apply { textAlign = Paint.Align.CENTER }
-        c.drawText(t, x, y - (p.ascent() + p.descent()) / 2f, p)
+        c.drawText(Tr.t(t), x, y - (p.ascent() + p.descent()) / 2f, p)
     }
 
     private fun fitCentred(c: Canvas, t: String, x: Float, y: Float, width: Float, size: Float, minSize: Float, colour: Int) {
@@ -861,8 +970,8 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         var p = UiKit.bodyPaint(s, colour)
         while (s > minSize && p.measureText(t) > width) { s -= 1f; p = UiKit.bodyPaint(s, colour) }
         p.textAlign = Paint.Align.CENTER
-        val shown = TextUtils.ellipsize(t, TextPaint(p), width, TextUtils.TruncateAt.END).toString()
-        c.drawText(shown, x, y - (p.ascent() + p.descent()) / 2f, p)
+        val shown = TextUtils.ellipsize(Tr.t(t), TextPaint(p), width, TextUtils.TruncateAt.END).toString()
+        c.drawText(Tr.t(shown), x, y - (p.ascent() + p.descent()) / 2f, p)
     }
 
     /** a name, set smaller down to 21 px, then ellipsized (SPEC 4) */
@@ -870,8 +979,8 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         var s = 26f
         var p = UiKit.bodyPaint(s, colour)
         while (s > 21f && p.measureText(t) > width) { s -= 1f; p = UiKit.bodyPaint(s, colour) }
-        val shown = TextUtils.ellipsize(t, TextPaint(p), width, TextUtils.TruncateAt.END).toString()
-        c.drawText(shown, x, centreY - (p.ascent() + p.descent()) / 2f, p)
+        val shown = TextUtils.ellipsize(Tr.t(t), TextPaint(p), width, TextUtils.TruncateAt.END).toString()
+        c.drawText(Tr.t(shown), x, centreY - (p.ascent() + p.descent()) / 2f, p)
     }
 
     /** prose (24 px gold, line spacing + 6), clipped to [r]; dragged when [key] is given and it is longer. Returns its end. */
@@ -886,7 +995,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     }
 
     private fun layout(t: String, p: Paint, width: Int, spacing: Float): StaticLayout =
-        StaticLayout.Builder.obtain(t, 0, t.length, TextPaint(p), max(1, width))
+        StaticLayout.Builder.obtain(Tr.span(t), 0, Tr.span(t).length, TextPaint(p), max(1, width))
             .setAlignment(Layout.Alignment.ALIGN_NORMAL).setLineSpacing(spacing, 1f).build()
 
     private fun parseColour(hex: String, fallback: Int): Int =
@@ -917,6 +1026,13 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
                 lastY = e.y
             }
             MotionEvent.ACTION_UP -> {
+                if (kitFor != null) {
+                    // the list: a row applies, Close / outside closes
+                    val k = kitHits.firstOrNull { it.first.contains(e.x, e.y) }?.second
+                    if (k != null && k >= 0) applyKit(k) else kitFor = null
+                    invalidate()
+                    return true
+                }
                 if (!moved && !underHome(e.x, e.y)) hits.lastOrNull { it.r.contains(e.x, e.y) }?.act?.invoke()
             }
         }
@@ -931,6 +1047,8 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         /** the hold unconfirmed this long (no CURRENT `win` with ctl) = asked again (Group Finder's / Social's 700 ms) */
         private const val HOLD_CHECK_MS = 700L
         private const val SLOP = 14f
+        /** a kit used from the Character room: the game's "pick an item" should start within this, else the pick is stopped */
+        private const val KIT_WAIT_MS = 2_500L
         /** the kit's statLine state for a value in the game's light blue (the rested XP; UI Art's e116707) */
         private const val BLUE = 3
         private val TAB_PICTURE = arrayOf("", "tab_reputation", "tab_skills", "", "tab_currency", "tab_statistics")

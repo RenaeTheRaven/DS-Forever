@@ -441,6 +441,14 @@ check(hidden is True, "rows 54-55 are hidden at the smallest scale (never inside
 
 # ================================================================ 1. PRE + Party mode (the router's real snippet, restricted)
 PRE = re.search(r'local PRE = \[=\[(.*?)\]=\]', SRC["padmap"], re.S).group(1)
+# m94 (test9, 2026-11-07: every A / X / Y / B / D-pad press dead): the game's secure checker refuses the word "function" ANYWHERE in a
+# snippet, comments included ("The function keyword is not permitted"); no secure snippet of any add-on may hold it
+_snip_bad = []
+for _k, _src in SRC.items():
+    for _m in re.finditer(r'\[=*\[(.*?)\]=*\]', _src, re.S):
+        if re.search(r'\bfunction\b', _m.group(1)) and ('SetAttribute' in _m.group(1) or 'self:' in _m.group(1)):
+            _snip_bad.append((_k, _src[:_m.start()].count('\n') + 1))
+check(not _snip_bad, "no secure snippet holds the word 'function' (the game refuses the whole snippet, comments too)", _snip_bad)
 G1 = boot([])
 prefn = G1.eval('function(body) return compileSnippet(body, "self, button, down") end')(PRE)
 G1.globals().PREFN = prefn
@@ -499,6 +507,40 @@ f = G1.eval('routerBtn')(7, "PAD2", None, False)
 k = G1.eval('pressPre')(f, True)
 given = G1.eval('function(f) return f.refs["wc-face-5"].a["wc-given"] end')(f)
 check(given is True, "PRE without wc-party: B in a fight gives A / X / Y back, as today", given)
+# m99 (the user: "pressing B in combat ... should stop the auto attack ... Keeping that enemy targeted, pressing B again would drop the target")
+check(k[0] == "bstop" and k[1] == "macro" and k[2] == "/stopattack", "m99: the first B in a fight stops the attack (the target kept)", k[:3])
+k = G1.eval('pressPre')(f, True)
+check(k[0] == "bstop" and k[2] == "/stopattack\n/cleartarget", "m99: B again (already given back) clears the target", k[:3])
+# m101 THE TARGET RADIAL (the user, 2026-11-07): a bare Y out of a fight with a target and nothing else on Y -> "tradial", no game action
+G1.execute('COMBAT = false')
+f = G1.eval('routerBtn')(6, "PAD4", None, False)
+f.a["wc-qitem"] = None; f.a["wc-smarty"] = None; f.a["wc-tradial"] = True; f.a["wc-state"] = "idle"
+k = G1.eval('pressPre')(f, True)
+check(k[0] == "tradial" and k[1] is None, "m101: Y out of a fight with a target: tradial, no game action", k[:3])
+f.a["wc-tradial"] = None
+k = G1.eval('pressPre')(f, True)
+check(k[0] != "tradial", "m101: without wc-tradial (the switch off): Y as before", k[:3])
+f.a["wc-tradial"] = True; f.a["wc-qitem"] = "item:1"
+k = G1.eval('pressPre')(f, True)
+check(k[0] == "qitem", "m101: a quest item for the target still wins over the radial", k[:3])
+f.a["wc-qitem"] = None
+G1.execute('UNITS.target = nil')
+k = G1.eval('pressPre')(f, True)
+check(k[0] != "tradial", "m101: no target: Y as before (Forever's Inspect / Smart Y)", k[:3])
+G1.execute('UNITS.target = { alive = true, foe = true }')
+# m102 (the user: "go away when I /startattack, same rules as the button grow animation"): the controller grown = no radial
+f.a["wc-pre"] = True
+k = G1.eval('pressPre')(f, True)
+check(k[0] != "tradial", "m102: an attack started (wc-pre, out of combat): no radial", k[:3])
+f.a["wc-pre"] = None
+G1.execute('COMBAT = true'); f.a["wc-state"] = "fight"
+k = G1.eval('pressPre')(f, True)
+check(k[0] != "tradial", "m102: in a fight (grown): no radial", k[:3])
+f.a["wc-given"] = True
+k = G1.eval('pressPre')(f, True)
+check(k[0] == "tradial", "m102: in a fight after B (given back): the radial again", k[:3])
+f.a["wc-given"] = None; f.a["wc-state"] = "idle"
+G1.execute('COMBAT = false')
 G1.execute('COMBAT = false')
 f = G1.eval('routerBtn')(2, "PADDUP", None, False)
 f.a["wc-state"] = "idle"; f.a["wc-qitem"] = None
@@ -512,8 +554,11 @@ check(G1.eval('#SNIPERR') == 0, "PRE ran in the restricted environment without a
 import subprocess
 r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'test_smarty.py')], capture_output=True, text=True)
 check(r.returncode == 0 and r.stdout.strip().endswith('ALL PASS'), "tools/test_smarty.py passes UNCHANGED", r.stdout.strip()[-60:])
-smarty_git = subprocess.run(['git', '-C', ROOT, 'diff', '--quiet', 'b187c3c1', '--', 'tools/test_smarty.py']).returncode
-check(smarty_git == 0, "tools/test_smarty.py is byte for byte the contract's base (b187c3c1: + m78 Manners)", smarty_git)
+# the contract's base b187c3c1 (+ m78 Manners), then m101 (the user's ruling 2026-11-07: a soft-interact target no longer blocks Smart Y):
+# the file is pinned by its content now; change it only on a ruling, and re-pin here
+import hashlib
+smarty_sha = hashlib.sha256(open(os.path.join(ROOT, 'tools', 'test_smarty.py'), 'rb').read()).hexdigest()
+check(smarty_sha == "d7707cb7c1cac46fa77e722b844d3c812937c5377303e36132114b1981b3b7c2", "tools/test_smarty.py is byte for byte the pinned contract (b187c3c1 + m78 Manners + m101 soft-interact)", smarty_sha[:12])
 
 # ================================================================ THE WORLD: the real Spells files (and TapPad) logged in
 ROUTER_NAME = {8: "WowCompanionCombatFace8", 7: "WowCompanionFaceB", 5: "WowCompanionCombatFace5", 6: "WowCompanionCombatFace6",
@@ -546,8 +591,9 @@ WowCompanion.spellsBookSlotOf = function(id) for i, x in ipairs(BOOK) do if x ==
 '''
 
 
-def world(pre='', files=("safety", "tappad", "book", "padmap", "padtabctl")):
-    L = boot(list(files), pre=pre)
+def world(pre='', files=("safety", "tappad", "book", "padmap", "padtabctl"), ok=True):
+    # m100: Party mode is an experimental switch (Hub's "uisw" 16 / 17 -> WowCompanion.partyOk); the worlds here have it ON unless ok=False
+    L = boot(list(files), pre=('WowCompanion.partyOk = true; ' if ok else '') + pre)
     L.execute(WORLD_HELPERS)
     L.execute('fire("PLAYER_LOGIN"); fire("PLAYER_ENTERING_WORLD", true, false); runTimers(NOW + 10)')
     return L
@@ -964,6 +1010,7 @@ for col in range(40):
     elif col == 11: want = ("click", None, None, "WowCompanionPartyOff")
     elif col <= 16: want = ("focus", None, U[col - 12], None)
     elif col == 35: want = ("click", None, None, "WowCompanionPartyMenuDone")
+    elif col == 36: want = ("macro", None, None, None)          # m91: Hub's /startattack cell (WC.atkCell)
     else: want = (None, None, None, None)
     got = (t, sp, un, cb._name if cb is not None else None)
     if got != want:
@@ -1040,9 +1087,9 @@ W7 = world()
 W7.eval('party')(W7.table_from([W7.table_from(["Brannoc", "WARRIOR", True, "TANK", "RAGE"])]))
 W7.execute('fire("GROUP_ROSTER_UPDATE")')
 P_KEYS = {"on", "aside", "box", "fight", "grp", "sel", "m"}
-M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "hpMax", "pmMax", "hp", "full", "rng", "hs"}   # m79: hs, the health source
+M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "hpMax", "pmMax", "hp", "full", "rng", "hs", "g", "cw", "cc", "ch", "cs"}   # m79: hs, the health source; m92: g, the GUID (combat log)
 d = docs(W7, 0, 'party')[-1]
-check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm90' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
+check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm103' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
       "party: type v rs p{on aside? box? fight grp sel m}", sorted(d['p']))
 check('box' not in d['p'] and d['p']['on'] is False and d['p']['grp'] is True and d['p']['sel'] == 'bound',
       "Party mode off: no box; grp true; sel bound (Select toggles)", (d['p']['on'], d['p'].get('box'), d['p']['sel']))
@@ -1071,8 +1118,18 @@ d_later = docs(W7, n0, 'party')
 check(len(d_now) == 0 and len(d_later) == 1 and d_later[0]['p']['m'][1]['hp'] == 75 and d_later[0]['p']['m'][1]['full'] is False,
       "ten plain wounds (10 each of 400): no document per event; ONE after 0.5 s, hp 75, not full", (len(d_now), len(d_later)))
 n0 = nsent(W7)
+cw0 = d_later[0]['p']['m'][1].get('cw') if d_later else None
 W7.execute('fire("UNIT_COMBAT", "party1", "WOUND", "", SECRETV, 1); advance(0.6)')
-check(docs(W7, n0, 'party') == [], "a SECRET amount: nothing moves, nothing sent")
+# m96: a hidden amount moves no health, but the hit is COUNTED (the app's calibrated estimate spends the count)
+d_sec = docs(W7, n0, 'party')
+check(len(d_sec) == 1 and d_sec[0]['p']['m'][1]['hp'] == 75 and cw0 is not None and d_sec[0]['p']['m'][1].get('cw') == cw0 + 1,
+      "a SECRET amount: health stays (75), the wound count goes up by one (m96)", (len(d_sec), cw0, d_sec and d_sec[0]['p']['m'][1].get('cw')))
+# m98: a party member's cast is counted (cs), for the app's mana estimate
+n0 = nsent(W7)
+W7.execute('fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "Cast-1", 403); fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "Cast-2", 403); advance(0.6)')
+d_cs = docs(W7, n0, 'party')
+check(len(d_cs) == 1 and d_cs[0]['p']['m'][1].get('cs') == 2, "two casts by party1: cs = 2 in one document (m98)",
+      (len(d_cs), d_cs and d_cs[0]['p']['m'][1].get('cs')))
 W7.execute('fire("PLAYER_REGEN_ENABLED"); NOW = NOW + 7; tick(1); advance(0.6)')
 d = docs(W7, 0, 'party')[-1]
 check(d['p']['m'][1]['hp'] == 100 and d['p']['m'][1]['full'] is True, "out of combat, 6 s quiet: back to full (the anchor)", d['p']['m'][1]['hp'])
@@ -1228,8 +1285,8 @@ check(picks(W9) == {"player": None, "party1": None, "party2": None}, "Smart Y of
 check(W9.eval('#SPY') == 0 and W9.eval('#VIOL') == 0, "no spied call, no lockdown breach")
 
 # ================================================================ THE PARTY TAB (PadTabCtl p33 + Book b47's padtab 26-37)
-check('local CV = "p33"' in SRC["padtabctl"] and 'local BV = "b48"' in SRC["book"] and 'local PV = "m90"' in SRC["padmap"],
-      "the versions: PadMap m90, PadTabCtl p33, Book b48")
+check('local CV = "p33"' in SRC["padtabctl"] and 'local BV = "b48"' in SRC["book"] and 'local PV = "m103"' in SRC["padmap"],
+      "the versions: PadMap m103, PadTabCtl p33, Book b48")
 W8 = world(pre='BOOK = { 403, 331, 8004, 324, 131, 546 }')
 W8.execute('''
 local ctl = WowCompanion._spellsBook.ctl
@@ -1351,7 +1408,7 @@ check(ctlDoc(W8)['view'] == 'normal' and 'ppos' not in ctlDoc(W8), "padtab 0: ba
 check(W8.eval('#SPY') == 0 and W8.eval('#VIOL') == 0 and list(W8.eval('ERRS').values()) == [], "no spied call, no lockdown breach, no error")
 
 # ================================================================ 11. QUESTS: THE PLAYER MENU FOR A PARTY UNIT (q49)
-check('local QV = "q49"' in SRC["quests"], "Quests says q49")
+check('local QV = "q53"' in SRC["quests"], "Quests says q53")
 MENU = r'''
 CALLS, CLICKED = {}, {}
 local function mixin(name, text, enabled)
@@ -1365,7 +1422,7 @@ ENTRIES = { mixin("SetFocus", "Set Focus"), mixin("Whisper", "Whisper"), mixin("
             mixin("Follow", "Follow"), mixin("Duel", "Duel"), mixin("PromoteToLeader", "Promote to Party Leader"),
             mixin("Uninvite", "Uninvite"), mixin("RaidTarget8", "Skull"), mixin("ClearFocus", "Clear Focus") }
 UnitPopupManager = { GetMenu = function(_, which) MENUWHICH = which; return { GetEntries = function() return ENTRIES end } end }
-for _, n in ipairs({ "InitiateTrade", "FollowUnit", "PromoteToLeader", "SetRaidTarget", "UninviteUnit" }) do
+for _, n in ipairs({ "InitiateTrade", "FollowUnit", "PromoteToLeader", "SetRaidTarget", "UninviteUnit", "StartDuel" }) do
     _G[n] = function(...) CALLS[#CALLS + 1] = { n, ... } end
 end
 C_PartyInfo = { UninviteUnit = function(...) CALLS[#CALLS + 1] = { "UninviteUnit", ... } end }
@@ -1378,18 +1435,19 @@ n0 = nsent(Q)
 Q.eval('WowCompanion.pmenu.read')("party2", "party")
 pm = docs(Q, n0, 'pmenu')
 check(len(pm) == 1 and pm[0]['unit'] == 'party2' and pm[0]['which'] == 'PARTY' and pm[0]['src'] == 'party' and pm[0]['nm'] == 'Iselle'
-      and pm[0]['v'] == 'q49' and Q.eval('MENUWHICH') == 'PARTY', "read(\"party2\", \"party\"): the PARTY menu; doc unit, which PARTY, nm, src party",
+      and pm[0]['v'] == 'q53' and Q.eval('MENUWHICH') == 'PARTY', "read(\"party2\", \"party\"): the PARTY menu; doc unit, which PARTY, nm, src party",
       pm and {k: pm[0].get(k) for k in ('unit', 'which', 'nm', 'src')})
 items = {x['t']: x for x in pm[0]['items']}
 check(items['Set Focus'].get('sc') == 14 and items['Set Focus'].get('scr') == 'party', "Set Focus = the PARTY row's focus cell for party2 (col 12 + 2)",
       items['Set Focus'])
 check(items['Clear Focus'].get('sc') == 1 and 'scr' not in items['Clear Focus'], "Clear Focus stays Quests' pfocus col 1", items['Clear Focus'])
 check(items['Inspect']['en'] == 0 and 'i' not in items['Inspect'], "Inspect is greyed (InspectUnit taints)", items['Inspect'])
-check(items['Duel']['en'] == 0, "an entry not known (Duel) is greyed", items['Duel'])
+check(items['Duel']['en'] == 1 and 'i' in items['Duel'], "q51: Duel runs (StartDuel on the unit)", items['Duel'])
 check(items['Whisper'].get('ap') == 'whisper' and 'i' in items['Whisper'], "Whisper: ap whisper (and runnable: it sets the reply target)", items['Whisper'])
 Q.eval('WowCompanion.pmenu.run')(items['Whisper']['i'])
 check(Q.eval('WowCompanion.chatLastTell') == 'Iselle', "running Whisper sets WC.chatLastTell = the member", Q.eval('WowCompanion.chatLastTell'))
-for t, want in (("Trade", ["InitiateTrade", "party2"]), ("Follow", ["FollowUnit", "party2"]), ("Skull", ["SetRaidTarget", "party2", 8])):
+# q50: this build's InitiateTrade takes the member's GUID (the unit only on a build that refuses it)
+for t, want in (("Trade", ["InitiateTrade", "Player-1-Iselle"]), ("Follow", ["FollowUnit", "party2"]), ("Skull", ["SetRaidTarget", "party2", 8])):
     c0 = int(Q.eval('#CALLS'))
     Q.eval('WowCompanion.pmenu.run')(items[t]['i'])
     got = list(Q.eval('CALLS[#CALLS]').values()) if int(Q.eval('#CALLS')) > c0 else None
@@ -1410,6 +1468,65 @@ Q.eval('WowCompanion.pmenu.read')("player", "party")
 items = {x['t']: x for x in docs(Q, n0, 'pmenu')[0]['items']}
 check(items['Set Focus'].get('sc') == 12 and items['Set Focus'].get('scr') == 'party', "your own cell's menu in Party mode: Set Focus = party col 12",
       items['Set Focus'])
+# q51: the TARGET's menu for the app's radial (src "radial"): a friendly player, then an NPC
+Q.execute('function UnitIsUnit(a, b) return a == b end; function UnitInParty() return false end; '
+          'function UnitIsPlayer(u) return TPLAYER end; function UnitCanCooperate() return true end; TPLAYER = true')
+n0 = nsent(Q)
+Q.eval('WowCompanion.pmenu.read')("target", "radial")
+pm = docs(Q, n0, 'pmenu')[0]
+items = {x['t']: x for x in pm['items']}
+check(pm['unit'] == 'target' and pm['which'] == 'PLAYER' and pm['src'] == 'radial' and Q.eval('MENUWHICH') == 'PLAYER',
+      "q51: read(\"target\", \"radial\"): a friendly player = the PLAYER menu, src radial", {k: pm.get(k) for k in ('unit', 'which', 'src')})
+check(items['Inspect'].get('sc') == 2 and items['Inspect']['en'] == 1, "q51: the target's Inspect = pfocus col 2 (the game's /inspect)", items['Inspect'])
+check(items['Set Focus'].get('sc') == 3 and 'scr' not in items['Set Focus'], "q51: Set Focus on the target = pfocus col 3", items['Set Focus'])
+c0 = int(Q.eval('#CALLS'))
+Q.eval('WowCompanion.pmenu.run')(items['Duel']['i'])
+got = list(Q.eval('CALLS[#CALLS]').values()) if int(Q.eval('#CALLS')) > c0 else None
+check(got == ["StartDuel", "target"], "q51: Duel = StartDuel(\"target\")", got)
+Q.execute('TPLAYER = false')
+n0 = nsent(Q)
+Q.eval('WowCompanion.pmenu.read')("target", "radial")
+pm = docs(Q, n0, 'pmenu')[0]
+check(pm['which'] == 'TARGET' and Q.eval('MENUWHICH') == 'TARGET', "q51: an NPC target = the TARGET menu", pm.get('which'))
+check(int(Q.eval('#CLICKED')) == 0, "q51: still no Blizzard menu code ran")
+# q52 (the user on test24: "showing half of it blank for my party members"): a party member targeted = that member's own menu
+Q.execute('TPLAYER = true; function UnitInParty() return true end; '
+          'function UnitIsUnit(a, b) return a == b or (a == "target" and b == "party2") end')
+n0 = nsent(Q)
+Q.eval('WowCompanion.pmenu.read')("target", "radial")
+pm = docs(Q, n0, 'pmenu')[0]
+items = {x['t']: x for x in pm['items']}
+check(pm['unit'] == 'party2' and pm['which'] == 'PARTY' and pm['src'] == 'radial' and Q.eval('MENUWHICH') == 'PARTY',
+      "q52: a party member targeted: the PARTY menu for party2, src radial", {k: pm.get(k) for k in ('unit', 'which', 'src')})
+check(items['Inspect'].get('sc') == 2 and items['Set Focus'].get('sc') == 3 and 'scr' not in items['Set Focus'],
+      "q52: the radial's Inspect / Set Focus act on the target (pfocus 2 / 3)", (items['Inspect'], items['Set Focus']))
+Q.execute('function UnitInParty() return false end; function UnitIsUnit(a, b) return a == b end')
+# q53 (the user on test25: "so many options are still not showing up things like trade"): the menu read as the game opens it -
+# AssembleMenuEntries first, and the context the entries test (playerLocation, accountInfo, isMobile, name by UnitNameUnmodified)
+Q.execute(r'''
+ORIGMGR = UnitPopupManager
+local function mk(name, text) local m = { GetText = function() return text end, CanShow = function() return true end,
+    IsEnabled = function() return true end, OnClick = function() CLICKED[#CLICKED + 1] = name end }
+    rawset(_G, "UnitPopup" .. name .. "ButtonMixin", m); return m end
+local trade = mk("Trade2", "Trade")
+local fr = mk("AddFriend", "Add Friend")
+fr.CanShow = function(_, cd) return cd.playerLocation ~= nil and cd.playerLocation.ok == true end     -- errors / false without it
+UnitPopupSharedUtil = { TryCreatePlayerLocation = function(cd) return { ok = true, unit = cd.unit } end,
+                        GetBNetAccountInfo = function() return nil end, GetIsMobile = function() return false end }
+function UnitNameUnmodified(u) return "Brannoc", nil end
+UnitPopupManager = { GetMenu = function(_, which) MENUWHICH = which
+    return { GetEntries = function() return { ENTRIES[2] } end,
+             AssembleMenuEntries = function(_, cd) ASSEMBLED = cd; return { ENTRIES[2], trade, fr } end } end }
+''')
+n0 = nsent(Q)
+Q.eval('WowCompanion.pmenu.read')("target", "radial")
+pm = docs(Q, n0, 'pmenu')[0]
+ts = [x['t'] for x in pm['items']]
+check(ts == ['Whisper', 'Trade', 'Add Friend'], "q53: the entries come from AssembleMenuEntries (Trade, Add Friend shown)", ts)
+check(Q.eval('ASSEMBLED.unit') == 'target' and Q.eval('ASSEMBLED.fromTargetFrame') is True and Q.eval('ASSEMBLED.name') == 'Brannoc',
+      "q53: the context the game builds: unit, fromTargetFrame, name by UnitNameUnmodified, playerLocation",
+      (Q.eval('ASSEMBLED.unit'), Q.eval('ASSEMBLED.fromTargetFrame'), Q.eval('ASSEMBLED.name')))
+Q.execute('UnitPopupManager = ORIGMGR; UnitPopupSharedUtil = nil; UnitNameUnmodified = nil')     # the fixtures below read the plain menu
 # the party pad's Y and the party row's MENU cells read the menu for the unit, src "party"
 W11 = world()
 W11.execute('PMREADS = {}; WowCompanion.pmenu = { read = function(u, s) PMREADS[#PMREADS + 1] = { u, s } end }')
@@ -1559,12 +1676,42 @@ BAD = [r'\bSetBinding\s*\(', r'\bSaveBindings\b', r'\bCreateMacro\b', r'\bEditMa
        r'\bSetOverrideBinding\s*\(']
 hits = [(p, ln.strip()) for ln in code for p in BAD if re.search(p, ln)]
 # the user's one exception (2026-11-04, "Let DS Forever set it"): Chat.lua chat27 sets the chat style to Classic once
-hits = [(p, ln) for (p, ln) in hits if not (p == r'\bSetCVar\b' and ('STYLE_CVAR' in ln or 'C_CVar.SetCVar) == "function"' in ln or '"gxCursor"' in ln))]
+hits = [(p, ln) for (p, ln) in hits if not (p == r'\bSetCVar\b' and ('STYLE_CVAR' in ln or 'C_CVar.SetCVar) == "function"' in ln or '"gxCursor"' in ln
+                                                                  # hub22 (the user, 2026-11-07): the hunter's own Combat Auto Shot option, asked for by name
+                                                                  or 'autoRangedCombat' in ln or ln == 'local set = (C_CVar and C_CVar.SetCVar) or _G.SetCVar'
+                                                                  # Trail ag (the user, 2026-11-07, "Turn on friendly nameplates"): the friendly nameplate options once
+                                                                  or 'SetCVar(name, "1")' in ln or 'SetCVar(name, v)' in ln))]
 # (and pad14's software cursor: the user's "Yes, try software cursor", 2026-11-04, gxCursor once)
 check(not hits, "no trace in the new add-on code: no SetBinding / SaveBindings / macros / CVars / bar writes / Blizzard window code",
       hits[:3])
 check(not any('SetOverrideBindingClick' in ln and 'hdr' not in ln and 'owner' not in ln for ln in code),
       "every new key binding is an override on our own owner frame")
+
+# ================================================================ m100: the experimental switch (the user, 2026-11-07: "Make the party
+# mode an experimental toggle that is off by default")
+WX = world(ok=False)
+WX.execute('NOW = NOW + 2; tick(0.1)')
+sel = WX.eval('BIND["PADBACK"]')
+check(sel != 'CLICK WowCompanionPartyToggle:LeftButton' and WX.eval('WowCompanion.partyOk') is None,
+      "m100: switch never set (off by default): Select is NOT Party mode's toggle", sel)
+check(party_on_all(WX) == [None] * 9, "m100: switch off: Party mode off")
+WX.execute('WowCompanion.partyOk = true; WowCompanion.partyAllow(true); NOW = NOW + 2; tick(0.1)')
+sel = WX.eval('BIND["PADBACK"]')
+check(sel == 'CLICK WowCompanionPartyToggle:LeftButton', "m100: switch on: Select toggles Party mode", sel)
+flip(WX, "WowCompanionPartyOn")
+check(party_on_all(WX) == [True] * 9, "m100: switch on: Party mode can turn on")
+WX.execute('WowCompanion.partyOk = false; WowCompanion.partyAllow(false)')
+check(party_on_all(WX) == [None] * 9, "m100: switch turned off out of a fight: Party mode ends at once", party_on_all(WX))
+WX.execute('NOW = NOW + 2; tick(0.1)')
+check(WX.eval('BIND["PADBACK"]') != 'CLICK WowCompanionPartyToggle:LeftButton', "m100: ... and Select is the game's again",
+      WX.eval('BIND["PADBACK"]'))
+WX.execute('WowCompanion.partyOk = true; WowCompanion.partyAllow(true); NOW = NOW + 2; tick(0.1)')
+flip(WX, "WowCompanionPartyOn")
+WX.execute('COMBAT = true; WowCompanion.partyOk = false; WowCompanion.partyAllow(false)')
+check(party_on_all(WX) == [True] * 9 and WX.eval('#VIOL') == 0, "m100: switched off in a fight: no secure write in the lockdown (still on)",
+      list(WX.eval('VIOL').values()))
+WX.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); NOW = NOW + 2; tick(0.1)')
+check(party_on_all(WX) == [None] * 9, "m100: ... it ends at the fight's end", party_on_all(WX))
 
 print('ALL PASS (%d checks)' % passes if fails == 0 else '%d FAILED (of %d)' % (fails, fails + passes))
 sys.exit(1 if fails else 0)

@@ -117,6 +117,9 @@ fun WoWForeverScreen(
     var loginSaved by remember { mutableStateOf(com.jrees.wowcompanion.HomeLoginStore.has(context)) }
     var loginSkipped by remember { mutableStateOf(false) }
     var appUpdateLater by remember { mutableStateOf(false) }
+    // 1.0.17: the 8 / 12 GB Thors' notice before Play (the remaining art builds only while the game is closed); once a run of the app
+    var artNotice by remember { mutableStateOf(false) }
+    var artNoticeSeen by remember { mutableStateOf(false) }
     // DS Forever on the SD card / adopted storage (p-sd-card-install): the setup says so first; checked once per screen
     val installedExternal = remember {
         runCatching {
@@ -139,6 +142,8 @@ fun WoWForeverScreen(
     var artStartedAt by remember { mutableStateOf(0L) }
     /** Update was pressed while an art step or a launch ran: it starts by itself when they end (SetupFlow.updateGate) */
     var updateQueued by remember { mutableStateOf(false) }
+    var artRecheckAt by remember { mutableStateOf(0L) }          // the stuck-"Checking" guard (2026-11-07)
+    var artRecheckN by remember { mutableStateOf(0) }
     // the art is being built again for the build an update just brought (the Game art row says so until it is ready)
     var artRebuild by remember { mutableStateOf(false) }
     var updateStatusText by remember { mutableStateOf("") }
@@ -362,6 +367,7 @@ fun WoWForeverScreen(
                         artFailed = null
                         checkFiles()
                         artStatusText = "Game art is ready"
+                        artRecheckN++                               // the stuck-"Checking" guard below looks again
                     }
                     is com.jrees.wowcompanion.ArtHarvest.State.Failed -> {
                         isHarvesting = false
@@ -531,6 +537,17 @@ fun WoWForeverScreen(
 
     // the art starts BY ITSELF as soon as the game folder is usable (and re-checks silently at every start: nothing pending = Ready)
     LaunchedEffect(gamePath, files.dataExists, files.buildInfoExists, files.hasStorageAccess, files.isWrongGame) { harvestArt() }
+    // 2026-11-07 (the user: "now its stuck on 'Checking the game art'"): a run said Ready but a before-Play step is still pending -
+    // nothing would start it again, so the screen sat. Named in the log, and the check runs again (at most once a minute: never a loop)
+    LaunchedEffect(artRecheckN) {
+        if (artRecheckN == 0 || artReady || isHarvesting || artFailed != null) return@LaunchedEffect
+        if (System.currentTimeMillis() - artRecheckAt < 60_000L) return@LaunchedEffect
+        artRecheckAt = System.currentTimeMillis()
+        val left = runCatching { com.jrees.wowcompanion.ArtHarvest.pending(context, beforePlay = true).joinToString { it.id } }.getOrDefault("?")
+        val line = "art: ready, but before Play still pending: $left; checking again"
+        android.util.Log.i("WCSETUP", line); com.jrees.wowcompanion.SetupBridge.log?.invoke(line)   // = setupLog (declared below)
+        harvestArt(retry = true)
+    }
 
     // RIGHT AFTER THE ART CHECK: the dependency add-ons (QuestieDB from its own GitHub releases; the user's approval 2026-10-12).
     // Background, once per launcher run; it never blocks Play and says what it did on the top screen
@@ -638,8 +655,11 @@ fun WoWForeverScreen(
         scope.launch {
             try {
                 withContext(Dispatchers.IO) {
-                    WowClientDownloader.updateGame(File(gamePath), target) { msg ->
-                        scope.launch(Dispatchers.Main) { updateStatusText = msg }
+                    // the screen first (BgThreads, 2026-11-07): the update's downloads and decodes yield to the loading animations
+                    com.jrees.wowcompanion.BgThreads.lowered {
+                        WowClientDownloader.updateGame(File(gamePath), target) { msg ->
+                            scope.launch(Dispatchers.Main) { updateStatusText = msg }
+                        }
                     }
                 }
                 checkFiles()
@@ -660,6 +680,17 @@ fun WoWForeverScreen(
                 isUpdating = false
             }
         }
+    }
+
+    // 2026-11-07 (the user: "they cant play without it just start the update and remove the prompt"): an out-of-date game updates by
+    // itself, once per new build (a failed one waits for Try again, never a loop)
+    var autoUpdatedFor by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(versionStatus?.isOutdated, versionStatus?.remoteVersion) {
+        val v = versionStatus ?: return@LaunchedEffect
+        if (!v.isOutdated || autoUpdatedFor == v.remoteVersion || isUpdating) return@LaunchedEffect
+        autoUpdatedFor = v.remoteVersion
+        setupLog("update: starting by itself (${v.remoteVersion})")
+        performUpdate()
     }
 
     // the queued Update goes as soon as nothing holds it (an art step's end, a launch's end)
@@ -767,6 +798,7 @@ fun WoWForeverScreen(
         appLine = AppUpdater.line(appCheck),
         // the background all-icons step (Track C, test23): ready when its stamp says so, else its count while it runs
         installedExternal = installedExternal,
+        artNotice = artNotice,
         // issues #8 / #9: the game folder's Data older than its build (the art's reads say so), on the top screen's checks
         lowSpace = if (!filesMissing && File(gamePath, com.jrees.wowcompanion.DataStaleness.STREAMED).exists())
             com.jrees.wowcompanion.SetupFlow.lowSpaceLine(File(gamePath).usableSpace,
@@ -799,7 +831,14 @@ fun WoWForeverScreen(
                 appUpdateLater = true
                 if (launchAfterAppChoice) { launchAfterAppChoice = false; launchGame() }
             }
-            com.jrees.wowcompanion.SetupFlow.Action.PLAY -> launchGame()
+            com.jrees.wowcompanion.SetupFlow.Action.PLAY -> {
+                com.jrees.wowcompanion.DeviceTier.init(context)
+                if (!artNoticeSeen && com.jrees.wowcompanion.DeviceTier.lowMemory() &&
+                    com.jrees.wowcompanion.ArtHarvest.backgroundLeft(context)) artNotice = true
+                else launchGame()
+            }
+            com.jrees.wowcompanion.SetupFlow.Action.ART_NOTICE_PLAY -> { artNotice = false; artNoticeSeen = true; launchGame() }
+            com.jrees.wowcompanion.SetupFlow.Action.ART_NOTICE_WAIT -> { artNotice = false }
             com.jrees.wowcompanion.SetupFlow.Action.OPEN_APP_SETTINGS -> runCatching {
                 context.startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                     android.net.Uri.parse("package:${context.packageName}")).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -988,12 +1027,19 @@ private data class GpuProfile(val driver: String, val tuDebug: String, val scree
     companion object {
         fun detect(context: Context) = if (isAdreno8xxDevice(context)) {
             GpuProfile(ADRENO_8XX_DRIVER, "noconform,sysmem", "1280x720", "Adreno 8xx", "Snapdragon 8 Elite / Adreno 8xx")
+        } else if (isThorLite(context)) {
+            // 1.0.17 (the user: "there are 4 different versions of the ayn thor"; pick "Add a Lite profile now"): the Thor Lite's
+            // Snapdragon 865 / Adreno 650 got the Adreno 740's 1080p. Turnip drives the a6xx family; 720p, conservative. UNTESTED on a Lite
+            GpuProfile(DEFAULT_DRIVER, "noconform", "1280x720", "Adreno 650", "Thor Lite: Snapdragon 865 / Adreno 650 (untested)")
         } else {
             val driver = switchFile(".ds-driver")?.takeIf { it in BUNDLED_DRIVERS } ?: DEFAULT_DRIVER
             val screen = switchFile(".ds-resolution")?.takeIf { SCREEN_SIZE.matches(it) } ?: ADRENO_740_SCREEN
             Timber.i("custom-thor: Adreno 740 profile: driver %s, screen %s", driver, screen)
             GpuProfile(driver, "noconform", screen, "Adreno 740", "Snapdragon 8 Series / Adreno 740")
         }
+
+        private fun isThorLite(context: Context): Boolean =
+            runCatching { GPUInformation.isAdreno6xx(context) }.getOrDefault(false) || com.jrees.wowcompanion.DeviceTier.isLite()
 
         private fun isAdreno8xxDevice(context: Context): Boolean {
             if (GPUInformation.isAdreno8Elite(context)) return true
@@ -1025,7 +1071,8 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
     val choice = WowProduct.choose(gameRoot)
     val product = choice?.product ?: WowProduct.of(gameRoot)
     try {
-        com.jrees.wowcompanion.GameConfigWtf.ensure(gameRoot, product, choice?.row)
+        // 2026-11-07: the player's region (the login prompt's Region row) is the portal the game signs in to
+        com.jrees.wowcompanion.GameConfigWtf.ensure(gameRoot, product, choice?.row, com.jrees.wowcompanion.GameRegion.chosen(context))
     } catch (e: Exception) {
         if (e.isPermissionDenied()) throw StorageAccessDeniedException(e)
         throw e

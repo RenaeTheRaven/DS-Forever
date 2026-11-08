@@ -15,10 +15,12 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
                                     private val cache: File) : Closeable {
 
     /** the whole file by fileDataID, or null ([status] says why: CascNative.UNKNOWN / NOT_PRESENT / ENCRYPTED / OTHER) */
-    fun read(fid: Int): ByteArray? = readAsset("file $fid") { CascNative.read(handle, fid) }
+    fun read(fid: Int): ByteArray? { log?.fids?.add(fid); return readAsset("file $fid") { CascNative.read(handle, fid) } }
+    /** ArtFingerprint: while an art step runs, every file it reads is recorded here (null = not recording) */
+    @Volatile var log: ArtFingerprint.Log? = null
     private val streamed = File(root, DataStaleness.STREAMED).exists()
     /** the whole file by game path, or null */
-    fun readName(path: String): ByteArray? = readAsset(path) { CascNative.readName(handle, path) }
+    fun readName(path: String): ByteArray? { log?.names?.add(path); return readAsset(path) { CascNative.readName(handle, path) } }
     @Volatile var status = CascNative.OK
         private set
     @Volatile var lastReadWhy: String? = null
@@ -73,7 +75,7 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
         val total = needs.size
         val done = java.util.concurrent.atomic.AtomicInteger()
         val ok = java.util.concurrent.atomic.AtomicInteger()
-        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(PARALLEL, total))
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(minOf(PARALLEL, total), BgThreads.factory("art-fetch"))
         try {
             for (n in needs) pool.execute {
                 if (runCatching { fetch(root, cache, File(n)) }.getOrDefault(false)) ok.incrementAndGet()
@@ -93,7 +95,7 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
     fun blp(fid: Int): Bitmap? = read(fid)?.let { toBitmap(Blp.decode(it)) }
     fun blpName(path: String): Bitmap? = readName(path)?.let { toBitmap(Blp.decode(it)) }
     /** a DB2 table, or null (a layout the reader does not know throws inside and comes back null) */
-    fun db2(fid: Int): Db2? = readAsset("table $fid") { CascNative.readDb2(handle, fid) }?.let {
+    fun db2(fid: Int): Db2? = run { log?.fids?.add(fid); readAsset("table $fid") { CascNative.readDb2(handle, fid) } }?.let {
         runCatching { Db2(it, "fid $fid") }.onFailure { error ->
             lastReadWhy = "table $fid: ${error.message ?: error.javaClass.simpleName}"
             android.util.Log.w("WCHARVEST", lastReadWhy, error)
@@ -240,7 +242,7 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
             if (missing.isEmpty()) return
             onTables?.invoke("Downloading the game's tables")
             android.util.Log.i("WCHARVEST", "vfs: fetching ${missing.size} files")
-            val pool = java.util.concurrent.Executors.newFixedThreadPool(PARALLEL)
+            val pool = java.util.concurrent.Executors.newFixedThreadPool(PARALLEL, BgThreads.factory("art-vfs"))
             val bad = java.util.concurrent.atomic.AtomicInteger()
             missing.forEach { f -> pool.execute { if (!runCatching { fetch(root, cache, f) }.getOrDefault(false)) bad.incrementAndGet() } }
             pool.shutdown()
@@ -277,7 +279,9 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
             val archiveFirst = looseMissing
             if (archiveFirst && archive()) return true
             if (download(hosts, path, rel, to, missingIsFinal = true)) return true
-            if (lastFetchWhy?.startsWith("HTTP 404") == true) looseMissing = true
+            // 1.0.17 (the player reports #17 / #22 / #23 / #25 / #32: "5 hours and only 54%"): level3.blizzard.com answers a loose file
+            // it keeps only inside an archive with 403, not 404 - every file then cost ~7 s (every host, twice) before the archive
+            if (lastFetchWhy?.let { looseRefusal(it) } == true) looseMissing = true
             return !archiveFirst && archive()
         }
 
@@ -287,7 +291,10 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
         /** the last reads' misses (prefetch only pays when many files are missing: a complete folder never pays twice) */
         internal val missWindow = MissWindow()
 
-        /** a loose game file has answered 404 (the CDN keeps them inside archives): the next ones try the archives first */
+        /** the CDN's "not here as a loose file" (404, or 403 from level3): final for that file, and the archives first from then on */
+        internal fun looseRefusal(why: String): Boolean = why.startsWith("HTTP 404") || why.startsWith("HTTP 403")
+
+        /** a loose game file has answered 404 / 403 (the CDN keeps them inside archives): the next ones try the archives first */
         @Volatile private var looseMissing = false
 
         /** why the last CDN fetch failed (HTTP 503 from <host>, timed out...): the art's message keeps the real reason */
@@ -298,7 +305,7 @@ class GameFiles private constructor(private val handle: Long, val root: File, va
         private fun download(hosts: List<String>, path: String, rel: String, to: File, missingIsFinal: Boolean = false): Boolean {
             to.parentFile?.mkdirs()
             val tmp = File(to.path + ".part")
-            val why = CdnRetry.run(hosts, final = { missingIsFinal && it == "HTTP 404" }) { host ->
+            val why = CdnRetry.run(hosts, final = { missingIsFinal && looseRefusal(it) }) { host ->
                 val c = java.net.URL("https://$host/$path/$rel").openConnection() as java.net.HttpURLConnection
                 c.connectTimeout = 15_000; c.readTimeout = 60_000
                 try {

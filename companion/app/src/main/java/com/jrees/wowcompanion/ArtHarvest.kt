@@ -100,6 +100,8 @@ object ArtHarvest {
 
     fun init(ctx: Context) {
         IconRequirements.init(ctx)
+        DeviceTier.init(ctx)
+        runCatching { MapHarvestSteps.loadNear(ctx) }           // 1.0.17: the background maps start at the player's last zone
         if (rootDir != null) return
         val app = ctx.applicationContext
         rootDir = root(app)
@@ -211,6 +213,30 @@ object ArtHarvest {
         !state.blocksPlay && GameFiles.activeBuild(GameFiles.gameRoot(ctx)) != null &&
             pending(ctx, beforePlay = true).isEmpty()
 
+    // ---------------------------------------------------------------- ArtFingerprint: a step's source files, kept beside the stamp
+    private fun fpFile(ctx: Context, s: Step) = File(root(ctx), ".fp/${s.id}.json")
+    private fun fingerprintNow(g: GameFiles, fids: Collection<Int>, names: Collection<String>): String =
+        ArtFingerprint.of(fids, names, { g.contentKey(it) }, { g.readName(it) })
+
+    private fun saveFingerprint(ctx: Context, g: GameFiles, s: Step, reads: ArtFingerprint.Log) {
+        val fids = synchronized(reads.fids) { reads.fids.toList() }; val names = synchronized(reads.names) { reads.names.toList() }
+        val rec = ArtFingerprint.Record(fids, names, fingerprintNow(g, fids, names))
+        val f = fpFile(ctx, s).apply { parentFile?.mkdirs() }
+        val tmp = File(f.path + ".part"); tmp.writeText(ArtFingerprint.toJson(rec)); if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
+        Log.i(TAG, "fingerprint ${s.id}: ${fids.size} files, ${names.size} paths")
+    }
+
+    /** stamped at this version for another build, and its recorded files give the same fingerprint in this build */
+    private fun unchanged(ctx: Context, g: GameFiles, s: Step): Boolean = runCatching {
+        val st = stamp(ctx).optJSONObject(s.id) ?: return false
+        if (st.optInt("v") != s.version || st.optString("build") == g.buildKey) return false
+        if (s.id == "icons" && st.optString("inputs") != IconRequirements.inputKey(ctx, g.buildKey)) return false
+        val rec = fpFile(ctx, s).takeIf { it.isFile }?.let { ArtFingerprint.fromJson(it.readText()) } ?: return false
+        if (rec.fids.isEmpty() && rec.names.isEmpty()) return false
+        val prev = g.log; g.log = null                                 // the check's own reads are not a step's
+        try { fingerprintNow(g, rec.fids, rec.names) == rec.fp } finally { g.log = prev }
+    }.getOrDefault(false)
+
     private fun markDone(ctx: Context, s: Step, build: String, inputs: String?) = synchronized(this) {
         // the step is whole: its resume list (any build's) goes
         File(root(ctx), ".resume").listFiles { f -> f.name.startsWith("${s.id}-") }?.forEach { it.delete() }
@@ -244,7 +270,26 @@ object ArtHarvest {
      */
     class StoppedForUpdate : InterruptedException("stopped for the game update")
     @Volatile private var stopping = false
-    private fun checkStop() { if (stopping) throw StoppedForUpdate() }
+    /** 1.0.17: a before-Play step became due while the worker runs the background ones: they give way at their next report */
+    class YieldToRequired : InterruptedException("a required step is due")
+    @Volatile private var yieldBg = false
+    @Volatile private var bgPhase = false
+    private fun checkStop() {
+        if (stopping) throw StoppedForUpdate()
+        if (yieldBg && bgPhase) throw YieldToRequired()
+        // 1.0.17 (the user's pick for the 8 / 12 GB Thors: "Pause while playing, always"): the background art waits while the game runs
+        if (bgPhase && DeviceTier.lowMemory() && LauncherHooks.gameUp()) {
+            Log.i(TAG, "harvest: paused while the game runs (${DeviceTier.model()})")
+            while (DeviceTier.lowMemory() && LauncherHooks.gameUp() && !stopping && !yieldBg) Thread.sleep(3_000)
+            Log.i(TAG, "harvest: the game is closed, the background art goes on")
+            if (stopping) throw StoppedForUpdate()
+            if (yieldBg) throw YieldToRequired()
+        }
+    }
+
+    /** the background art not finished yet (the notice before Play on the 8 / 12 GB models) */
+    fun backgroundLeft(ctx: Context): Boolean =
+        runCatching { pending(ctx, beforePlay = false).any { !it.detached } }.getOrDefault(false)
 
     /** true = no art run is left reading the game files (it ended within [waitMs]); false = it is still ending (it stops at its next report) */
     fun stopForUpdate(waitMs: Long = 30_000L): Boolean {
@@ -266,15 +311,26 @@ object ArtHarvest {
         init(app)
         synchronized(waiters) {
             if (worker?.isAlive == true) {
+                // 1.0.17 ("stuck on checking the game art"): the worker is in its background steps and a before-Play one is due now (a new
+                // icon asked for, a new build): the background step gives way, the worker runs the required ones first, then goes on
+                if (bgPhase && runCatching { needsBeforePlay(app) }.getOrDefault(false)) {
+                    yieldBg = true; firstResult = null
+                    waiters.add(onBeforePlayDone); return
+                }
                 if (!rerun) firstResult?.let { r -> onBeforePlayDone(r); return }
                 waiters.add(onBeforePlayDone); return
             }
             firstResult = null
             waiters.add(onBeforePlayDone)
             worker = Thread({
+                BgThreads.lower()                                  // the screen first (BgThreads)
                 while (true) {
                     try {
                         work(app) { r -> beforePlayDone(r) }
+                    } catch (e: YieldToRequired) {
+                        Log.i(TAG, "harvest: a background step gave way to a required one")
+                        yieldBg = false; bgPhase = false; currentStep = null
+                        continue
                     } catch (e: StoppedForUpdate) {
                         // the game update goes first: nothing failed, this run is only over (its waiters wait for the next run)
                         Log.i(TAG, "harvest: stopped for the game update")
@@ -354,7 +410,10 @@ object ArtHarvest {
             onBeforePlayDone(okFirst)
             if (!okFirst) return
             startDetached(ctx, detached)
-            if (later.isNotEmpty() && runAll(ctx, g, later, beforePlay = false)) set(State.Ready)
+            bgPhase = true
+            try {
+                if (later.isNotEmpty() && runAll(ctx, g, later, beforePlay = false)) set(State.Ready)
+            } finally { bgPhase = false }
         }
     }
 
@@ -374,6 +433,15 @@ object ArtHarvest {
             val base = before
             set(State.Running(beforePlay, base / total, s.id))
             val t0 = System.currentTimeMillis()
+            // 2026-11-07 (ArtFingerprint): stamped for another build at this version and made from the same files = the same output;
+            // only re-stamped for this build (seconds, not a rebuild). The icons step's own inputs must still match.
+            if (unchanged(ctx, g, s)) {
+                markDone(ctx, s, g.buildKey, stamp(ctx).optJSONObject(s.id)?.optString("inputs")?.takeIf { it.isNotEmpty() })
+                Log.i(TAG, "harvest step ${s.id}: its game files are unchanged, re-stamped for ${g.buildKey} in ${System.currentTimeMillis() - t0} ms")
+                stepLog[s.id] = "unchanged (re-stamped)"; before += w
+                continue
+            }
+            g.log = ArtFingerprint.Log()
             currentStep = s.id; stepLog[s.id] = "running (started ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(t0))})"
             var job = Job(ctx, g, root(ctx), s.id) { f, what -> checkStop(); set(State.Running(beforePlay, (base + f.coerceIn(0f, 1f) * w) / total, what)) }
             // a failure (often a CDN hiccup on a table) is tried again before the art says so (HarvestRetry); the last reason is shown
@@ -385,6 +453,7 @@ object ArtHarvest {
                 job = Job(ctx, g, root(ctx), s.id) { f, what -> checkStop(); set(State.Running(beforePlay, (base + f.coerceIn(0f, 1f) * w) / total, what)) }
                 s.run(job)
             }.onFailure { Log.w(TAG, "harvest step ${s.id} failed", it) }
+            val reads = g.log; g.log = null
             if (result.isFailure) {
                 val reason = result.exceptionOrNull()?.message ?: "unknown reason"
                 stepLog[s.id] = "failed after ${System.currentTimeMillis() - t0} ms: $reason"; currentStep = null
@@ -392,6 +461,7 @@ object ArtHarvest {
                 return false
             }
             markDone(ctx, s, g.buildKey, job.inputKey)
+            if (reads != null) runCatching { saveFingerprint(ctx, g, s, reads) }.onFailure { Log.w(TAG, "fingerprint ${s.id}: ${it.message}") }
             Log.i(TAG, "harvest step ${s.id} v${s.version} done in ${System.currentTimeMillis() - t0} ms")
             stepLog[s.id] = "done in ${System.currentTimeMillis() - t0} ms"; currentStep = null
             before += w

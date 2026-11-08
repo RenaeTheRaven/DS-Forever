@@ -95,6 +95,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var radialView: HomeRadialView
     /** the radial pause menu (the user 2026-10-08: Start on Home; HomePauseView) */
     private lateinit var pauseView: HomePauseView
+    /** the TARGET radial (Y out of a fight with a target; PadMap m101 / Quests q51) */
+    private lateinit var targetRadial: TargetRadialView
+    private fun tradOpen() = ::targetRadial.isInitialized && targetRadial.isOpen
     /** Bags' pin picker (the radial's "+"), hung over the room; Home's radial drives it */
     private lateinit var pinPicker: BagsPinPicker
     // our own Battle.net sign-in (LATER 29): the prompt, the login screen's watcher, and the line the start screen showed before it
@@ -156,6 +159,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var barSelect: HomeBarSelect
 
     private var tail: LogSource? = null
+    /** the game's combat log (CombatLogTail: party health), beside the game's own log; none while Streaming */
+    private var clogTail: CombatLogTail? = null
     /** WoW Forever as GameLocator found it on this device (the log, the setup's folders); set once at start */
     @Volatile private var game: GameLocator.Found? = null
         set(v) { field = v; if (::setupRunner.isInitialized) setupRunner.wowForever = v }
@@ -375,6 +380,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     fun onCreate(savedInstanceState: Bundle?) {
         // the problem report's own log (board f-problem-report): DS Forever's events, never a login, names only to hide them
         DiagLog.init(this)
+        Tr.init(this)                              // 2026-11-07: Spanish / French (the Thor's language, or Settings > System > Language)
         DataStaleness.init(this)                   // issues #8 / #9: is the game folder's Data the build's?
         if (LauncherHooks.pkg != null && !LauncherHooks.gameUp()) GameLife.launcherBack()     // issue #12
         DiagLog.event("app", "bottom screen up (inside the launcher: ${LauncherHooks.pkg != null})")
@@ -438,6 +444,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         characterView = CharacterView(this)
         // B leaves the cursor -> Home (user ruling, every room)
         characterView.onLeave = { roomLeft(Room.CHARACTER) }
+        characterView.kits = { if (::bagsView.isInitialized) bagsView.kitItems() else emptyList() }
         // tab 4 (PvP): the PVP session's page inside the room's frame (its PvpRankTab, UI Art's SPEC 6)
         characterView.pvpDrawer = PvpRankTab::draw
         PvpRankTab.onChange = { characterView.invalidate() }
@@ -561,6 +568,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             if (::radialView.isInitialized && radialView.isOpen && k != "radial" && k != "sradial" && k != "smartor") return@dpad
             // the pause menu reads its own controller while it shows: only another Start ("pause") reaches it
             if (::pauseView.isInitialized && pauseView.isOpen && k != "pause") return@dpad
+            if (tradOpen()) return@dpad                               // the target radial reads its own controller
             when (k) {
                 // Spells' router: Start with nothing holding the controller (the user's Q1: a module that holds Start keeps it)
                 // the router's word comes ~0.1-0.2 s after the app's own Start read (startPressed) already acted: dropped then
@@ -650,6 +658,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // INSIDE THE ONE APP (the native login.txt sign-in; the user: "injecting the keys is not the way to go"): the row never types -
         // its button saves / updates the login, which the game uses by itself at its next start (NativeLogin)
         StartMenu.onReport = { openReport() }
+        // 1.0.17: did the last session end badly? (LastRun; the start screen asks, Send = the ordinary report, no typing)
+        LastRun.init(this)
+        SetupBridge.sendCrash = { why -> ui.post { sendReport("Automatic crash report: $why") } }
         StartMenu.autoLogin = { HomeLoginStore.autoLogin(this) }
         StartMenu.onAutoLogin = { on -> HomeLoginStore.setAutoLogin(this, on); if (!on) NativeLogin.clear() }
         StartMenu.onChangeLogin = { restartOnSave = LauncherHooks.gameUp() && HomeLoginStore.autoLogin(this); loginPrompt.open() }
@@ -661,6 +672,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         StartMenu.onRestart = { settingsRest.onRestart() }
         StartMenu.canSwitch = { SetupBridge.exitStream != null || ModeBridge.canGoBack() }
         StartMenu.onSwitch = { if (SetupBridge.exitStream != null) SetupBridge.exitStream?.invoke() else ModeBridge.back("the Menu") }
+        // the Menu's Region: read once (Config.wtf on disk), then the choice; GameConfigWtf.ensure writes it as the portal at the next start
+        var regionNow: String? = null
+        StartMenu.region = { GameRegion.chosen(this) ?: regionNow ?: runCatching { GameRegion.current(this, GameFiles.gameRoot(this)) }.getOrDefault("us").also { regionNow = it } }
+        StartMenu.onRegion = { code -> GameRegion.choose(this, code); regionNow = code }
         startView.onLoginButton = { gear -> if (gear || LauncherHooks.pkg != null) loginPrompt.open() else signIn() }
         loginPrompt = HomeLoginPrompt(this) { login ->
             settingsView.invalidate()
@@ -854,6 +869,27 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             }
         }
         pauseView.onPick = { s -> pausePick(s) }
+        // THE TARGET RADIAL: the pause wheel's slide, close and place; a pick runs as the party menu's entries do
+        targetRadial = TargetRadialView(this, strip, { questsPad }) { cells -> guestTap(cells) }
+        // the context menus' icons (the raid markers too) asked for early, so the phone's icon harvest has them before a wheel opens
+        ui.postDelayed({ runCatching { MenuIcons.prefetch() } }, 8_000L)
+        targetRadial.onSlide = { t -> pauseSlideAll(t) }
+        targetRadial.onClose = { from -> pauseView.onClose(from) }
+        targetRadial.barsBottom = { pauseView.barsBottom?.invoke() ?: 0f }
+        targetRadial.onDo = { d, name -> targetDo(d, name) }
+        // Home's portrait menu: the context radial (the user: "no more drop down menus in any of those places"); the map module holds the
+        // controller, so the wheel reads it (READ) and the map ignores its keys meanwhile
+        mapView.radialOpen = { tradOpen() && targetRadial.opener == "portrait" }
+        mapView.onPortraitRadial = { name ->
+            targetRadial.open("portrait", TargetRadialView.Input.READ, name, { d, _ ->
+                when (d) {
+                    is PlayerMenu.Do.Run -> mapView.onPlayerMenuRun?.invoke(d.id)
+                    is PlayerMenu.Do.Secure -> mapView.onPlayerMenuSecure?.invoke(d.col)
+                    is PlayerMenu.Do.Refused -> mapView.note(d.why)
+                    else -> {}
+                }
+            }, {})
+        }
         pauseView.inFight = { homeView.inFight() }
         pauseView.barsBottom = {
             if (room != Room.HOME || !homeView.isShown || homeView.barsBottom() <= 0f) 0f else {
@@ -887,6 +923,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             addView(radialView, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(pauseView, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(targetRadial, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             // the radial's pin picker: over the room only (the bar stays below it)
             addView(pinPicker, FrameLayout.LayoutParams(
@@ -1002,6 +1040,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // the radial never stays open (its reader, its hold) while the app is away
         if (::radialView.isInitialized) radialView.shut()
         if (::pauseView.isInitialized) { pauseView.shut(); pauseView.clearHint() }
+        if (::targetRadial.isInitialized) targetRadial.shut()
         DirectPad.shutdown()
         // nothing of the game's UI stays hidden without its replacement in view
         GameUi.onVisible(false)
@@ -1018,6 +1057,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // the pause menu never stays over a room change (a whisper's jump, a game window); its own picks run after it has folded
         if (::pauseView.isInitialized && pauseView.isOpen) pauseView.shut()
         if (::pauseView.isInitialized && r != room) pauseView.clearHint()
+        if (tradOpen() && r != Room.HOME) targetRadial.shut()
         // SafePath's review belongs to Settings: it closes when another room comes up
         if (r != Room.SETTINGS && ::pathReview.isInitialized && pathReview.isOpen) pathReview.close()
         // any room change ends the bar selector first. NO GAP (the user 2026-10-06): into another room the bar's hold is KEPT for that
@@ -1069,7 +1109,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         roomMotionEnd()
         val outgoing = shownView
         val roomMotion = motion && r != room && !chatOpening && !chatClosing && outgoing != null && outgoing.isShown &&
-            !(::pauseView.isInitialized && pauseView.isOpen)
+            !(::pauseView.isInitialized && pauseView.isOpen) && !tradOpen()
         // Home is pictured as it leaves (its map and bars go back to their rooms right below); a room keeps drawing itself
         val outPicture = if (roomMotion && outgoing === homeView) viewShot(homeView) else null
         val fromRoom = room
@@ -1246,7 +1286,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         homeView.onPartyLong = { i ->
             val cells = PartyTaps.menu(live.cfg, i)
             if (cells != null && live.tapsAllowed(SystemClock.uptimeMillis()) && TapBridge.taps(this, questsPad, cells) { }) {
-                homeView.partyMenu.open(i, live.party?.m?.firstOrNull { it.i == i }?.n ?: "", byPad = false)
+                partyWheel(i, byPad = false)
             } else Log.i("WCHOME", "party: hold on $i: the menu was not asked")
         }
         homeView.onPartyTag = {
@@ -1270,6 +1310,40 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         }
     }
 
+    /** the target radial's / its list's pick: the portrait menu's routes (digit taps; a secure cell: Inspect, Set Focus; Whisper = Chat) */
+    private fun targetDo(d: PlayerMenu.Do, name: String) {
+        when (d) {
+            is PlayerMenu.Do.Run -> {
+                if (d.id >= 0) GuestPad.playerMenuRun(questsPad, d.id)?.let { TapBridge.taps(this, questsPad, it) { w -> Log.i("WCHOME", "target radial: run not sent: $w") } }
+                if (d.app == "whisper" && name.isNotEmpty()) ui.post { show(Room.CHAT); chatView.whisperTo(name) }
+            }
+            is PlayerMenu.Do.Secure -> TapBridge.taps(this, questsPad, listOf(d.row to d.col)) { w -> Log.i("WCHOME", "target radial: cell not sent: $w") }
+            is PlayerMenu.Do.Refused -> Log.i("WCHOME", "target radial: ${d.why}")
+            PlayerMenu.Do.Close, PlayerMenu.Do.None -> {}
+        }
+    }
+
+    /** Party mode's member menu as the context radial (the user: "no more drop down menus"): the PartyPad's presses drive it ([byPad]:
+     *  its Y opened it; the wheel's close taps MENU DONE), or a finger (a long press) */
+    private fun partyWheel(i: Int, byPad: Boolean) {
+        val live = PartyModel.live
+        val name = live.party?.m?.firstOrNull { it.i == i }?.n ?: ""
+        targetRadial.open("party", TargetRadialView.Input.KEYS, name, { d, who ->
+            when (d) {
+                is PlayerMenu.Do.Run -> {
+                    if (d.id >= 0) GuestPad.playerMenuRun(questsPad, d.id)?.let { TapBridge.taps(this, questsPad, it) { } }
+                    if (d.app == "whisper" && who.isNotEmpty()) ui.post { show(Room.CHAT); chatView.whisperTo(who) }
+                }
+                is PlayerMenu.Do.Secure -> TapBridge.taps(this, questsPad, listOf((if (d.row == "party") PartyModel.live.cfg?.pad?.row ?: "party" else d.row) to d.col)) { }
+                is PlayerMenu.Do.Refused -> Log.i("WCHOME", "party wheel: ${d.why}")
+                else -> {}
+            }
+        }, {
+            if (byPad) PartyTaps.menuDone(live.cfg)?.let { TapBridge.taps(this, questsPad, it) { } }
+        })
+    }
+    private fun partyWheelOpen() = tradOpen() && targetRadial.opener == "party"
+
     /** 1.1's re-ask (party row col 22): only with a known column, live, at most once per 10 s */
     private fun partyAsk(why: PartyModel.Ask) {
         val cells = PartyTaps.resend(PartyModel.live.cfg) ?: return
@@ -1290,6 +1364,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // 2026-11-04 (the user: logged in on another character, "it showed my hunter as myself in the party"): a party document from the
         // log's history may be another character's; only a CURRENT one is shown (the add-on sends its own within seconds of a login)
         if (!current) return
+        // m96: the live hit counts feed the combat-log estimate (CombatHealth)
+        val at = System.currentTimeMillis()
+        for (m in p.m) CombatHealth.counts(m.g, m.cw, m.cc, m.ch, at, m.cs)
         val live = PartyModel.live
         // m79: which reader each member's health came from, logged when it changes (2026-11-04: "staying at full health for everyone")
         p.m.joinToString(" ") { "${it.u}=${it.hs ?: "?"}" }.let { if (it != partyHsLast) { partyHsLast = it; Log.i("WCPARTY", "health sources: $it") } }
@@ -1307,14 +1384,12 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         val menu = homeView.partyMenu
         when (b.k) {
             // Y opened the player menu for b.u: the PartyPad's next presses are the menu's
-            "menu" -> PartyModel.unitIndex(b.u)?.let { i ->
-                menu.open(i, live.party?.m?.firstOrNull { it.i == i }?.n ?: "", byPad = true)
-            }
-            "key" -> if (menu.isOpen && menu.byPad) b.key?.let { menu.key(it) }
-            "off" -> if (menu.isOpen && menu.byPad) menu.close()
+            "menu" -> PartyModel.unitIndex(b.u)?.let { i -> partyWheel(i, byPad = true) }
+            "key" -> if (partyWheelOpen()) b.key?.let { targetRadial.key(it) } else if (menu.isOpen && menu.byPad) b.key?.let { menu.key(it) }
+            "off" -> { if (partyWheelOpen()) targetRadial.close("Party mode off"); if (menu.isOpen && menu.byPad) menu.close() }
         }
         // the pad's menu sub-state with no menu of ours driving it (a lost k=menu, an app restart): MENU DONE frees the presses
-        if (PartyModel.strandedMenu(b, menu.isOpen && menu.byPad)) {
+        if (PartyModel.strandedMenu(b, partyWheelOpen() || (menu.isOpen && menu.byPad))) {
             val sent = PartyTaps.menuDone(live.cfg)?.let { TapBridge.taps(this, questsPad, it) { } } == true
             Log.i("WCHOME", "party: the pad's menu sub-state with no menu here: menu done ${if (sent) "tapped" else "not sent"}")
         }
@@ -1338,12 +1413,14 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private fun partyTaker(holder: String) {
         if (!PartyModel.live.takerSeen(holder, SystemClock.uptimeMillis())) return
         if (homeView.partyMenu.isOpen) homeView.partyMenu.close()
+        if (partyWheelOpen()) targetRadial.close("Party mode left")
         val sent = PartyTaps.off(PartyModel.live.cfg)?.let { TapBridge.taps(this, questsPad, it) { w -> Log.i("WCHOME", "party: off not sent: $w") } } == true
         Log.i("WCHOME", "party: $holder took the controller: off ${if (sent) "tapped" else "not sent"}")
     }
 
     private fun partyLeaveHome(why: String) {
         if (homeView.partyMenu.isOpen) homeView.partyMenu.close()
+        if (partyWheelOpen()) targetRadial.close("Party mode left")
         if (!PartyModel.offOnLeave(PartyModel.live.party)) return
         val sent = PartyTaps.off(PartyModel.live.cfg)?.let { TapBridge.taps(this, questsPad, it) { w -> Log.i("WCHOME", "party: off not sent: $w") } } == true
         Log.i("WCHOME", "party: left Home ($why): off ${if (sent) "tapped" else "not sent"}")
@@ -1501,7 +1578,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         "tool" -> room == Room.HOME && homeView.toolWanted()
         // the consumables radial holds only while its wheel shows (b57, 13:29: the close's free went out before the capture had taken
         // the hold, so "radial" kept the controller with no wheel; a late "hold ok", a press or the holder report now frees it again)
-        "radial" -> (::radialView.isInitialized && radialView.isOpen) || (::pauseView.isInitialized && pauseView.isOpen)
+        "radial" -> (::radialView.isInitialized && radialView.isOpen) || (::pauseView.isInitialized && pauseView.isOpen) || tradOpen()
         else -> true
     }
     /** [why] names the trigger in the log line (a press, a hold ok, a holder in an interact document), so every re-free has a visible cause */
@@ -1767,7 +1844,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 if (current) mapView.learnNow()                     // the last place on a map before a crossing is the tick's, not a stale doc's
                 if (current) routePinTick()
                 // the background minimap step builds the player's own zone first (Map's nearest-first hook)
-                if (it.has("mapID") && it.has("wx")) MapHarvestSteps.near = Triple(it.optInt("mapID"), it.optDouble("wx"), it.optDouble("wy"))
+                if (it.has("mapID") && it.has("wx")) MapHarvestSteps.noteNear(this, Triple(it.optInt("mapID"), it.optDouble("wx"), it.optDouble("wy")))
                 // ... and the interiors bake its building first
                 IndoorSchedulerStep.notePosition(it)
                 lastMapAt = System.currentTimeMillis()
@@ -1798,7 +1875,17 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // a flight master's map (Map.lua taxinet): which known nodes connect (b-route-unknown-taxi); replays too (they stay true)
             // the game's player menu, read for the map module's bottom-screen copy (Quests q41): only a current one is the game's now
             // ... and Party mode's menu for a party member (q49 src = "party"): its own view over Home's left column
-            "pmenu" -> if (current) { if (msg.optString("src") == "party") homeView.partyMenu.onDoc(msg) else mapView.onPlayerMenuDoc(msg) }
+            // Bags.lua: the game's "pick an item" (an armor kit / stone / enchant) started or ended: a kit used from the Character room
+            "itarget" -> if (current) characterView.onItarget(msg.optBoolean("on"))
+            "pmenu" -> if (current) {
+                when (msg.optString("src")) {
+                    "party" -> if (partyWheelOpen()) targetRadial.fill(msg) else homeView.partyMenu.onDoc(msg)
+                    // q51: the target radial (a bare Y out of a fight with a target): opens it, or refreshes it / its list
+                    "radial" -> if (!(::pauseView.isInitialized && pauseView.isOpen) && !(::radialView.isInitialized && radialView.isOpen) &&
+                        !(tradOpen() && targetRadial.opener != "target")) targetRadial.onDoc(msg)
+                    else -> if (tradOpen() && targetRadial.opener == "portrait") targetRadial.fill(msg) else mapView.onPlayerMenuDoc(msg)
+                }
+            }
             // PARTY MODE (PARTY_BUILD.md 1, 4.7): the roster and the settings may be SHOWN from a replay; a box press and an answer only
             // count when current; nothing is ever tapped because of a replayed document
             "party" -> PartyModel.parseParty(msg)?.let { partyDoc(it, current) }
@@ -1947,7 +2034,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                         else Log.i("WCHOME", "chat room: hold refused (${msg.optString("why")})")
                     }
                     "bar" -> barSelect.onGuestAck(msg)
-                    "radial" -> if (::pauseView.isInitialized && pauseView.isOpen) pauseView.onGuestAck(msg)
+                    "radial" -> if (::targetRadial.isInitialized && targetRadial.owning) targetRadial.onGuestAck(msg)
+                        else if (::pauseView.isInitialized && pauseView.isOpen) pauseView.onGuestAck(msg)
                         else if (::radialView.isInitialized) radialView.onGuestAck(msg)
                     "home" -> { setupHoldAck(msg); homeView.auraGuestAck(msg) }
                     "tool" -> homeView.toolGuestAck(msg)
@@ -2061,6 +2149,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             "dialogpad" -> if (current) android.util.Log.w("WCDLG", "the dialogs have NO tap row: ${msg.optString("why")} (rows ${msg.optInt("rows", -1)})")
             "pvp" -> PvpModel.update(msg)   // the PvP rank (Character room tab 4) + the battleground queues (pvp session)
             "hub" -> GameUi.onHub(msg, current)
+            // hub22: a new hostile target with Start attack on: the secure /startattack cell (a live document only, never a replay)
+            "atkgo" -> if (current) GameUi.startAttack(msg.optString("row", "party"), msg.optInt("col", 36))
             "poi" -> msg.optJSONObject("poi")?.let { if (PoiHarvest.ingest(it)) refreshServices() }
             "qg" -> if (PoiHarvest.ingestQg(msg)) refreshServices()
             "character" -> {   // the bars + the Character room (character session)
@@ -2420,6 +2510,12 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         tail = PlayModes.pick(PlayModes.current, PlayModes.bridgeLog, onMessage, onStatus) {
             LogTail(follow.first(), onMessage = onMessage, onStatus = onStatus, follow = follow)
         }.also { it.start() }
+        // 2026-11-07: the combat log sits in the same Logs folder as the game's own log
+        clogTail?.stop(); clogTail = null
+        if (!streaming) java.io.File(log).parentFile?.let { dir ->
+            CombatHealth.clear()
+            clogTail = CombatLogTail(dir) { ui.post { if (!shell.hostGone()) partyRedraw() } }.also { it.start() }
+        }
         PlayModes.onChanged = sourceChanged
     }
 
@@ -2435,7 +2531,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         override fun run() { try { guardStep() } catch (t: Throwable) { Log.w("WCLOG", "exit guard: ${t.message}") }; ui.postDelayed(this, 500L) }
     }
     private fun guardStep() {
-        val wheel = (::radialView.isInitialized && radialView.isOpen) || (::pauseView.isInitialized && pauseView.isOpen)
+        val wheel = (::radialView.isInitialized && radialView.isOpen) || (::pauseView.isInitialized && pauseView.isOpen) || tradOpen()
         val needs = ExitGuard.needs(room == Room.HOME, homeView.homeGuestWanted(), wheel, homeView.mapGuarding())
         val now = SystemClock.uptimeMillis()
         if (!needs || capHolder.isNotEmpty()) { guardUnheldSince = 0L; guardOff(); return }
@@ -2552,7 +2648,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         val v = shownView as? BLeadsHome ?: return
         if (fightLeave.cell != null || barSelect.open || startView.visibility == View.VISIBLE || setupView.visibility == View.VISIBLE ||
             loginPrompt.isOpen || (::pauseView.isInitialized && pauseView.isOpen) || (::radialView.isInitialized && radialView.isOpen) ||
-            (::dialogView.isInitialized && dialogView.visibility == View.VISIBLE) ||
+            tradOpen() || (::dialogView.isInitialized && dialogView.visibility == View.VISIBLE) ||
             (::interactView.isInitialized && interactView.visibility == View.VISIBLE) || spellsOverlay.visibility == View.VISIBLE) return
         if (!v.bLeadsHome()) return
         LatLog.mark("b", "B -> Home on the press (${room.name})")
@@ -2602,6 +2698,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private fun openPause(why: String, byStart: Boolean) {
         if (::radialView.isInitialized && radialView.isOpen) return
         if (::pauseView.isInitialized && pauseView.isOpen) return       // its own reader closes it
+        if (tradOpen()) return
         if (startView.visibility == View.VISIBLE || setupView.visibility == View.VISIBLE || loginPrompt.isOpen) return
         Log.i("WCHOME", "pause: the wheel over ${room.name} ($why)")
         if (room == Room.HOME) partyLeaveHome("the pause wheel")          // the user's ruling: the wheel takes the controller: Party mode off
@@ -2630,7 +2727,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // Maybe to fix this we should slide the rooms down out of view"): the rooms' bar slides DOWN off the screen over the open (the
         // room's own exit curve) and stays down while the pause is up, the D-pad bar rising over where it was; on the close it comes back
         // up with the hub's glide ([stripBack], set by the close), so nothing of it is left behind the wheel to show through
-        if (pauseView.isOpen) {
+        if (pauseView.isOpen || tradOpen()) {
             stripBack?.cancel()
             strip.translationY = (strip.height + 4f) * roomExit.getInterpolation((t / UiKit.PAUSE_OPEN_MS).coerceIn(0f, 1f))
         } else if (stripBack?.isRunning != true) strip.translationY = 0f
@@ -2911,12 +3008,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
      */
     private fun nativeRow(s: HomeLogin.State): Pair<StartView.Login, String>? = when {
         s.realm || NativeLogin.pastLogin -> null
-        s.phase == HomeLogin.Phase.AUTH -> StartView.Login.NONE to "Enter the authenticator code on the game screen."
-        s.phase == HomeLogin.Phase.FAILED -> StartView.Login.NONE to "Sign-in failed. Enter it on the game screen."
+        // 2026-11-07 (the user: "the sign in prompts are still appearing ... if I dont push anything fast enough"): no authenticator,
+        // failure or "not signed in yet" lines either - account select read as "not signed in"; the Menu and Keyboard are the way
         !HomeLoginStore.has(this) -> StartView.Login.FIRST to "Save it once and the game signs in by itself."
         NativeLogin.firstReadAt > 0L && NativeLogin.active -> StartView.Login.NONE to "Signing in…"
-        // the file's 20 s are up and character select has not come: a code asked, or the sign-in failed
-        NativeLogin.firstReadAt > 0L -> StartView.Login.NONE to "Not signed in yet? Enter it on the game screen."
         else -> null
     }
     private var loginRevealed = false
