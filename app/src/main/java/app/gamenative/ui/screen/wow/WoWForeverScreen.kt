@@ -965,7 +965,15 @@ private val BUNDLED_DRIVERS = linkedMapOf(
     "Turnip-Balemuni-Apex-v2" to "turnip-balemuni-apex-v2.zip",
     "Turnip-MrPurple-T30" to "turnip-mrpurple-t30.zip",
     "Turnip-StevenMXZ-v27" to "turnip-stevenmxz-v27.zip",
+    // StevenMXZ "Turnip Gen8 V38-patched" (Mesa 27.0.0 + WinNative patches; built for a8xx, its device table lists FD740).
+    // The id must NOT contain "gen8": the launcher adds TU_DEBUG=nolrz to any such driver, which costs the a7xx its LRZ.
+    "Turnip-StevenMXZ-V38p" to "turnip-stevenmxz-v38-patched.zip",
 )
+
+// custom-thor: the game folder's ".ds-env" switch file: extra environment variables ("KEY=VALUE KEY2=VALUE2", spaces between,
+// "#" lines ignored), appended after the container's own so each one overrides the default (e.g. TU_DEBUG=noconform,gmem).
+private fun extraEnv(): String = switchFile(".ds-env")?.lineSequence()
+    ?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("#") }?.joinToString(" ").orEmpty()
 
 // custom-thor: the Adreno 740 renders at 1280x720 like the 8xx (measured on the Thor: 1080p is GPU-bound at ~41-46 fps);
 // the game folder's ".ds-resolution" switch file ("WIDTHxHEIGHT") overrides it.
@@ -1064,7 +1072,8 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
     val samsungEnv = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) " FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1" else ""
     val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144$samsungEnv " +
         // b-dxvk-load-crash: DXVK's own warnings into a private log (the container's vars come after DXVKHelper's "none")
-        com.jrees.wowcompanion.DxvkLogs.ENV
+        com.jrees.wowcompanion.DxvkLogs.ENV + extraEnv().let { if (it.isEmpty()) "" else " $it" }
+    Timber.i("custom-thor: extra env [%s]", extraEnv())
     return JSONObject().apply {
         put("id", CONTAINER_ID)
         put("name", "WoW Forever")
@@ -1072,7 +1081,11 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
         put("envVars", envVars)
         put("graphicsDriver", "Wrapper")
         put("graphicsDriverVersion", gpu.driver)
-        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high")
+        // custom-thor: the keys the launcher reads but the official config leaves out (it then passed WRAPPER_VK_VERSION=1.0.x);
+        // values are the generic container's defaults (Container.DEFAULT_GRAPHICSDRIVERCONFIG)
+        put("graphicsDriverConfig", "vulkanVersion=1.3,version=${gpu.driver},adrenotoolsTurnip=1,blacklistedExtensions=,maxDeviceMemory=0," +
+            "presentMode=mailbox,syncFrame=0,disablePresentWait=0,resourceType=buffer,bcnEmulation=auto,bcnEmulationType=compute," +
+            "bcnEmulationCache=0,gpuName=Device,quality=high")
         put("displayRenderer", "vulkan")
         put("dxwrapper", "dxvk-$DXVK_VERSION-1")
         put("dxwrapperConfig", "version=$DXVK_VERSION-1")

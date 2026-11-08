@@ -19,7 +19,7 @@ object SettingsTabs {
         // the housekeeping pass (the user: "I want to hide the performance tab and add a QOL tab where we move all of our quality of life
         // enhancements to"; "Build it" / "Hide it all"): QOL after Controller; PERFORMANCE HIDDEN - its settings keep their saved values
         // and keep working, the tab is never shown nor stepped onto (a saved "PERFORMANCE" opens on Home: [last])
-        HOME("Home"), CONTROLLER("Controller"), QOL("QOL"), TOP("Top screen"), ADDONS("Add-ons"), PERFORMANCE("Performance", hidden = true),
+        HOME("Home"), CONTROLLER("Controller"), QOL("QOL"), TOP("Top screen"), ADDONS("Add-ons"), PERFORMANCE("Performance"),   // custom-thor: shown again (frame limit and generation)
         SYSTEM("System")
     }
 

@@ -53,7 +53,7 @@ object FrameGen {
     // at the next game start ([takeAsk]). No game CVar, nothing in the game's files.
 
     /** Settings' choices: 40, 60, Off (0); the quick menu may hold any other value, shown as it is */
-    val LIMITS = listOf(40, 60, 0)
+    val LIMITS = listOf(30, 40, 60, 0)   // custom-thor: 30 added (a 30 base for 2x frame generation)
     /** the one-time 1.0.8 limit, for every container */
     const val LIMIT_MIGRATED = 40
     /** the launcher's limit for a container that never set one (XServerScreen: on, 60) */
