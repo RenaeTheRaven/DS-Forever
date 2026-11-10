@@ -97,6 +97,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var pauseView: HomePauseView
     /** the TARGET radial (Y out of a fight with a target; PadMap m101 / Quests q51) */
     private lateinit var targetRadial: TargetRadialView
+    /** 1.0.18: LB held on Home pictures the game's party targeting (LbPartyView) */
+    private lateinit var lbView: LbPartyView
     private fun tradOpen() = ::targetRadial.isInitialized && targetRadial.isOpen
     /** Bags' pin picker (the radial's "+"), hung over the room; Home's radial drives it */
     private lateinit var pinPicker: BagsPinPicker
@@ -586,6 +588,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         homeView.onStateChanged = { discB("Home's state") }
         homeView.onBHome = { strip.homePressed() }
         partyWire()
+        MemWatch.testBuild = runCatching { packageManager.getPackageInfo(packageName, 0).versionName?.contains("-test") == true }.getOrDefault(false)
+        MemWatch.start()                                                  // WCMEM: where the memory goes (the 1.0.17 low-memory kills)
         homeView.onPartyLeaveRest = { partyLeaveHome("a Home module full screen") }
         // Home's controller reader passes each held mask to Interact's pop-up while it shows: its Make Space ring follows the real A
         // press (display only; one getevent). In a room no reader of Home's runs: the ring falls back to Interact's document
@@ -871,6 +875,21 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         pauseView.onPick = { s -> pausePick(s) }
         // THE TARGET RADIAL: the pause wheel's slide, close and place; a pick runs as the party menu's entries do
         targetRadial = TargetRadialView(this, strip, { questsPad }) { cells -> guestTap(cells) }
+        // 1.0.18 (the user: "When holding LB i want the bottom screen to shift around like when opening a radial ... the players bar with
+        // the A button glyph ... a cross layout of the other 4 party members with the dpad glyphs ... We are just visualizing it"): on
+        // Home, LB alone held (CastView's reader) slides Home's panels aside - Party mode's view with them - and shows the targeting
+        lbView = LbPartyView(this)
+        // 1.0.19: Home's sides move only far enough for the picture (LbPartyView.SIDE_PX)
+        lbView.onSlide = { t -> if (room == Room.HOME && !pauseView.isOpen && !tradOpen()) homeView.pauseSlide(t, LbPartyView.SIDE_PX) }
+        castView.onShoulders = { lb, rb ->
+            // 1.0.19: only in the world (never over the start-up screens: the user, "The LB menu is also appearing in the app startup screen")
+            val free = room == Room.HOME && !pauseView.isOpen && !tradOpen() && !(::radialView.isInitialized && radialView.isOpen) &&
+                GameLife.worldNow && (!::chooserPanel.isInitialized || chooserPanel.visibility != View.VISIBLE)
+            lbView.lb(lb && !rb && free)
+        }
+        castView.onButtonsAlso = { m -> lbView.buttons(m) }
+        // 1.0.19: a touch on a controller button presses the game's own action (ActionBar.lua's "tcast" row)
+        castView.onTouchCast = { cell -> TapBridge.tap(this, questsPad, "tcast", cell) { why -> Log.i("WCLOG", "touch cast refused ($why)") } }
         // the context menus' icons (the raid markers too) asked for early, so the phone's icon harvest has them before a wheel opens
         ui.postDelayed({ runCatching { MenuIcons.prefetch() } }, 8_000L)
         targetRadial.onSlide = { t -> pauseSlideAll(t) }
@@ -925,6 +944,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             addView(pauseView, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(targetRadial, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(lbView, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             // the radial's pin picker: over the room only (the bar stays below it)
             addView(pinPicker, FrameLayout.LayoutParams(
@@ -1049,6 +1070,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     }
 
     private fun show(r: Room, byB: Boolean = false, motion: Boolean = true) {
+        MemWatch.room = r.name.lowercase()                                // WCMEM: what is on show
         flushBLeave()
         // PARTY MODE (1.1, 4.2): Home shown again re-asks the add-on's documents; leaving Home turns Party mode off only by the switch
         if (r == Room.HOME && room != Room.HOME) partyAsk(PartyModel.Ask.HOME_SHOWN)
@@ -1877,11 +1899,16 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // ... and Party mode's menu for a party member (q49 src = "party"): its own view over Home's left column
             // Bags.lua: the game's "pick an item" (an armor kit / stone / enchant) started or ended: a kit used from the Character room
             "itarget" -> if (current) characterView.onItarget(msg.optBoolean("on"))
+            // PadMap m104: which LB button targets whom, from the game's own bindings (the LB picture)
+            "lbmap" -> LbMap.update(msg)
             "pmenu" -> if (current) {
                 when (msg.optString("src")) {
                     "party" -> if (partyWheelOpen()) targetRadial.fill(msg) else homeView.partyMenu.onDoc(msg)
                     // q51: the target radial (a bare Y out of a fight with a target): opens it, or refreshes it / its list
-                    "radial" -> if (!(::pauseView.isInitialized && pauseView.isOpen) && !(::radialView.isInitialized && radialView.isOpen) &&
+                    // q54: a re-read after a run (again = 1) only refreshes an open wheel; it never opens one (the user: Trade "doesn't work":
+                    // the wheel came back by itself and the next B closed it)
+                    "radial" -> if (msg.optInt("again") == 1) { if (tradOpen() && targetRadial.opener == "target") targetRadial.fill(msg) }
+                        else if (!(::pauseView.isInitialized && pauseView.isOpen) && !(::radialView.isInitialized && radialView.isOpen) &&
                         !(tradOpen() && targetRadial.opener != "target")) targetRadial.onDoc(msg)
                     else -> if (tradOpen() && targetRadial.opener == "portrait") targetRadial.fill(msg) else mapView.onPlayerMenuDoc(msg)
                 }
@@ -2022,7 +2049,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 // counts as shown (the map module: freed at 18:29:17 / 18:29:47, then re-held by the app). Look again after a short grace
                 if (current && msg.optString("op") == "hold" && msg.optBoolean("ok") && !guestShown(gid))
                     strip.postDelayed({ if (!guestShown(gid)) refree(gid, "hold ok") }, 400L)
-                if (op == "pmenurun") mapView.onPlayerMenuRan(msg)
+                if (op == "pmenurun") {
+                    // every menu run's answer in the log (the user: Trade "doesn't work" - its answer was nowhere to be read)
+                    Log.i("WCHOME", "menu run: ${if (msg.optBoolean("ok")) "done" else "refused (${msg.optString("why")})"}")
+                    mapView.onPlayerMenuRan(msg)
+                }
                 when (gid) {
                     "settings" -> settings.pad.onGuestAck(msg)
                     "quests" -> questsView.onGuestAck(msg)
@@ -2515,6 +2546,17 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         if (!streaming) java.io.File(log).parentFile?.let { dir ->
             CombatHealth.clear()
             clogTail = CombatLogTail(dir) { ui.post { if (!shell.hostGone()) partyRedraw() } }.also { it.start() }
+            // 1.0.19 (the user's pick "Delete ours older than a day"): the combat log files (Party mode's, PadMap m92 / m95-97) piled up in
+            // the game's Logs folder (264 MB on the Thor in two days); only WoWCombatLog-*.txt older than 24 h, nothing else there
+            Thread {
+                val cut = System.currentTimeMillis() - 24 * 3600_000L
+                var n = 0; var bytes = 0L
+                dir.listFiles { f -> f.isFile && f.name.startsWith("WoWCombatLog") && f.name.endsWith(".txt") && f.lastModified() < cut }?.forEach { f ->
+                    val len = f.length()
+                    if (runCatching { f.delete() }.getOrDefault(false)) { n++; bytes += len }
+                }
+                if (n > 0) Log.i("WCLOG", "old combat logs deleted: $n files, ${bytes / (1024 * 1024)} MB")
+            }.apply { isDaemon = true; name = "clog-clean" }.start()
         }
         PlayModes.onChanged = sourceChanged
     }

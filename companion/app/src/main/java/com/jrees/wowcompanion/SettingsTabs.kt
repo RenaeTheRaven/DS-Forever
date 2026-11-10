@@ -19,7 +19,9 @@ object SettingsTabs {
         // the housekeeping pass (the user: "I want to hide the performance tab and add a QOL tab where we move all of our quality of life
         // enhancements to"; "Build it" / "Hide it all"): QOL after Controller; PERFORMANCE HIDDEN - its settings keep their saved values
         // and keep working, the tab is never shown nor stepped onto (a saved "PERFORMANCE" opens on Home: [last])
-        HOME("Home"), CONTROLLER("Controller"), QOL("QOL"), TOP("Top screen"), ADDONS("Add-ons"), PERFORMANCE("Performance"),   // custom-thor: shown again (frame limit and generation)
+        // 2026-11-09 (the user: "I want to get lossless re added back into the settings", the pick "Unhide the Performance tab"): Performance
+        // is back on the row, as it was: the frame limit and Lossless frame generation, then Indoor maps
+        HOME("Home"), CONTROLLER("Controller"), QOL("QOL"), TOP("Top screen"), ADDONS("Add-ons"), PERFORMANCE("Performance"),
         SYSTEM("System")
     }
 
@@ -49,7 +51,7 @@ object SettingsTabs {
         GAME_UI(Tab.TOP, "Game UI on the top screen", listOf("Minimap", "Controller bars, buffs and XP", "Quest tracker", "Chat window",
             "NPC windows", "Loot window",
             // hub17 (the HUD-mode split): the game's own frames and nameplates, the cast bar and the tooltips, as switches
-            "Player frame", "Target frame", "Party frames", "Cast bar", "Enemy nameplates", "Hide game tooltips")),
+            "Player frame", "Target bar", "Target health text", "Target of target", "Target frame", "DS party frames", "Party frames", "Cast bar", "Enemy nameplates", "Hide game tooltips")),
         MAP(Tab.HOME, "Map", listOf("Minimap zoom outdoors", "Minimap zoom indoors", "Quest tracking", "World map")),
         CHAT(Tab.HOME, "Chat", listOf("Message input")),
         // 1.0.9 (the user, on Spoken: "make an addon section of our settings"): one block per third-party add-on (ThirdPartyAddons)
@@ -64,7 +66,7 @@ object SettingsTabs {
         LANGUAGE(Tab.SYSTEM, "Language", listOf("Language")),
         GAME(Tab.SYSTEM, "Game", listOf("Reload game UI", "Battle.net login", "Problem report")),
         // 1.0.17 (the user's pick "A setting, off by default"): the lighter behaviour on any Thor (System: Performance is hidden)
-        LIGHTER(Tab.SYSTEM, "Lighter mode", listOf("Lighter mode")),
+        LIGHTER(Tab.SYSTEM, "Lighter mode", listOf("Lighter mode", "Low-memory graphics")),
         STREAMING(Tab.SYSTEM, "Streaming", listOf("Stream settings")),
         COMPANION(Tab.SYSTEM, "Companion", listOf("Status")),
     }

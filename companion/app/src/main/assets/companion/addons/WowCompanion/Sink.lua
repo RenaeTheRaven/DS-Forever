@@ -192,3 +192,4 @@ function WC.emit(tbl)
 end
 
 function WC.seqNow() return seq end
+

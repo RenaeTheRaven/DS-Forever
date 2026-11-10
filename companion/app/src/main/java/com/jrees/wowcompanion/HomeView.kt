@@ -594,6 +594,7 @@ class HomeView(
         val d = HomeFightFace.dpadIcons(map, fightNow)
         castView.fightDpad = d
         castView.fightIds = HomeFightFace.ids(map, fightNow)            // b-combat-bar-states: their state by spell id
+        castView.trigFights = HomeFightFace.trigFights(map, fightNow)   // the LT / RT / LT+RT In-combat spells, in fights only
         // test22 (the user: "I actually hate the form mark. Remove that."): no form mark on the bars, in a fight or otherwise
         // ONE line per change, so one approved log read proves what the toolbar's D-pad was given (Tracking's ask after test18)
         if (d != dpadSaid) { dpadSaid = d; Log.i("WCLOG", "dpad draw: fight=$fightNow dpad=$d") }
@@ -1648,9 +1649,12 @@ class HomeView(
      * card over it and the auras) right, each on UiKit.pauseOut's curve; [t] = 0 puts them all back. Only Home's own parts move (the
      * bar is the pause view's); a move of Home's own state never runs meanwhile (the wheel holds the controller and covers the touch).
      */
-    fun pauseSlide(t: Float) {
-        if (t == pauseT) return
-        pauseT = t
+    /** [sidePx] > 0 (1.0.19, the LB picture; the user: "I donw want the sides to slide ALL of the way out, just enough to make space for
+     *  the selections"): the side parts move only that far, eased, a little dimmed; the controller bars as the pause has them */
+    private var pauseSide = 0f
+    fun pauseSlide(t: Float, sidePx: Float = 0f) {
+        if (t == pauseT && sidePx == pauseSide) return
+        pauseT = t; pauseSide = sidePx
         val screen = RectF(0f, 0f, width.toFloat(), height.toFloat())
         // f-pause-bars (the user: "I dont think I want the controller top part to slide off screen"): over Home the controller stays,
         // only stepping back to [pauseBarsDim] (the title row lies over its lower half); elsewhere its old slide
@@ -1678,6 +1682,14 @@ class HomeView(
             v.translationX = o[0] * kx; v.translationY = o[1] * ky
             // the state's own fades leave every shown part at 1 when settled: the pause's alpha is the only one meanwhile
             if (v.visibility == View.VISIBLE) v.alpha = o[2]
+            // the LB picture (the user: "don't make the top controller part shift away"): the controller stays as it is
+            if (sidePx > 0f && p == Part.BARS) { v.translationX = 0f; v.translationY = 0f; if (v.visibility == View.VISIBLE) v.alpha = 1f }
+            if (sidePx > 0f && p != Part.BARS) {
+                val e = (t / UiKit.PAUSE_OPEN_MS).coerceIn(0f, 1f)
+                val ee = 1f - (1f - e) * (1f - e)
+                v.translationX = (if (o === left) -1f else 1f) * sidePx * ee; v.translationY = 0f
+                if (v.visibility == View.VISIBLE) v.alpha = 1f - 0.35f * ee
+            }
         }
         invalidate()
     }
@@ -1738,9 +1750,15 @@ class HomeView(
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
         if (!barsDown) return false
-        if (e.actionMasked == MotionEvent.ACTION_UP) {
-            barsDown = false
-            if (inBars(e) && flow.tapBars()) changed()
+        // 1.0.19 (the user: "When touching the top controller stuff I don't want it to open the old controller room. Its time to retire
+        // that. Instead the buttons should touch cast the skills"): the touch goes to the controller's buttons (CastView.touchDown / Up)
+        val cv = castView.takeIf { it.parent === barsSlot }
+        val lx = e.x - barsSlot.left - barsSlot.translationX - (cv?.left ?: 0) - (cv?.translationX ?: 0f)
+        val ly = e.y - barsSlot.top - barsSlot.translationY - (cv?.top ?: 0) - (cv?.translationY ?: 0f)
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> cv?.touchDown(lx, ly)
+            MotionEvent.ACTION_UP -> { barsDown = false; if (inBars(e)) cv?.touchUp(lx, ly) }
+            MotionEvent.ACTION_CANCEL -> barsDown = false
         }
         return true
     }

@@ -21,7 +21,7 @@ local WC = _G.WowCompanion
 if type(WC) ~= "table" or type(WC.S) ~= "function" or type(WC.send) ~= "function" then return end
 local S, SN, CALL = WC.S, WC.SN, WC.CALL
 
-local PV = "m103"               -- bump on every change; m103: the game's X (interact) glyph over an NPC target trumps our Y glyph (the user, 2026-11-07); Trail's friendly nameplates now follow a friendly target; m102: the target radial and its Y glyph follow the controller's GROW (the user: "I want it to go away when I /startattack, same rules as the button grow animation"): gone while a fight or an attack is on and not given back by B, back after B; m101: THE TARGET RADIAL (the user, 2026-11-07): out of a fight, a bare Y with a target opens the app's radial (wc-kind "tradial", no game action; Quests q51 reads the target's menu) and the game's own Y glyph shows over the target (its nameplate, else beside the target frame); m100: Party mode EXPERIMENTAL, off by default (Hub hub25 WC.partyOk): Select stays the game's key and Party mode ends (out of combat) while it is not allowed; m99: B in a fight - the first press gives the bars back AND stops the attack (the target kept), the next one clears the target; Smart Y's fight buff only when it was missing at the fight's start, once a fight; m98: each member's live CAST count (cs, UNIT_SPELLCAST_SUCCEEDED) for the app's mana estimate (the user: "The mana bars always show 100%"); m97: the combat log's stop and start a moment APART (in the same instant the game wrote nothing - test12 measured 2.5 min late again), a "clog" tick report every 12 stops; m96: each member's live HIT COUNTS (cw wounds, cc crits, ch heals: UNIT_COMBAT, amounts hidden) for the app's calibrated estimate; the combat log written out every 5 s OUT of a fight (in a fight the game ignores it - measured); m95: in a fight the combat log is stopped and started every 3 s (the game writes it only every ~5 min otherwise; the user picked "Try the restart trick"), its chat lines hidden; m94: m93's snippet comment held the word f-u-n-c-t-i-o-n, which the game's secure checker refuses even in a comment - every A / X / Y / B / D-pad press did nothing (the user, test9); m93: SMART Y IN A FIGHT - with no fight spell on Y (or given back by B), Y casts the top buff of your Smart buff list (wc-smarty-cb, armed out of combat); m92: each party member's GUID (g) for the app's combat-log health; Advanced Combat Logging and the combat log switched on at login (the user's ruling 2026-11-07); m91: the party row's column 36 is a secure /startattack cell (WC.atkCell: Hub's Start attack on hostile target); m90: after a fight with hits taken, food is due (90 s, until eating) - the game's eating rule; m89: a hit with a hidden amount counts as 6 % of the max health (Smart Y food by hits taken); m88: UNIT_COMBAT seen / hidden-amount counts in the why line (uc); m87: Y is routed while Smart Y is on, even with no In-combat spell on Y (Smart Y never heard a bare Y before); m86: health read from the DRAWN bar fill (texture width / bar width) when the value is secret; your own cell from the player frame first; m85: a party member's error no longer drops the party document (reported once, probe partyerr); Manners' prompt always hidden; m84: your own party cell takes a plain reading before the vitals' estimate (hs vit:<src>); m83: party members found by the party count / name too (UnitExists may be secret); m82: the party roster looked at again 2 / 5 / 10 s after a login (tokens come late); m81: a fight spell's cooldown starts when its cast lands (UNIT_SPELLCAST_SUCCEEDED: Raptor Strike's swing) and stands against GCD / inactive reads; a failed tooltip cooldown read is tried again; m80: a party member out of range by the game's UnitInRange when no spell answers (rng); m79: party health read through any plain reader (the unit, its percent, the game's party bars) before the estimate, its source in the document (hs); m78: MANNERS ON SMART Y (after food / water and your buffs; its prompt hidden); m77: PARTY MODE (PARTY_BUILD.md: the party pad, Select, the party row and documents); m76: Smart Y On / Off per character (off by default: Y as before Smart Y); m75: Smart Y's buff before food / drink when the mana covers it; every fight spell's cooldown; m74: Smart Y uses a quest's item on its objective target; m73: WC.vitals() for other add-ons (HUD mode's resource bar); m72: the vitals diagnostic removed (its secure snippet errored on every load); m71: the not-enough-mana set for the app's spell pictures; m70: Smart Y's health / mana MODEL where every reader is secret (UNIT_COMBAT, cast costs, regen); m69: the diagnostic round 5 (events: regen rate, UNIT_COMBAT, the combat log, food auras); m68: the diagnostic round 4 (GUID percent, the calculator by name, the secure env); m67: the diagnostic round 3 (heal prediction, curves, a status bar); m66: the diagnostic in short lines, the queries with arguments; m65: the vitals DIAGNOSTIC (one read-only cap line per load: what is secret and why); m64: Smart Y reads health / mana through whatever this client leaves plain (secret values); m63: Smart Y's food / drink found by the item's class too, and why nothing was picked; m62: Smart buffs (the player's buff rows after food / water, OR rows by a wheel); m61: Smart Y (food / drink from the bags out of combat, nothing targeted); m60: a pole in hand, X still interacts when there is something to interact with; m59: a fishing pole in the main hand makes a bare X Fishing / Interact; m58: the forms' own In-combat spells get their state too (mana / range tint)
+local PV = "m122"               -- bump on every change; m122: the "soft" document retired (the LB picture shows no line over you: the user, "Scrap the soft target bit" ... "remove the L target"); m121: the LB picture's top line - what LB ALONE is bound to (lbmap tap / tapn, read from the game) and what you soft-target now (the "soft" document: soft enemy / friend / interact names, on change); m120: the Y in the layout's own glyph set (Nintendo = the white Gamepad_Rev_Y; the user: "why is the Y yellow when im using the nintendo glyphs?"); the game's X over an NPC trumps the Y also when the game will not say it is the same unit (secret reads count as the same); m119: the inspect glyph is the game's Y on every layout (the user: "the inspect glyph is Y not X"); m118: the target bar wears Hub's OWN prompt right of the bar (the user: "it needs to be to the right with our custom Icon"): Spells only says the letter (WC.tgPrompt), no glyph of ours on the bar; m117: the Y glyph over the nameplate again AND a smaller one beside the target bar's name (the user: "the glyphs still need to appear over the name plates"); the GROW rule alone for Hub's nameplate hiding (WC.tgGrown; "the hide name plate needs to have the same rules as the hide glyph"); m116 is the hunt build's; m115: the Y glyph beside the name on Hub's target bar while the bar shows (the user: "it should have the button glyph"); m112: the combat log (m92 / m95-97) ONLY while Party mode is allowed (WC.partyOk; the user, 2026-11-09: "Only while Party mode is on"); our Advanced Combat Logging given back when it is not (aclOurs; once for 1.0.17 / 1.0.18, aclReset1); m111 is the hunt build's; m110: Party mode's picked unit and the LB map for Hub's own party frames (WC.padMap.party.box / .lb, read only); m108: the several spell radials (m105) taken out of 1.0.18 (bisect test21: with them the loot window's close ran SetPreferredGamepadInteractTarget tainted by this add-on); one radial as in 1.0.17; m107: Manners' PreClick / PostClick are never run from our code (its code ran as ours: the taint log's buff frame / gamepad binding stack blamed on WowCompanionSpells); its armed prompt is only read; m106: the Y glyph over the target is OUR texture with the game's atlas (no Blizzard InputIconTextureFrameTemplate: its code ran tainted and tainted the gamepad UI -> SetPreferredGamepadInteractTarget forbidden; the taint log, 2026-11-08); m105: a command per spell radial (DSSRADIAL2..6, shown while that radial exists; WC.padMapDropCommand); m104: the LB party-target map ("lbmap": which LB + button targets you / party1..4, read from the game's own bindings) for the app's LB view; m103: the game's X (interact) glyph over an NPC target trumps our Y glyph (the user, 2026-11-07); Trail's friendly nameplates now follow a friendly target; m102: the target radial and its Y glyph follow the controller's GROW (the user: "I want it to go away when I /startattack, same rules as the button grow animation"): gone while a fight or an attack is on and not given back by B, back after B; m101: THE TARGET RADIAL (the user, 2026-11-07): out of a fight, a bare Y with a target opens the app's radial (wc-kind "tradial", no game action; Quests q51 reads the target's menu) and the game's own Y glyph shows over the target (its nameplate, else beside the target frame); m100: Party mode EXPERIMENTAL, off by default (Hub hub25 WC.partyOk): Select stays the game's key and Party mode ends (out of combat) while it is not allowed; m99: B in a fight - the first press gives the bars back AND stops the attack (the target kept), the next one clears the target; Smart Y's fight buff only when it was missing at the fight's start, once a fight; m98: each member's live CAST count (cs, UNIT_SPELLCAST_SUCCEEDED) for the app's mana estimate (the user: "The mana bars always show 100%"); m97: the combat log's stop and start a moment APART (in the same instant the game wrote nothing - test12 measured 2.5 min late again), a "clog" tick report every 12 stops; m96: each member's live HIT COUNTS (cw wounds, cc crits, ch heals: UNIT_COMBAT, amounts hidden) for the app's calibrated estimate; the combat log written out every 5 s OUT of a fight (in a fight the game ignores it - measured); m95: in a fight the combat log is stopped and started every 3 s (the game writes it only every ~5 min otherwise; the user picked "Try the restart trick"), its chat lines hidden; m94: m93's snippet comment held the word f-u-n-c-t-i-o-n, which the game's secure checker refuses even in a comment - every A / X / Y / B / D-pad press did nothing (the user, test9); m93: SMART Y IN A FIGHT - with no fight spell on Y (or given back by B), Y casts the top buff of your Smart buff list (wc-smarty-cb, armed out of combat); m92: each party member's GUID (g) for the app's combat-log health; Advanced Combat Logging and the combat log switched on at login (the user's ruling 2026-11-07); m91: the party row's column 36 is a secure /startattack cell (WC.atkCell: Hub's Start attack on hostile target); m90: after a fight with hits taken, food is due (90 s, until eating) - the game's eating rule; m89: a hit with a hidden amount counts as 6 % of the max health (Smart Y food by hits taken); m88: UNIT_COMBAT seen / hidden-amount counts in the why line (uc); m87: Y is routed while Smart Y is on, even with no In-combat spell on Y (Smart Y never heard a bare Y before); m86: health read from the DRAWN bar fill (texture width / bar width) when the value is secret; your own cell from the player frame first; m85: a party member's error no longer drops the party document (reported once, probe partyerr); Manners' prompt always hidden; m84: your own party cell takes a plain reading before the vitals' estimate (hs vit:<src>); m83: party members found by the party count / name too (UnitExists may be secret); m82: the party roster looked at again 2 / 5 / 10 s after a login (tokens come late); m81: a fight spell's cooldown starts when its cast lands (UNIT_SPELLCAST_SUCCEEDED: Raptor Strike's swing) and stands against GCD / inactive reads; a failed tooltip cooldown read is tried again; m80: a party member out of range by the game's UnitInRange when no spell answers (rng); m79: party health read through any plain reader (the unit, its percent, the game's party bars) before the estimate, its source in the document (hs); m78: MANNERS ON SMART Y (after food / water and your buffs; its prompt hidden); m77: PARTY MODE (PARTY_BUILD.md: the party pad, Select, the party row and documents); m76: Smart Y On / Off per character (off by default: Y as before Smart Y); m75: Smart Y's buff before food / drink when the mana covers it; every fight spell's cooldown; m74: Smart Y uses a quest's item on its objective target; m73: WC.vitals() for other add-ons (HUD mode's resource bar); m72: the vitals diagnostic removed (its secure snippet errored on every load); m71: the not-enough-mana set for the app's spell pictures; m70: Smart Y's health / mana MODEL where every reader is secret (UNIT_COMBAT, cast costs, regen); m69: the diagnostic round 5 (events: regen rate, UNIT_COMBAT, the combat log, food auras); m68: the diagnostic round 4 (GUID percent, the calculator by name, the secure env); m67: the diagnostic round 3 (heal prediction, curves, a status bar); m66: the diagnostic in short lines, the queries with arguments; m65: the vitals DIAGNOSTIC (one read-only cap line per load: what is secret and why); m64: Smart Y reads health / mana through whatever this client leaves plain (secret values); m63: Smart Y's food / drink found by the item's class too, and why nothing was picked; m62: Smart buffs (the player's buff rows after food / water, OR rows by a wheel); m61: Smart Y (food / drink from the bags out of combat, nothing targeted); m60: a pole in hand, X still interacts when there is something to interact with; m59: a fishing pole in the main hand makes a bare X Fishing / Interact; m58: the forms' own In-combat spells get their state too (mana / range tint)
 -- m40 S0, THE HOTFIX (the user's ruling 2026-10-09: "everything with the controller settings (outside of changing spells on the normal
 -- toolbars) should kind of be an accessory to the addon and not affect peoples normal set up on their charactors"; their pick "stage it
 -- now"): NOTHING here creates or edits a macro, or writes a key binding, any more. Start attack on cast and the commands / fight spells
@@ -904,23 +904,121 @@ local function T(fn) local ok, v = pcall(fn); if ok then return v end end      -
 -- combat, routerBind); the snippet turns a bare Y with a target into "tradial" (no game action), the post-click reads the target's menu
 -- (Quests q51, src "radial") and the app opens its wheel. THE GLYPH: the game's own input icon (InputIconTextureFrameTemplate, PAD4) on
 -- an add-on frame of ours, anchored over the target's nameplate (read only), else beside TargetFrame; shown only while Y would open it.
+-- m104 THE LB PARTY-TARGET MAP (the user, 2026-11-08: "When holding LB i want the bottom screen to shift around ... the players bar with the
+-- A button glyph, and below that ... a cross layout of the other 4 party members with the dpad glyphs ... the default controller behavior
+-- for selecting a party member to target. We are just visualizing it"; which direction is which: "Not sure: read it from the game").
+-- LB is one of the game's emulated modifiers (GamePadEmulateCtrl / Shift / Alt = "PADLSHOULDER"); the keys of TARGETSELF and
+-- TARGETPARTYMEMBER1..4 in the controller's binding context name the buttons. READ ONLY (GetCVar / GetBindingKey); the document "lbmap"
+-- says { mod, self, p1..p4 = "PAD1" / "PADDUP" ... or nil, keys = every key found } at login and when the bindings change.
+OV.lbmap = {}
+OV.lbmap.ACTS = { self = "TARGETSELF", p1 = "TARGETPARTYMEMBER1", p2 = "TARGETPARTYMEMBER2", p3 = "TARGETPARTYMEMBER3", p4 = "TARGETPARTYMEMBER4" }
+OV.lbmap.modOf = function()
+    for _, m in ipairs({ "Ctrl", "Shift", "Alt" }) do
+        if TS(function() return GetCVar("GamePadEmulate" .. m) end) == "PADLSHOULDER" then return m:upper() end
+    end
+    return nil
+end
+-- the keys bound to [act] (the controller's context first, then the plain one), every one
+OV.lbmap.keysOf = function(act)
+    local out, seen = {}, {}
+    for _, ctx in ipairs({ bindCtx() or false, false }) do
+        local r = { pcall(GetBindingKey, act, nil, ctx or nil) }
+        if r[1] then
+            for i = 2, #r do
+                local k = r[i]
+                if type(k) == "string" and WC.isPlain(k) and not seen[k] then seen[k] = true; out[#out + 1] = k end
+            end
+        end
+    end
+    return out
+end
+-- the button under the LB modifier ("CTRL-PADDUP" -> "PADDUP"), or nil
+OV.lbmap.button = function(keys, mod)
+    if not mod then return nil end
+    local pre = mod .. "-"
+    for _, k in ipairs(keys) do
+        if k:sub(1, #pre) == pre then
+            local b = k:sub(#pre + 1)
+            if b:match("^PAD") and not b:find("-") then return b end
+        end
+    end
+    return nil
+end
+OV.lbmap.send = function()
+    local mod = OV.lbmap.modOf()
+    local doc = { type = "lbmap", v = PV, mod = mod, keys = {} }
+    local last = {}
+    for name, act in pairs(OV.lbmap.ACTS) do
+        local keys = OV.lbmap.keysOf(act)
+        doc.keys[name] = #keys > 0 and keys or nil
+        doc[name] = OV.lbmap.button(keys, mod)
+        last[name] = doc[name]
+    end
+    OV.lbmap.last = last                                -- m110: Hub's party frames read it (no binding read of their own)
+    -- m121 (the user: "what LB will target if I release with no buttons"): a tap of the modifier button alone fires its own binding -
+    -- its action and the game's name for it (read only)
+    for _, ctx in ipairs({ bindCtx() or false, false }) do
+        local ok, a = pcall(GetBindingAction, "PADLSHOULDER", true, ctx or nil)
+        if ok and type(a) == "string" and a ~= "" and WC.isPlain(a) then doc.tap = a; break end
+    end
+    if doc.tap then
+        local n = _G["BINDING_NAME_" .. doc.tap]
+        if type(n) == "string" and WC.isPlain(n) then doc.tapn = n end
+    end
+    pcall(function() WC.send(WC.encode(doc)); WC.push() end)
+end
+do
+    local f = CreateFrame("Frame")
+    for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "UPDATE_BINDINGS", "CVAR_UPDATE" }) do pcall(f.RegisterEvent, f, e) end
+    f:SetScript("OnEvent", function(_, e, a1)
+        if e == "CVAR_UPDATE" and not (type(a1) == "string" and a1:find("GamePadEmulate")) then return end
+        pcall(C_Timer.After, 2, function() pcall(OV.lbmap.send) end)
+    end)
+end
+
 OV.tg = { f = nil, at = nil }
 OV.tradialOn = function() return true end
 OV.tg.read = function()
     if type(WC.pmenu) == "table" and type(WC.pmenu.read) == "function" then WC.pmenu.read("target", "radial") end
 end
+-- m106 (the game's taint log, 2026-11-08, after the user's "a ton of lua errors"): the glyph was Blizzard's InputIconTextureFrameTemplate,
+-- and its SetInputKey ran Blizzard's input-icon code (RefreshIconTextures / ApplyTextureLayout) as OUR code: the shared input-icon state
+-- went tainted, then the gamepad UI (the buff frame's prompts, the prompted-binding footer, the loot / quest windows' binding stack) and
+-- SetPreferredGamepadInteractTarget was forbidden from then on. Now it is OUR frame and OUR texture, with the game's own glyph atlas
+-- (Gamepad_Ltr_Y_64; the Nintendo diamond's top button = Gamepad_Rev_X_64, the layout the room keeps): no Blizzard code runs.
+OV.tg.atlasOf = function()
+    -- m119 (the user, 2026-11-09: "the inspect glyph is Y not X"): the button that opens the wheel is Y; m120: in the layout's own set -
+    -- the Nintendo glyphs (swap) the white Rev_Y, the plain layout the lettered Ltr_Y
+    local db = _G.WowCompanionSpellsDB
+    local plain = type(db) == "table" and db.padLayout == "plain"
+    return plain and "Gamepad_Ltr_Y_64" or "Gamepad_Rev_Y_64"
+end
 OV.tg.make = function()
     if OV.tg.f then return OV.tg.f end
-    local ok, f = pcall(CreateFrame, "Frame", "WowCompanionTargetY", UIParent, "InputIconTextureFrameTemplate")
-    if ok and f then
-        pcall(function() f:SetInputKey("PAD4") end)
-    else
-        f = CreateFrame("Frame", "WowCompanionTargetY", UIParent)
-        local t = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"); t:SetPoint("CENTER"); t:SetText("Y"); f.wcText = t
-    end
+    local f = CreateFrame("Frame", "WowCompanionTargetY", UIParent)
+    local t = f:CreateTexture(nil, "OVERLAY")
+    t:SetAllPoints(f)
+    f.wcTex = t
     f:SetSize(36, 36); f:SetFrameStrata("HIGH"); f:EnableMouse(false); f:Hide()
     OV.tg.f = f
     return f
+end
+-- the atlas for the layout now (set again only when it changes); no atlas on this client = the letter
+OV.tg.look = function(f)
+    local a = OV.tg.atlasOf()
+    if f.wcAtlas == a then return end
+    f.wcAtlas = a
+    local ok = pcall(function() f.wcTex:SetAtlas(a) end) and pcall(function() return f.wcTex:GetAtlas() end)
+    if ok then
+        if f.wcText then f.wcText:Hide() end
+        f.wcTex:Show()
+    else
+        f.wcTex:Hide()
+        if not f.wcText then
+            f.wcText = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge"); f.wcText:SetPoint("CENTER")
+        end
+        f.wcText:SetText("Y"); f.wcText:Show()
+    end
 end
 -- the glyph's place now: "plate" (the target's nameplate), "frame" (beside TargetFrame), "top" (no frame either), nil = not shown
 OV.tg.want = function()
@@ -928,28 +1026,54 @@ OV.tg.want = function()
     local yb = face.buttons[6]
     if not yb or not (R.bound and R.bound[6]) or R.aside then return nil end
     -- m102: the controller's GROW (Home's rule, PRE's `sw`): a fight or an attack on, not given back by B -> no glyph
-    local grown = (TS(function() return yb:GetAttribute("wc-state") end) == "fight" or TB(function() return yb:GetAttribute("wc-pre") end))
-        and not TB(function() return yb:GetAttribute("wc-given") end)
-    if grown then return nil end
+    if OV.tg.grown() then return nil end
     -- m103 (the user, 2026-11-07: "when there is an x interactable glyph that should trump the Y glyph for NPCs"): an NPC target that
     -- is also the game's soft-interact unit wears the game's own X; no Y over it (Y still opens the wheel)
-    if T(function() return UnitIsPlayer("target") end) ~= true and T(function() return UnitIsUnit("target", "softinteract") end) == true then
+    -- m120 (the user, 2026-11-09: "on the NPCs that have an X interact should trump the Y"): the readings may be secret - the comparisons
+    -- run inside the pcall, and an answer the game will not give counts as "the same unit" (only a plain "not the same" keeps the Y)
+    if T(function() return UnitIsPlayer("target") == true end) ~= true
+        and T(function() return UnitExists("softinteract") == false end) ~= true
+        and T(function() return UnitIsUnit("target", "softinteract") == false end) ~= true then
         return nil
     end
     -- a quest item for this target is Y's press (m74), not the radial
     if TS(function() return yb:GetAttribute("wc-qitem") end) and TS(function() return yb:GetAttribute("wc-qitem-u") end) ~= "soft" then return nil end
+    -- m115 (the user, 2026-11-09: the target bar "should have the button glyph"): beside the name on Hub's target bar while it shows
+    local okB, barName = pcall(function()
+        local uf = WC.uf
+        return type(uf) == "table" and uf.target and uf.tb and uf.tb.f and uf.tb.f:IsShown() and uf.tb.f.name or nil
+    end)
+    if not okB then barName = nil end
+    -- m117: over the nameplate first (the bar's own small glyph rides along: the third answer)
     local okP, plate = pcall(function() return C_NamePlate.GetNamePlateForUnit("target") end)
-    if okP and plate then return "plate", plate end
+    if okP and plate then return "plate", plate, barName end
+    if barName then return "bar", barName end
     if _G.TargetFrame then return "frame", _G.TargetFrame end
     return "top", UIParent
 end
+-- m102 / m117: the GROW alone - a fight or an attack on, not given back by B (true / false; nil = no Y binding to read). Hub's target bar
+-- hides the target's nameplate by this same rule (WC.tgGrown): the plate goes when the glyph goes, and comes back with it after B
+OV.tg.grown = function()
+    local yb = face.buttons[6]
+    if not yb or not (R.bound and R.bound[6]) then return nil end
+    return ((TS(function() return yb:GetAttribute("wc-state") end) == "fight" or TB(function() return yb:GetAttribute("wc-pre") end))
+        and not TB(function() return yb:GetAttribute("wc-given") end)) and true or false
+end
+WC.tgGrown = function() local ok, v = pcall(OV.tg.grown); if ok then return v end end
 OV.tg.update = function()
     local f = OV.tg.make()
-    local where, rel = OV.tg.want()
+    local where, rel, bar2 = OV.tg.want()
+    -- no nameplate: the bar's small glyph alone (never the big one beside the bar's name)
+    if where == "bar" then bar2 = rel; where = nil end
+    -- m118: Hub draws its own prompt right of the target bar while the button would open the wheel; only the face letter is said here
+    -- m120: the glyph's atlas itself (Hub draws the same one)
+    WC.tgPrompt = bar2 and OV.tg.atlasOf() or nil
     if not where then f:Hide(); OV.tg.at = nil; return end
+    OV.tg.look(f)
     if OV.tg.at ~= rel then
         f:ClearAllPoints()
-        if where == "plate" then f:SetPoint("BOTTOM", rel, "TOP", 0, 2)
+        if where == "bar" then f:SetPoint("LEFT", rel, "RIGHT", 6, 0)
+        elseif where == "plate" then f:SetPoint("BOTTOM", rel, "TOP", 0, 2)
         elseif where == "frame" then f:SetPoint("LEFT", rel, "RIGHT", 4, 0)
         else f:SetPoint("TOP", rel, "TOP", 0, -140) end
         OV.tg.at = rel
@@ -3982,8 +4106,9 @@ function OV.mannersPre(b)
         or (SecureCmdOptionParse and SecureCmdOptionParse("[@softinteract,exists] 1") == "1") then
         b:SetAttribute("wc-manners-text", nil); return
     end
-    local pre = mp:GetScript("PreClick")
-    if pre then pcall(pre, mp, "LeftButton", true) end
+    -- m107 (the game's taint log, 2026-11-08: the buff frame and the gamepad binding stack read values WowCompanionSpells wrote,
+    -- then SetPreferredGamepadInteractTarget was forbidden): Manners' own PreClick, run from here, ran ALL of Manners' code as ours
+    -- (its buff scan, its prompt, its binding). It is never run now: only the prompt Manners has armed by itself is read
     local mt = mp:IsShown() and mp:GetAttribute("type") == "macro" and mp:GetAttribute("macrotext") or nil
     b:SetAttribute("wc-manners-text", mt)
     OV.mannersPressed = mt ~= nil
@@ -3992,9 +4117,7 @@ end
 function OV.mannersPost(b)
     if not OV.mannersPressed then return end
     OV.mannersPressed = nil
-    local mp = _G.MannersPrompt
-    local post = mp and mp:GetScript("PostClick")
-    if post and b:GetAttribute("wc-kind") == "smarty" then pcall(post, mp, "LeftButton", true) end
+    -- m107: Manners' own PostClick is not run from here either (see mannersPre); Smart Y looks again
     OV.mannersLater()
 end
 -- m62 SMART BUFFS (the user: "this setting will need its own section in the settings so taht I can also layer in smart buffs. I ant to
@@ -5252,7 +5375,9 @@ local function partyMode()
         PM.apply("set")
         return true
     end
+    -- m110: box = Party mode's state (on, the picked unit "u"); lb = each unit's button under LB (self / p1..p4), as last read
     WC.padMap.party = { cfg = function() return PM.cfgNow and PM.cfgNow() or PM.resolve() end, put = PM.put, on = PM.on,
+                        box = PM.box, lb = function() return OV.lbmap.last end,
                         slots = PM.SLOTS, cols = PM.COL,
                         pbRemove = function(k) return PM.pbRemove and PM.pbRemove(k) end, padd = function(id) return PM.padd and PM.padd(id) end }
 
@@ -5759,15 +5884,40 @@ partyMode()
 -- Options > Network > Advanced Combat Logging (advancedCombatLogging) and its combat log (LoggingCombat, = /combatlog) switched on at
 -- every login, out of a fight. The app reads the file the game writes (CombatLogTail): the health numbers the game hides from add-ons.
 -- The user's exception to "leave no trace", like the chat style: the one CVar, set only when it is off. Said once in a "clog" document.
+-- m112 (the user, 2026-11-09, the crash reports: "maybe its the advanced combat logging"; the pick "Only while Party mode is on"): the
+-- combat log feeds ONLY Party mode's bottom view, so it runs only while Party mode is allowed (Hub's switch: WC.partyOk). Otherwise the
+-- log is stopped and the Advanced Combat Logging WE turned on is given back (WowCompanionSpellsDB.aclOurs); 1.0.17 / 1.0.18 forced it on
+-- for everyone without keeping that, so once (aclReset1) it goes back to the game's default, off.
 do
     local clf = CreateFrame("Frame")
+    local function cdb()
+        if type(WowCompanionSpellsDB) ~= "table" then WowCompanionSpellsDB = {} end
+        return WowCompanionSpellsDB
+    end
     local function clogEnsure(why)
         if InCombatLockdown() then return end
         local get = (C_CVar and C_CVar.GetCVar) or _G.GetCVar
         local set = (C_CVar and C_CVar.SetCVar) or _G.SetCVar
         local adv = type(get) == "function" and select(2, pcall(get, "advancedCombatLogging")) or nil
+        local db = cdb()
+        if WC.partyOk ~= true then
+            local gaveBack, stopped = false, false
+            if adv == "1" and (db.aclOurs or not db.aclReset1) and type(set) == "function" then gaveBack = pcall(set, "advancedCombatLogging", "0") end
+            db.aclOurs, db.aclReset1 = nil, true
+            local on = type(LoggingCombat) == "function" and select(2, pcall(LoggingCombat)) or nil
+            if on == true and WC.clogOurs then stopped = pcall(LoggingCombat, false) end
+            WC.clogOurs = nil
+            pcall(function()
+                WC.send(WC.encode({ type = "clog", v = PV, why = why, off = true, advBack = gaveBack or nil, stopped = stopped or nil }))
+                WC.push()
+            end)
+            return
+        end
+        db.aclReset1 = true
         local turned = false
         if adv ~= "1" and type(set) == "function" then turned = pcall(set, "advancedCombatLogging", "1") end
+        if turned then db.aclOurs = true end
+        WC.clogOurs = true
         local was = type(LoggingCombat) == "function" and select(2, pcall(LoggingCombat)) or nil
         local started = false
         if was ~= true and type(LoggingCombat) == "function" then started = pcall(LoggingCombat, true) end
@@ -5782,6 +5932,8 @@ do
     clf:SetScript("OnEvent", function()
         if C_Timer and C_Timer.After then C_Timer.After(2, function() pcall(clogEnsure, "login") end) else pcall(clogEnsure, "login") end
     end)
+    -- m112: Hub's Party mode switch (on or off) -> the log follows at once (out of a fight; a fight's end tries again: m95's ticker)
+    function WC.clogSync() pcall(clogEnsure, "pmode") end
 end
 
 -- m95 THE COMBAT LOG WRITTEN AT ONCE (the Thor, 2026-11-07: the app's WCCLOG measured lines landing 2-5 minutes late - the game keeps
@@ -5809,6 +5961,7 @@ end
     local pendingStart = false
     local function start()
         if not pendingStart then return end
+        if WC.partyOk ~= true then pendingStart = false; return end         -- m112: Party mode went off in the gap
         pendingStart = false
         local ok = pcall(LoggingCombat, true)
         if not ok then
@@ -5817,7 +5970,7 @@ end
         end
     end
     local function flip()
-        if type(LoggingCombat) ~= "function" or pendingStart then return end
+        if type(LoggingCombat) ~= "function" or pendingStart or WC.partyOk ~= true then return end
         quietUntil = GetTime() + 2
         local ok1 = pcall(LoggingCombat, false)
         pendingStart = true
@@ -5844,8 +5997,10 @@ end
     -- end writes its lines at once
     local CLOG_OUT_S = 5
     local function outTicker()
+        if WC.partyOk ~= true then if ticker then ticker:Cancel(); ticker = nil end return end    -- m112
         if not ticker and C_Timer and C_Timer.NewTicker then ticker = C_Timer.NewTicker(CLOG_OUT_S, function() pcall(flip) end) end
     end
+    WC.clogTicker = function() pcall(outTicker) end
     ff:RegisterEvent("PLAYER_ENTERING_WORLD")
     ff:SetScript("OnEvent", function(_, e)
         if e == "PLAYER_REGEN_DISABLED" then

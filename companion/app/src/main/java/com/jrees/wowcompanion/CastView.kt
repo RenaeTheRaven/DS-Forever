@@ -89,6 +89,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         var key: String? = null    // legacy slots only: the keybind shown in the glyph
         var special = SP_NONE      // vector stand-in when there is no loadable icon
         var unable = false         // an "Unable..." cursor / crosshair: drawn faded
+        var c = -1                 // 1.0.19: the add-on's touch-cast cell on row "tcast" (-1 = none)
         var ds = false             // holds one of the companion's "DS Bar ..." macros (drives the bottom screen)
         var kit: String? = null    // a UiKit picture drawn in the slot (the D-pad toolbar's map / chat / Home swirl)
         var kitScale = 0.62f       // ... its size inside the slot
@@ -441,6 +442,26 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         set(v) { if (field != v) { field = v; cmdBtns.fill(null); invalidate() } }
     private val cmdBtns = arrayOfNulls<Btn>(32)
 
+    /** [HomeFightFace.trigFights]: in a fight, the trigger sets' In-combat spells by [HomeFightFace.cmdKey] -> (icon, spell id) */
+    var trigFights: Map<Int, Pair<Int, Int>>? = null
+        set(v) { if (field != v) { field = v; trigBtns.fill(null); invalidate() } }
+    private val trigBtns = arrayOfNulls<Btn>(32)
+
+    private fun trigFightOverride(li: Int, src: Int): Btn? {
+        if (li !in 1 until STATE_LAYERS) return null
+        val at = li * 8 + src
+        val icon = trigFights?.get(at)?.first?.takeIf { it > 0 } ?: return null
+        val cached = trigBtns[at]
+        if (cached != null && cached.icon == icon) { if (cached.shader == null) resolve(cached, src >= 4); return cached }
+        val b = Btn().apply { p = src + 1; k = "spell"; this.icon = icon; e = true }
+        classify(b)
+        resolve(b, src >= 4)
+        trigBtns[at] = b
+        return b
+    }
+
+    private fun isTrigFight(fb: Btn?) = fb != null && trigBtns.any { it === fb }
+
     private fun commandOverride(li: Int, src: Int): Btn? {
         if (li !in 0 until STATE_LAYERS) return null
         val at = li * 8 + src
@@ -467,6 +488,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private val fightCt = HashMap<Int, Int>()
     private fun fightStateOf(fb: Btn?, src: Int): St? {
         if (fb == null || fb.k != "spell") return null
+        val ti = trigBtns.indexOfFirst { it === fb }
+        if (ti >= 0) return trigFights?.get(ti)?.second?.takeIf { it > 0 }?.let { fightStates[it] }
         if (fb !== fightBtns.getOrNull(src) && fb !== dpadFightBtns.getOrNull(src)) return null
         val id = fightIds?.get(src + 1) ?: return null
         return fightStates[id]
@@ -659,7 +682,11 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         }
         val inkW get() = inkR - inkL
         val inkH get() = inkB - inkT
+        /** the same tile with only its LETTER red (the user, 2026-11-08: "I also only wanted the letter part of the glyph to show red"):
+         *  the glyph's symbol is the bright neutral (white / grey) ink; the gold ring, the dark disc and the shadow keep their colours */
+        val letterRed: Art by lazy { Art(redLetter(bmp)) }
     }
+
 
     /** a button shape's rings and shadows (ActionBarButton.lua SetShapeToSquare / SetShapeToCircle) */
     private class FrameArt {
@@ -767,7 +794,6 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
      * out of range with no Disabled glyph art loaded: the glyph goes red. An app stand-in; the HUD
      * itself switches the glyph to its Disabled art (drawn instead whenever it is on the device).
      */
-    private val cfRange = LightingColorFilter(0xFF5A48, 0x200000)
 
     private val rect = RectF()
     private val shaderMatrix = Matrix()
@@ -930,6 +956,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         }
         b.fx = str(o.opt("fx"))
         b.ct = ji(o.opt("ct"), -1)
+        b.c = ji(o.opt("c"), -1)
         b.e = jb(o.opt("e"), true)
         // the companion's own D-pad commands (Spellbook places "DS Bar Left / Open / Right" in EMPTY LT+RT slots,
         // user pick 2026-10-02): marked so the player sees which buttons drive the bottom screen
@@ -962,6 +989,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         return out
     }
     private val swirlCache = HashMap<String, Bitmap>()
+    init { MemWatch.source("cast") { swirlCache.values.sumOf { it.byteCount.toLong() } + iconReady.values.sumOf { it.byteCount.toLong() } } }
 
     /** the companion mark on a "DS Bar" slot: a dark gold-rimmed disc with two small stacked screens in it */
     private fun drawDsMark(c: Canvas, cx: Float, cy: Float, r: Float) {
@@ -1208,7 +1236,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
                         if (bmp != null) { iconReady[ids[i]] = bmp; any = true }
                         else if (Icons.ready()) iconAbsent.add(ids[i])   // the pack is up and lacks it
                     }
-                    if (any) { resolveIcons(); fightBtns.fill(null); roomBtns.fill(null); cmdBtns.fill(null); dpadFightBtns.fill(null); invalidate() }
+                    if (any) { resolveIcons(); fightBtns.fill(null); roomBtns.fill(null); cmdBtns.fill(null); dpadFightBtns.fill(null); trigBtns.fill(null); invalidate() }
                 }
             }
         }
@@ -1246,8 +1274,14 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
     // =================================================================== controller -> layer
 
+    /** 1.0.18: LB / RB held, for Home's LB party picture (LbPartyView) */
+    var onShoulders: ((lb: Boolean, rb: Boolean) -> Unit)? = null
+    /** 1.0.18: a second listener on the held buttons (the LB picture's press feedback) */
+    var onButtonsAlso: ((held: Int) -> Unit)? = null
+
     private fun onPad(lt: Boolean, rt: Boolean, lb: Boolean, rb: Boolean) {
         padLt = lt; padRt = rt; padLb = lb; padRb = rb
+        onShoulders?.invoke(lb, rb)
         noteClassRadial()                                                  // f-class-radial: Home's mirror
         noteJoin(SystemClock.elapsedRealtime())
         setLayer(computeLayer())
@@ -1280,6 +1314,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
     private fun onButtons(mask: Int) {
         onPadButtons?.invoke(mask)
+        onButtonsAlso?.invoke(mask)
         val down = mask and held.inv()
         // b-class-takeover: A / B while the class wheel is open are the wheel's (the guest keeps them from the game)
         if (chordSide != ClassChord.NONE && down != 0) {
@@ -1585,6 +1620,36 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
     override fun performClick(): Boolean = super.performClick()
 
+    // =================================================================== touch cast (1.0.19)
+    // The user, 2026-11-09: "When touching the top controller stuff I don't want it to open the old controller room ... the buttons
+    // should touch cast the skills". Home hands its touches on the bars here (view coordinates): the press shows, and a release on the
+    // same button presses the game's own action through the add-on's "tcast" cell ([onTouchCast]). Only what the game's bar itself
+    // holds: a button showing one of our pictures over it (Party mode, an In-combat spell, a room's own command...) does nothing.
+    var onTouchCast: ((cell: Int) -> Unit)? = null
+    private var touchPos = -1
+    fun touchDown(x: Float, y: Float) {
+        touchPos = hitTest(x, y)
+        if (touchPos >= 0) {
+            pressedPos = touchPos
+            pressedUntilMs = SystemClock.elapsedRealtime() + PRESS_MS
+            invalidate()
+        }
+    }
+    fun touchUp(x: Float, y: Float) {
+        val pos = hitTest(x, y)
+        if (pos >= 0 && pos == touchPos) touchCellAt(pos).takeIf { it >= 0 }?.let { onTouchCast?.invoke(it) }
+        touchPos = -1
+    }
+    private fun touchCellAt(pos: Int): Int {
+        val h = hud ?: return -1
+        val li = layer
+        if (li >= STATE_LAYERS || pos !in 0 until 8) return -1
+        val src = srcOf[pos]
+        val fb = partyOverride(h, src) ?: dpadFightOverride(li, src) ?: roomOverride(li, src) ?: fightOverride(li, src) ?: trigFightOverride(li, src) ?: commandOverride(li, src) ?: fishOverride(li, src)
+        if (fb != null) return -1
+        return h.layers[li][src]?.c ?: -1
+    }
+
     private fun hitTest(x: Float, y: Float): Int {
         if (k <= 0f) return -1
         if (layout != Layout.FULL && hud != null) {
@@ -1670,6 +1735,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         hud?.let { h2 -> for (l in h2.layers) for (b in l) b?.shader = null }
         for (b in legacy) b.shader = null
         for (b in fightBtns) b?.shader = null
+        for (b in trigBtns) b?.shader = null
         for (b in cmdBtns) b?.shader = null           // the host-driven faces / toolbar carry the old matrix too
         for (b in dpadFightBtns) b?.shader = null
         for (b in roomBtns) b?.shader = null
@@ -1791,7 +1857,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         var flashing = false
         for (pos in 0 until 8) {
             val src = srcOf[pos]                 // drawn at slot pos, taken from Blizzard position src
-            val fb = dpadFightOverride(li, src) ?: fightOverride(li, src) ?: commandOverride(li, src) ?: fishOverride(li, src)
+            val fb = dpadFightOverride(li, src) ?: fightOverride(li, src) ?: trigFightOverride(li, src) ?: commandOverride(li, src) ?: fishOverride(li, src)
             val b = fb ?: h.layers[li][src]
             val st = if (fb == null && li < STATE_LAYERS && hasState) state[li][h.indexOfPos[li][src]] else fightStateOf(fb, src)
             // pushed: a touch on the replica, or the PHYSICAL button at this position held
@@ -2210,20 +2276,21 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         if (keyText == null && pos < 8) {
             val a = (if (pressed) aGlyphP[pos] else null) ?: aGlyph[pos]
             if (a != null) {
-                drawInk(c, a, gx, gy, BADGE_INK, 255, if (outOfRange && !pressed) cfRange else null)
+                drawInk(c, if (outOfRange && !pressed) a.letterRed else a, gx, gy, BADGE_INK, 255)
                 return
             }
         }
         val r = 7.5f * k
-        pFill.color = if (outOfRange) BADGE_RED else BADGE
+        // red is the letter's alone (the disc and its edge stay)
+        pFill.color = BADGE
         c.drawCircle(gx, gy, r, pFill)
-        pStroke.color = if (outOfRange) BADGE_RED_EDGE else BADGE_EDGE
+        pStroke.color = BADGE_EDGE
         pStroke.strokeWidth = 0.6f * k
         c.drawCircle(gx, gy, r, pStroke)
-        val ink = GLYPH_INK
+        val ink = if (outOfRange) GLYPH_RED else GLYPH_INK
         if (keyText != null) {
             if (keyText.isEmpty()) return
-            pGlyph.color = if (outOfRange) GLYPH_RED else ink
+            pGlyph.color = ink
             val ts = pGlyph.textSize
             if (keyText.length > 1) pGlyph.textSize = ts * 0.75f
             c.drawText(Tr.t(keyText), gx, gy - (pGlyph.ascent() + pGlyph.descent()) / 2f, pGlyph)
@@ -2629,7 +2696,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             val src = srcOf[pos]
             // in a fight a D-pad In-combat spell beats DS Forever's layout picture (that press casts it)
             // PARTY MODE first (PARTY_BUILD.md 4.3): its pictures beat every other override while it is on
-            val fb = partyOverride(h, src) ?: dpadFightOverride(li, src) ?: roomOverride(li, src) ?: fightOverride(li, src) ?: commandOverride(li, src) ?: fishOverride(li, src)
+            val fb = partyOverride(h, src) ?: dpadFightOverride(li, src) ?: roomOverride(li, src) ?: fightOverride(li, src) ?: trigFightOverride(li, src) ?: commandOverride(li, src) ?: fishOverride(li, src)
             if (fb != null && fb.icon > 0 && fb.shader == null) resolve(fb, pos >= 4)   // built now, at this frame's scale
             val b = fb ?: h.layers[li][src]
             val st = if (fb == null && li < STATE_LAYERS && hasState) state[li][h.indexOfPos[li][src]] else fightStateOf(fb, src)
@@ -2646,7 +2713,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             if (fb != null && fb.drawAlpha < 255) c.saveLayerAlpha(-60f * k, -60f * k, 60f * k, 60f * k, fb.drawAlpha)
             next = min(next, drawSlot(c, pos, 0f, 0f, circle, b, st,
                 if (li < STATE_LAYERS) li * 8 + src else -1, now, pressed, flash, null,
-                if (fb != null && fb.k == "spell") fightCdLeft(src, now) else -1f))
+                if (fb != null && fb.k == "spell" && !isTrigFight(fb)) fightCdLeft(src, now) else -1f))
             c.restoreToCount(slotSave)
         }
         val t = bandT()
@@ -3476,6 +3543,25 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     }
 
     companion object {
+        /** bright, unsaturated pixels -> red (by their brightness); everything else as it was */
+        fun redLetter(src: Bitmap): Bitmap {
+            val w = src.width; val h = src.height
+            val px = IntArray(w * h)
+            src.getPixels(px, 0, w, 0, 0, w, h)
+            for (i in px.indices) {
+                val c = px[i]
+                val r = (c shr 16) and 255; val g = (c shr 8) and 255; val b = c and 255
+                val mx = maxOf(r, g, b); val mn = minOf(r, g, b)
+                val bright = ((mn - 70) / 70f).coerceIn(0f, 1f)
+                val neutral = (1f - (mx - mn - 12) / 30f).coerceIn(0f, 1f)
+                val wgt = bright * neutral
+                if (wgt <= 0f) continue
+                val tr = minOf(255, mx + 20); val tg = (mx * 0.22f).toInt(); val tb = (mx * 0.18f).toInt()
+                px[i] = (c and 0xFF000000.toInt()) or
+                    ((r + (tr - r) * wgt).toInt() shl 16) or ((g + (tg - g) * wgt).toInt() shl 8) or (b + (tb - b) * wgt).toInt()
+            }
+            return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+        }
         /** b-class-takeover: the stick counts as back in the middle under this; a closed wheel lets the controller go then, or after [CLASS_FREE_MS] */
         const val CLASS_NEUTRAL = 0.3f
         const val CLASS_FREE_MS = 1_500L
@@ -3581,10 +3667,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         private val ESTIMATE = Color.argb(230, 170, 205, 255)
         private val BADGE = Color.rgb(30, 27, 24)
         private val BADGE_EDGE = Color.rgb(150, 140, 120)
-        private val BADGE_RED = Color.rgb(160, 28, 22)
         /** a key name's letters when the slot is out of range / short of mana (the game's red hotkey text) */
         private val GLYPH_RED = Color.rgb(255, 72, 56)
-        private val BADGE_RED_EDGE = Color.rgb(255, 120, 100)
         private val GLYPH_INK = Color.rgb(230, 225, 215)
         private val BADGE_BG = Color.rgb(28, 22, 15)
         private val BADGE_BG_HELD = Color.rgb(58, 46, 26)

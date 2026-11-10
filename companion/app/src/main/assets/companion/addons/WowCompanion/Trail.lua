@@ -82,7 +82,7 @@ end
 -- ships), no secure template, nothing of the game's written, no CVar, no binding. Hidden in instances, when the facing is unknown,
 -- while the world map is open, and when the player turned it off (WowCompanionDB.compass == false; the app's Settings > Top screen >
 -- "Compass bar", through Interact's two iact cells, ACT.compass).
-WC.compass = { V = "cp33" }
+WC.compass = { V = "cp34" }
 do
     local C = WC.compass
     local PI = math.pi
@@ -424,6 +424,21 @@ do
         if x then C.cam.extX, C.cam.extAt = math.max(-1, math.min(1, x)), ((type(GetTime) == "function" and GetTime()) or 0) end
     end
 
+    -- cp34 (the user: "The compass is spinning if I use my right stick even when my camera is locked in place" - a room of ours held
+    -- the stick): while one of OUR stick catches is up (the Map room's, the radials', an NPC window's grab: EnableGamePadStick frames
+    -- that keep the stick from the game) the camera cannot turn, so the stick counts as idle. Read only.
+    C.CATCH = { "WowCompanionMapStickCatch", "WowCompanionRadialStickCatch", "WowCompanionInteractGrab" }
+    function C.stickCaught()
+        for _, n in ipairs(C.CATCH) do
+            local f = _G[n]
+            if type(f) == "table" then
+                local ok, on = pcall(function() return f:IsVisible() and f:IsGamePadStickEnabled() end)
+                if ok and on == true then return true end
+            end
+        end
+        return false
+    end
+
     -- the camera stick's x: the game's mapped state, its "Camera" stick by the game's own names (inputaxisbinding.lua)
     function C.stickX(now)
         local K = C.cam
@@ -445,8 +460,10 @@ do
                     K.ry = okX and num(y) or nil                    -- cp20: a tilt moves the pitch
                 end
             end
+            if camX and C.stickCaught() then K.from = "caught"; return 0 end
             if camX then K.from = "pad"; return camX end
         end
+        if C.stickCaught() then K.from = "caught"; return 0 end
         if K.extX and now - K.extAt < 0.3 then K.from = "app"; return K.extX end
         K.from = "none"
         return 0
@@ -2284,7 +2301,9 @@ do
     function A.friendsRestore(why)
         local saved = type(WowCompanionDB) == "table" and WowCompanionDB.npFriends or nil
         if type(saved) ~= "table" then return end
-        if pv(InCombatLockdown) == true and why ~= "logout" then return end
+        -- "combat": PLAYER_REGEN_DISABLED, the last moment before the fight's lock (the user, 2026-11-08: "the enemy plates turned off on
+        -- me": a fight begun with a friend targeted kept nameplateNotSelectedAlpha 0, every enemy plate but the target's invisible)
+        if pv(InCombatLockdown) == true and why ~= "logout" and why ~= "combat" then return end
         for _, cv in ipairs(A.NP_FRIEND_CVARS) do
             local name, want = cv[1], cv[2]
             local orig = (saved.orig or {})[name]
@@ -2558,7 +2577,7 @@ do
     local ev = CreateFrame("Frame")
     for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED", "SPELLS_CHANGED",
                          "ITEM_DATA_LOAD_RESULT", "CVAR_UPDATE", "ENCOUNTER_START", "ENCOUNTER_END", "UNIT_SPELLCAST_SENT",
-                         "PLAYER_ENTER_COMBAT", "START_AUTOREPEAT_SPELL", "UNIT_THREAT_LIST_UPDATE", "PLAYER_LOGOUT" }) do
+                         "PLAYER_ENTER_COMBAT", "START_AUTOREPEAT_SPELL", "UNIT_THREAT_LIST_UPDATE", "PLAYER_LOGOUT", "PLAYER_REGEN_DISABLED" }) do
         pcall(function() ev:RegisterEvent(e) end)
     end
     ev:SetScript("OnEvent", function(_, e, a1)
@@ -2566,6 +2585,9 @@ do
             if e == "NAME_PLATE_UNIT_ADDED" then A.onAdded(a1)
             elseif e == "NAME_PLATE_UNIT_REMOVED" then A.onRemoved(a1)
             elseif e == "PLAYER_LOGOUT" then A.npRestore("logout"); pcall(A.friendsRestore, "logout")
+            elseif e == "PLAYER_REGEN_DISABLED" then
+                -- a fight: the player's plate values back now (no friendly-target change sticks through a fight); re-decided after it
+                pcall(A.friendsRestore, "combat"); A.friendWas = nil
             elseif e == "PLAYER_ENTERING_WORLD" then
                 -- a value of ours left from before (a crash): back to the player's once the route is not running (npStep's grace)
                 if A.npSaved() then A.np.offSince = now() - A.NP_OFF_S + 3 end
@@ -3635,8 +3657,8 @@ end
 -- scale, so the 9 out matches the bar's units) in the plate's own strata, one frame level UNDER the plate's UnitFrame - so under its
 -- name, level and health bar fill. Only our own frame is parented / levelled (legal in combat); the plate's level and strata are
 -- READ (no taint), nothing of it is written; forbidden plates (enemies in instances) never reach us (GetNamePlateForUnit).
-WC.rings = { V = "at4", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
-             ALPHA = 0.95, OUTSET = 6, PAD = 9, TEX_V = 53 / 64, list = {}, est = {}, react = {}, why = {}, n = 0,
+WC.rings = { V = "at7", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
+             ALPHA = 0.95, OUTSET = 6, PAD = 9, TOP_IN = 4, TEX_V = 53 / 64, list = {}, est = {}, react = {}, why = {}, n = 0,
              COL = { far = { 0.32, 0.86, 0.36 }, approach = { 1, 0.84, 0.24 }, near = { 1, 0.55, 0.12 }, inside = { 0.93, 0.16, 0.12 } },
              TEX = "Interface\\AddOns\\WowCompanion\\Media\\tint_glow" }
 do
@@ -3742,21 +3764,54 @@ do
                     local r = R.radius(num(m.lv), plv)
                     e.st = R.state(e.d, r, e.st)
                     local o = tint(m.s)
-                    if o.plate ~= plate then
+                    -- at7 (the user: "The aggro tint is still showing hovering over targeted mobs instead of on the target frame"): the
+                    -- TARGET's tint goes round Hub's target bar while it shows (the same HUD bar outline), never over its plate
+                    local okT, isT = pcall(function() return UnitIsUnit(st.tok, "target") == true end)
+                    local tbHp = nil
+                    if okT and isT then
+                        local okH, hp = pcall(function()
+                            local uf = WC.uf
+                            return type(uf) == "table" and uf.target and uf.tb and uf.tb.f and uf.tb.f:IsShown() and uf.tb.f.hp or nil
+                        end)
+                        tbHp = okH and type(hp) == "table" and hp or nil
+                    end
+                    if tbHp then
+                        if o.plate ~= tbHp then
+                            o.f:ClearAllPoints()
+                            o.f:SetParent(UIParent)
+                            -- round the bar's HUD frame (its lip: 3 texels left / top, 7 right, 8 bottom of an 8-texel-high bar)
+                            local h = tbHp:GetHeight() or 17
+                            local k = h / 8
+                            o.f:SetPoint("TOPLEFT", tbHp, "TOPLEFT", -3 * k - 7, 3 * k + 7)
+                            o.f:SetPoint("BOTTOMRIGHT", tbHp, "BOTTOMRIGHT", 7 * k + 7, -8 * k - 7)
+                            o.plate, o.bar, o.onBar = tbHp, nil, true
+                            o.strata, o.lvl = nil, nil
+                        end
+                        plate = nil
+                    elseif o.onBar then
+                        o.f:ClearAllPoints()
+                        o.f:SetParent((type(WorldFrame) == "table" and WorldFrame) or UIParent)
+                        o.plate, o.onBar = nil, nil
+                        o.strata, o.lvl = nil, nil
+                    end
+                    if plate and o.plate ~= plate then
                         o.f:ClearAllPoints()
                         -- at3: anchored to the plate's health bar, PAD out (only anchored to: never read or written); a plate
                         -- without one (another style, another add-on's plates): the plate itself, OUTSET out, as before
                         local okB, bar = pcall(function() return plate.UnitFrame and plate.UnitFrame.HealthBarsContainer end)
                         bar = okB and type(bar) == "table" and bar or nil
                         local to, pad = bar or plate, bar and R.PAD or R.OUTSET
-                        o.f:SetPoint("TOPLEFT", to, "TOPLEFT", -pad, pad)
+                        -- at6: the top TOP_IN in, clear of the name's letters (at5's layering below the plate's strata is GONE: the
+                        -- user's bisect 2026-11-08 found it behind test6's ADDON_ACTION_FORBIDDEN errors; at4's layering is back)
+                        o.f:SetPoint("TOPLEFT", to, "TOPLEFT", -pad, bar and (pad - R.TOP_IN) or pad)
                         o.f:SetPoint("BOTTOMRIGHT", to, "BOTTOMRIGHT", pad, -pad)
                         o.plate, o.bar = plate, bar
                     end
                     -- at4: under the plate's UnitFrame (its name, level, bar fill): its strata, one level below (re-read each
                     -- tick: a targeted plate is raised)
-                    local okU, uf = pcall(function() return plate.UnitFrame end)
-                    local ref = (okU and type(uf) == "table" and uf) or plate
+                    -- at7: on the target bar, under the bar's own frame (its strata, one level below)
+                    local okU, uf = pcall(function() return plate and plate.UnitFrame end)
+                    local ref = (o.onBar and tbHp:GetParent()) or (okU and type(uf) == "table" and uf) or plate
                     local okS, strata = pcall(function() return ref:GetFrameStrata() end)
                     local okL, lvl = pcall(function() return ref:GetFrameLevel() end)
                     strata = okS and type(strata) == "string" and strata or "BACKGROUND"
