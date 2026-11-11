@@ -899,6 +899,7 @@ local gcdKnown, gcdRunning = false, false   -- whether the last trusted sample s
 
 local function sampleGCD()
     local fresh, anyBool, anyTrue = {}, false, false
+    local gs, gd = nil, nil                                     -- b-bar-gcd: a plain start / length (out of combat)
     for _, s in ipairs(stateSlots) do
         local cd = cooldownOf(s)
         local v = WC.ABSENT
@@ -906,13 +907,27 @@ local function sampleGCD()
         if v == true or v == false then
             fresh[s] = v
             anyBool = true
-            if v then anyTrue = true end
+            if v then
+                anyTrue = true
+                if not gd then
+                    local a, b = num(tfield(cd, "startTime")), num(tfield(cd, "duration"))
+                    if a and b and b > 0 and b <= 3 then gs, gd = a, b end
+                end
+            end
         elseif gcdOf[s] ~= nil then
             fresh[s] = gcdOf[s]           -- nil even inside the handler: unknown, keep the last sample
         end
     end
     gcdOf = fresh                         -- slots out of view are forgotten, never left stale
     if anyBool then gcdKnown, gcdRunning = true, anyTrue end
+    -- b-bar-gcd: a GCD seen while none runs (the last one has RUN OUT by its time, no "not active" read needed) starts a new one
+    if anyTrue then
+        local now = SN(GetTime) or 0
+        if gd then WC.gcdLearn = gd end
+        local g = WC.gcdRun
+        if gs and gd then WC.gcdRun = { s = gs, d = gd }
+        elseif not g or now >= g.s + g.d - 0.05 then WC.gcdRun = { s = now, d = WC.gcdLearn or 1.5 } end
+    end
 end
 
 -- Is this ACTIVE cooldown only the GCD?
@@ -965,13 +980,22 @@ local function buttonState(d, combat, hasTarget)
     local r = PCALL(A("IsUsableAction"), s)            -- isUsable, isLackingResources
     if r[1] then usableMana(o, SV(r[2]), SV(r[3]), spellIdOf(d)) end
     if hasTarget then
-        local v = S(A("IsActionInRange"), s)
+        -- b-melee-range on the bars too (the user, 2026-11-10: "Yeah"): a melee spell with no range of its own reads the close check
+        local msid = spellIdOf(d)
+        local v
+        if msid and type(WC.isMeleeNoRange) == "function" and WC.isMeleeNoRange(msid) then v = WC.spellRange(msid, "target")
+        else v = S(A("IsActionInRange"), s) end
         if v == true then o.r = 1 elseif v == false then o.r = 0 end
     end
     local cd = cooldownOf(s)
     if cd then
-        local on = tfield(cd, "isActive") == true and not onGCD(s, cd)
+        local act = tfield(cd, "isActive") == true
+        local gcdNow = act and onGCD(s, cd)
+        local on = act and not gcdNow
         o.cd = bit01(on)
+        -- b-bar-gcd (the user, 2026-11-10: the GCD on every button, not only the In-combat ones): this slot is on the GCD now; the
+        -- sweep's start / length ride hudS.gd (one for all)
+        if gcdNow then o.g = 1 end
         if on and not combat then
             local a, b = num(tfield(cd, "startTime")), num(tfield(cd, "duration"))
             if a and b then o.st, o.du = a, b end
@@ -1111,13 +1135,38 @@ local function noteCast(event)
     end
 end
 
+-- b-melee-range (the user, 2026-11-10: Raptor Strike "shouldn't be showing in range when im 40 yards away"; the Thor's log: its state
+-- never once said out of range, Arcane Shot's did): a spell with NO range of its own (a next-swing melee attack: maxRange 0) is answered
+-- "in range" by the game at any distance. For a harmful one the game's close-distance check stands in (CheckInteractDistance index 3, the
+-- duel distance: a few yards, as Forever Range uses it); a spell with a range, or no plain answer, keeps the game's own reading.
+WC.meleeNoRange = WC.meleeNoRange or {}
+function WC.isMeleeNoRange(id)
+    local m = WC.meleeNoRange[id]
+    if m == nil then
+        local ok, si = CALL(function() return C_Spell.GetSpellInfo(id) end)
+        local mx = ok and type(si) == "table" and num(tfield(si, "maxRange")) or nil
+        local harm = S(api("C_Spell", "IsSpellHarmful"), id) == true
+        m = (mx ~= nil and mx <= 0 and harm) and true or false
+        WC.meleeNoRange[id] = m
+    end
+    return m
+end
+function WC.spellRange(id, unit)
+    local fr = api("C_Spell", "IsSpellInRange") or _G.IsSpellInRange
+    local m = WC.isMeleeNoRange(id)
+    if m and type(_G.CheckInteractDistance) == "function" then
+        local v = S(_G.CheckInteractDistance, unit, 3)
+        if v == true or v == false then return v end
+    end
+    return S(fr, id, unit)
+end
 -- b-combat-bar-states: one SPELL's state, by id (an In-combat spell has no bar slot): the same fields a bar slot's state carries
 local function spellState(id, hasTarget)
     local o = { i = id, ct = castMs(id) }
     local r = PCALL(api("C_Spell", "IsSpellUsable") or _G.IsUsableSpell, id)          -- isUsable, insufficientPower
     if r[1] then usableMana(o, SV(r[2]), SV(r[3]), id) end
     if hasTarget then
-        local v = S(api("C_Spell", "IsSpellInRange") or _G.IsSpellInRange, id, "target")
+        local v = WC.spellRange(id, "target")                  -- b-melee-range
         if v == true or v == 1 then o.r = 1 elseif v == false or v == 0 then o.r = 0 end
     end
     o.chk = bit01(S(api("C_Spell", "IsCurrentSpell") or _G.IsCurrentSpell, id) == true
@@ -1129,7 +1178,7 @@ local function buildState()
     local combat = S(InCombatLockdown) == true
     local hasTarget = S(UnitExists, "target") == true
     local layers = resolveAll(pageUnit())
-    local L, slots, pets = {}, {}, {}
+    local L, slots, pets, sids = {}, {}, {}, {}
     for _, key in ipairs(STATE_LAYERS) do
         local list = {}
         for p = 1, 8 do
@@ -1137,6 +1186,7 @@ local function buildState()
             list[p] = buttonState(d, combat, hasTarget)
             if d.k ~= "" and d.k ~= "fixed" and d.k ~= "pet" and (d.s or 0) > 0 then
                 slots[#slots + 1] = d.s
+                sids[d.s] = spellIdOf(d)                         -- b-melee-range: the poll's spell per slot
             elseif d.k == "pet" and (d.s or 0) > 0 then
                 pets[#pets + 1] = d.s
             end
@@ -1145,7 +1195,12 @@ local function buildState()
     end
     stateSlots = slots
     statePets = pets
+    WC.slotSid = sids
     local st = { c = combat, aa = autoAttack == true, ar = autoRepeat == true, L = L }
+    do                                                          -- b-bar-gcd: the running GCD (game time) for the flagged slots
+        local g, now = WC.gcdRun, SN(GetTime) or 0
+        if g and now < g.s + g.d then st.gd = { s = math.floor(g.s * 1000 + 0.5) / 1000, d = math.floor(g.d * 1000 + 0.5) / 1000 } end
+    end
     if castNow then st.cs = castNow
     elseif castEnd and (SN(GetTime) or 0) - castEnd.t < 2 then
         st.ce = { x = castEnd.x, t = math.floor(castEnd.t * 1000 + 0.5) / 1000, h = castEnd.h }
@@ -1433,7 +1488,9 @@ local function pollRange()
     local fn = A("IsActionInRange")
     local changed = false
     for _, s in ipairs(stateSlots) do
-        local v = S(fn, s)
+        local msid = WC.slotSid and WC.slotSid[s]
+        local v
+        if msid and WC.isMeleeNoRange(msid) then v = WC.spellRange(msid, "target") else v = S(fn, s) end   -- b-melee-range
         local r = (v == true and 1) or (v == false and 0) or -1
         if rangeSeen[s] ~= r then
             rangeSeen[s] = r
@@ -1447,9 +1504,8 @@ local function pollRange()
         if r[1] and SV(r[9]) == true then v = (SV(r[10]) == true) and 1 or 0 end
         if rangeSeen["p" .. s] ~= v then rangeSeen["p" .. s] = v; changed = true end
     end
-    local fr = api("C_Spell", "IsSpellInRange") or _G.IsSpellInRange
     for _, id in ipairs(stateFight) do
-        local v = S(fr, id, "target")
+        local v = WC.spellRange(id, "target")                         -- b-melee-range
         local r = ((v == true or v == 1) and 1) or ((v == false or v == 0) and 0) or -1
         if rangeSeen["f" .. id] ~= r then rangeSeen["f" .. id] = r; changed = true end
     end
