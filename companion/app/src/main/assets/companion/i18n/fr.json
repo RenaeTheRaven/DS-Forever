@@ -1,5 +1,22 @@
 {
 "plain": {
+"Smart": "Intelligent",
+"Smart: the game refused a change in the last fight": "Intelligent : le jeu a refusé un changement lors du dernier combat",
+"Smart: off for a plain attack you start": "Intelligent : désactivé quand vous lancez une attaque simple",
+"On; a plain attack you start turns it off, an ability back on.": "Activé ; une attaque simple le désactive, une technique le réactive.",
+"The game's own option, Smart: on by default; a plain attack you start out of a fight turns it off, your next ability (not Hunter's Mark) turns it back on. For this character.": "L'option du jeu, Intelligent : activée par défaut ; une attaque simple lancée hors combat la désactive, votre technique suivante (sauf Marque du chasseur) la réactive. Pour ce personnage.",
+"In combat only": "En combat uniquement",
+"In combat: the game refused it in the last fight": "En combat : le jeu l'a refusé lors du dernier combat",
+"The game's switching between Auto Shot and auto attack, off.": "Le basculement du jeu entre Tir automatique et attaque automatique, désactivé.",
+"Auto Shot at range, auto attack up close.": "Tir automatique à distance, attaque automatique au corps à corps.",
+"The switching only while you are in a fight.": "Le basculement uniquement pendant un combat.",
+"The game's own option, on only in fights: on as a fight starts, off when it ends. For this character.": "L'option du jeu, active uniquement en combat : activée au début d'un combat, désactivée à la fin. Pour ce personnage.",
+"Game tooltips": "Infobulles du jeu",
+"Off: the game's tooltips are hidden on the top screen": "Désactivé : les infobulles du jeu sont masquées sur l'écran du haut",
+"The game's tooltips on the top screen": "Les infobulles du jeu sur l'écran du haut",
+"Radial": "Radial",
+"The DS WoW toolbar has this button: turn it off to use it": "Ce bouton est à la barre d'outils DS WoW : désactivez-la pour l'utiliser",
+"Turn the DS WoW toolbar off (WoW Defaults) to put your own spell here; it comes back as you left it.": "Désactivez la barre d'outils DS WoW (WoW Defaults) pour mettre votre propre sort ici ; il revient tel que vous l'avez laissé.",
 "Experimental": "Expérimental",
 "On: Select turns Party mode on": "Activé : Select active le mode groupe",
 "A acts on the game's selection": "A agit sur la sélection du jeu",
@@ -1486,6 +1503,7 @@
 "The game's own target frame, by its switch below. For this character.": "Le cadre de cible du jeu, selon son interrupteur ci-dessous. Pour ce personnage."
 },
 "templates": {
+"Put the Spell Radial command on a button (WoW Defaults: Change, DS). %s": "Placez la commande Radial de sorts sur un bouton (WoW Defaults : Changer, DS). %s",
 "Abandon \"%s\"?": "Abandonner « %s » ?",
 "Add-ons: %s": "Add-ons : %s",
 "Aim with the stick, %s": "Visez avec le stick, %s",

@@ -29,7 +29,7 @@ local WC = _G.WowCompanion
 if type(WC) ~= "table" or type(WC.S) ~= "function" or type(WC.send) ~= "function" then return end
 local S = WC.S
 
-local HV = "hub27"          -- hub27: the Party mode switch also starts / stops the combat log (PadMap m112); hub26: DS FOREVER'S OWN PARTY FRAMES AND TARGET BAR (WC.uf, at the end of this file; "uisw" 18 / 19 our party frames, 20 / 21 our target bar; while one is on, the game's own frames of that group stay hidden); hub25: PARTY MODE is an EXPERIMENTAL switch, off by default (the user, 2026-11-07: "Make the party mode an experimental toggle that is off by default"): "uisw" 16 / 17 -> WC.partyOk, which PadMap reads (Select toggles Party mode only while it is true); hub24: the Start attack switch reported while OFF (it read as absent: no QOL row); hub23: Combat Auto Shot for EVERY class (the user: "other classes use a bow"); hub22: START ATTACK ON A HOSTILE TARGET ("uisw" 12 / 13, the secure cell "atkgo") and the hunter's AUTO SHOT (the game's own autoRangedCombat, "uisw" 14 / 15); hub21: a one-time probe of the frames in the bottom-left bar's spot (probe "barprobe"); hub20: the raid / party manager tab with the Party frames switch; hub19: the PARTY FRAMES switch on "uisw" 10 / 11; hub18: the WORLD MARKERS' switch on "uisw" 8 / 9 (Trail.lua's WC.npWant.wm; the doc's sw.wm); hub17: HUD mode SPLIT into its own switches on the row "uisw" (the player frame, the target frame, the enemy nameplates, the personal bar; columns 34 / 35 still the whole bundle for an older app; the doc's sw); hub16: HUD mode's bar WIDTH and SCALE too (column 39 selects which setting columns 36 / 37 / 38 step; the doc's prd carries w / s / sel); hub15: HUD mode's bar height (Interact's WC.prd: columns 36 down / 37 up / 38 default; the doc's prd); hub14: HUD mode wants the enemy nameplates on (ag2 / Trail.lua owns that CVar: WC.npWant.hud); hub13: HUD mode (the player and target frames hidden, alpha only, columns 34 / 35); hub12: Smart buffs' OR wheel (barcmd "smartor", PadMap m62); hub11: the game's CAST BAR on the top screen, Show / Hide by its own two columns of the row (f-top-castbar-toggle); hub10: the game's durability figure rides the "hud" element (f-durability); hub9: the PAUSE wheel's button (Spells, Home's radial pause menu); hub8: the SPELL RADIAL's button (Spells, the user's pick 2026-10-07; Home's yes); hub7: a D-pad room command takes its room's controller in the same click (Quests q16), its guestack right behind the barcmd; hub6: the "bye" document at logout (the app's waiting screen at once); hub5: the D-pad layout's four commands (map / chat / home / radial); hub2: the "hud" element carries the game's buffs, debuffs and XP bar (LATER item 20); hub3: re-checked
+local HV = "hub30"          -- hub30: the third choice's RULES (the user, 2026-11-10: "it would be better if it stay on out of combat incase someone else pulls me into combat, and it should turn off when I target something out of combat AND start attack and then swap back when an ability is used before that ability fires" ... "make sure hunters mark does not trigger it to swap back on"): on by default and after every fight; OFF when an attack starts out of a fight with a target (PLAYER_ENTER_COMBAT); back ON at an ability's send (UNIT_SPELLCAST_SENT, before it fires) - never for Hunter's Mark, Auto Shot or Attack; hub29 (replaced by hub30): "In combat" turns the option on AT THE PULL (the user, 2026-11-10: "I pull with arcane shot and then when they get close, my auto attack melee is not on"): a spell you cast, Auto Shot or a melee swing starting out of a fight writes 1 right then (allowed: no lockdown yet), and 0 again 8 s later if no fight came of it; hub28: COMBAT AUTO SHOT "In combat" (the user, 2026-11-10: "add a third toggle to the hunter option to basically only turn it on during combat"): "uisw" 28 / 29 - while on, the game's autoRangedCombat is written 1 as a fight starts and 0 when it ends (and 0 at once out of a fight); the doc's sw.shotf, sw.shotfk = whether the fight's write took; hub27: the Party mode switch also starts / stops the combat log (PadMap m112); hub26: DS FOREVER'S OWN PARTY FRAMES AND TARGET BAR (WC.uf, at the end of this file; "uisw" 18 / 19 our party frames, 20 / 21 our target bar; while one is on, the game's own frames of that group stay hidden); hub25: PARTY MODE is an EXPERIMENTAL switch, off by default (the user, 2026-11-07: "Make the party mode an experimental toggle that is off by default"): "uisw" 16 / 17 -> WC.partyOk, which PadMap reads (Select toggles Party mode only while it is true); hub24: the Start attack switch reported while OFF (it read as absent: no QOL row); hub23: Combat Auto Shot for EVERY class (the user: "other classes use a bow"); hub22: START ATTACK ON A HOSTILE TARGET ("uisw" 12 / 13, the secure cell "atkgo") and the hunter's AUTO SHOT (the game's own autoRangedCombat, "uisw" 14 / 15); hub21: a one-time probe of the frames in the bottom-left bar's spot (probe "barprobe"); hub20: the raid / party manager tab with the Party frames switch; hub19: the PARTY FRAMES switch on "uisw" 10 / 11; hub18: the WORLD MARKERS' switch on "uisw" 8 / 9 (Trail.lua's WC.npWant.wm; the doc's sw.wm); hub17: HUD mode SPLIT into its own switches on the row "uisw" (the player frame, the target frame, the enemy nameplates, the personal bar; columns 34 / 35 still the whole bundle for an older app; the doc's sw); hub16: HUD mode's bar WIDTH and SCALE too (column 39 selects which setting columns 36 / 37 / 38 step; the doc's prd carries w / s / sel); hub15: HUD mode's bar height (Interact's WC.prd: columns 36 down / 37 up / 38 default; the doc's prd); hub14: HUD mode wants the enemy nameplates on (ag2 / Trail.lua owns that CVar: WC.npWant.hud); hub13: HUD mode (the player and target frames hidden, alpha only, columns 34 / 35); hub12: Smart buffs' OR wheel (barcmd "smartor", PadMap m62); hub11: the game's CAST BAR on the top screen, Show / Hide by its own two columns of the row (f-top-castbar-toggle); hub10: the game's durability figure rides the "hud" element (f-durability); hub9: the PAUSE wheel's button (Spells, Home's radial pause menu); hub8: the SPELL RADIAL's button (Spells, the user's pick 2026-10-07; Home's yes); hub7: a D-pad room command takes its room's controller in the same click (Quests q16), its guestack right behind the barcmd; hub6: the "bye" document at logout (the app's waiting screen at once); hub5: the D-pad layout's four commands (map / chat / home / radial); hub2: the "hud" element carries the game's buffs, debuffs and XP bar (LATER item 20); hub3: re-checked
 local ROW = "ui"
 local MAX_BITS = 5          -- 2^5 = 32 layouts; a pad row has 40 columns
 
@@ -327,7 +327,9 @@ local SW = { PLAYER_SHOW = 0, PLAYER_HIDE = 1, TARGET_SHOW = 2, TARGET_HIDE = 3,
              UFTOT_OFF = 22, UFTOT_ON = 23,
              -- uf11 (the user: "I dont like the percentage on the health bar but I want toggles for health total, Percentage and blank with
              -- blank as the default"): the bar's text - Total wins over Percent, neither = blank
-             UFHPP_OFF = 24, UFHPP_ON = 25, UFHPT_OFF = 26, UFHPT_ON = 27 }
+             UFHPP_OFF = 24, UFHPP_ON = 25, UFHPT_OFF = 26, UFHPT_ON = 27,
+             -- hub28: Combat Auto Shot only in fights
+             SHOTF_OFF = 28, SHOTF_ON = 29 }
 -- hub22 (the user, 2026-11-07: "a QOL setting for Start attack on Hostile targeting, so that when I press RB to target a hostile target it
 -- starts the attack, and then under that ... for hunters ... the 'Combat Auto Shot'"):
 --   ATK: a NEW hostile target starts the auto attack. The game lets no add-on start it on an event (StartAttack is protected), so the
@@ -351,6 +353,60 @@ local function shotSet(on)
     hubAtk.shotSet = true
     return pcall(set, "autoRangedCombat", on and "1" or "0")
 end
+-- hub28 "IN COMBAT": the game's Auto Shot switching only while a fight is on. The write at the fight's start is made inside the fight
+-- (PLAYER_REGEN_DISABLED comes with the lockdown already on): pcall'd and read back, the answer kept for the doc (shotfk) so the app
+-- can say when the game refused it. Out of a fight the option is 0.
+local function shotWrite(on)
+    local set = (C_CVar and C_CVar.SetCVar) or _G.SetCVar
+    if type(set) ~= "function" then return false end
+    pcall(set, "autoRangedCombat", on and "1" or "0")
+    return shotNow() == on
+end
+local function shotFightSync(on)
+    if hubAtk.shotFight ~= true then return end
+    local ok = shotWrite(on == true)
+    if InCombatLockdown() then hubAtk.shotFightOk = ok end     -- the doc's shotfk: did a write inside a fight take
+end
+WC.shotFightSync = shotFightSync
+-- hub30 THE RULES: on by default (someone else's pull finds it on); a plain attack started OUT of a fight with a target turns it off
+-- (PLAYER_ENTER_COMBAT: the auto attack began); an ability turns it back on at its SEND, before it fires - except Hunter's Mark (every
+-- rank, by its spell IDs and by its name), Auto Shot and Attack themselves; the fight's end turns it on again
+local SHOT_KEEP = { [1130] = true, [14323] = true, [14324] = true, [14325] = true, [53338] = true, [257284] = true,   -- Hunter's Mark
+                    [75] = true, [6603] = true }                                                                      -- Auto Shot, Attack
+local function markName()
+    local get = (C_Spell and C_Spell.GetSpellName) or nil
+    local ok, n = false, nil
+    if type(get) == "function" then ok, n = pcall(get, 1130) end
+    if (not ok or type(n) ~= "string") and type(GetSpellInfo) == "function" then ok, n = pcall(GetSpellInfo, 1130) end
+    return ok and type(n) == "string" and n ~= "" and n or nil
+end
+local function shotEvent(event, ...)
+    if hubAtk.shotFight ~= true then return end
+    if event == "PLAYER_ENTER_COMBAT" then
+        if not InCombatLockdown() and type(UnitExists) == "function" and UnitExists("target") then shotFightSync(false) end
+    elseif event == "UNIT_SPELLCAST_SENT" then
+        local unit, _, _, spellID = ...
+        if unit ~= "player" then return end
+        local id = tonumber(spellID)
+        if id and SHOT_KEEP[id] then return end
+        local mn = markName()
+        if mn and id then
+            local get = (C_Spell and C_Spell.GetSpellName) or nil
+            local okN, n = false, nil
+            if type(get) == "function" then okN, n = pcall(get, id) end
+            if okN and n == mn then return end
+        end
+        shotFightSync(true)
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        shotFightSync(true)
+    end
+end
+local shotFrame = CreateFrame("Frame")
+pcall(function() shotFrame:RegisterEvent("PLAYER_ENTER_COMBAT") end)
+pcall(function() shotFrame:RegisterEvent("PLAYER_REGEN_ENABLED") end)
+pcall(function() shotFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player") end)
+shotFrame:SetScript("OnEvent", function(_, event, ...) pcall(shotEvent, event, ...) end)
+WC.shotEvent = shotEvent
 local function plainTrue(f, ...)
     local ok, v = pcall(f, ...)
     if not ok then return false end
@@ -423,6 +479,10 @@ function hub.swTap(col)
     elseif col == SW.WM_OFF or col == SW.WM_ON then WC.npWant.wm = (col == SW.WM_ON)
     elseif col == SW.ATK_OFF or col == SW.ATK_ON then hubAtk.on = (col == SW.ATK_ON)
     elseif col == SW.SHOT_OFF or col == SW.SHOT_ON then shotSet(col == SW.SHOT_ON)
+    elseif col == SW.SHOTF_OFF or col == SW.SHOTF_ON then
+        -- hub28: "In combat" on / off; on: the option follows the fight from now (0 at once out of one)
+        hubAtk.shotFight = (col == SW.SHOTF_ON)
+        if hubAtk.shotFight and not InCombatLockdown() then shotFightSync(true) end     -- hub30: on by default
     elseif col == SW.UFP_OFF or col == SW.UFP_ON or col == SW.UFT_OFF or col == SW.UFT_ON then
         -- hub26: our own frames on / off; the game's of that group follow (hidden while ours show)
         if type(WC.uf) == "table" and type(WC.uf.set) == "function" then
@@ -509,10 +569,12 @@ local function swDoc()
              party = hm.g.party == true and "hidden" or "shown",
              np = either(np.np, np.hud), prd = either(np.prd, np.hud), wm = np.wm == true,
              atk = atkv, shot = shotNow(), pmode = WC.partyOk == true,
+             shotf = hubAtk.shotFight == true, shotfk = hubAtk.shotFightOk,
              -- hub26: our own party frames / target bar on
              ufp = hub.ufFlag("party"), uft = hub.ufFlag("target"), uftot = hub.ufFlag("tot"), ufhpp = hub.ufFlag("hpp"), ufhpt = hub.ufFlag("hpt"),
              set = { player = hm.g.player ~= nil or nil, target = hm.g.target ~= nil or nil, party = hm.g.party ~= nil or nil, np = np.np ~= nil or nil, prd = np.prd ~= nil or nil, wm = np.wm ~= nil or nil,
                      atk = hubAtk.on ~= nil or nil, shot = hubAtk.shotSet or nil, pmode = WC.partyOk ~= nil or nil,
+                     shotf = hubAtk.shotFight ~= nil or nil,
                      ufp = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.party) or nil,
                      uft = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.target) or nil,
                      uftot = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.tot) or nil,
@@ -798,7 +860,7 @@ end
 -- The switches: "uisw" UFP_OFF / UFP_ON (our party frames), UFT_OFF / UFT_ON (our target bar), UFTOT_OFF / UFTOT_ON (the bar's target of
 -- target, uf8: off by default); the app keeps each per character.
 do
-    local UF = { party = true, target = true, tot = false, hpp = false, hpt = false, V = "uf13" }
+    local UF = { party = true, target = true, tot = false, hpp = false, hpt = false, V = "uf14" }
     WC.uf = UF
     local PRD = type(WC.prd) == "table" and WC.prd or {}
     local function plainV(v) return v ~= nil and (type(WC.isPlain) ~= "function" or WC.isPlain(v)) end
@@ -1385,10 +1447,76 @@ do
         putAuras(f.deb, deb, false)
         putAuras(f.buf, buf, true)
     end
+    -- uf14 THE FLY (the user, 2026-11-09: "When targetting an enemy I want their nameplate to animate up into the target space centered at
+    -- the top of the screen and vise versa"): a new ENEMY target's nameplate bar flies up into the target bar (our own copy: the plate is
+    -- only read for where it is on screen, never moved), the bar shows when it lands; losing the target, the bar flies back down onto the
+    -- plate it came from while that plate still shows. Our own frame, alpha / place only; read-only geometry of the plate.
+    local FLY_S = 0.24
+    local FLY = { host = nil, bar = nil, t0 = 0, from = nil, to = nil, dir = nil }
+    local function rectOf(r)
+        if type(r) ~= "table" then return nil end
+        local ok, l, b, w, h, k = pcall(function()
+            return r:GetLeft(), r:GetBottom(), r:GetWidth(), r:GetHeight(), r:GetEffectiveScale() / UIParent:GetEffectiveScale()
+        end)
+        if not ok then return nil end
+        for _, v in ipairs({ l, b, w, h, k }) do if type(v) ~= "number" or not plainV(v) then return nil end end
+        if w <= 0 or h <= 0 then return nil end
+        return { l * k, b * k, w * k, h * k }
+    end
+    local function plateBarOf(plate)
+        local hb = plate and call(function() return plate.UnitFrame and (plate.UnitFrame.HealthBarsContainer or plate.UnitFrame.healthBar) end)
+        return type(hb) == "table" and hb or nil
+    end
+    local function flyMake()
+        if FLY.host then return end
+        local host = CreateFrame("Frame", nil, UIParent)
+        host:SetFrameStrata("LOW"); host:EnableMouse(false); host:Hide()
+        FLY.bar = bar(host, 10, 4)
+        FLY.bar:ClearAllPoints(); FLY.bar:SetAllPoints(host)
+        host:SetScript("OnUpdate", function()
+            local p = (GetTime() - FLY.t0) / FLY_S
+            if p >= 1 or not FLY.from or not FLY.to then
+                host:Hide()
+                if FLY.dir == "up" and TB.f then TB.f:SetAlpha(1) end
+                FLY.dir = nil
+                return
+            end
+            local e = 1 - (1 - p) ^ 3
+            local a, z = FLY.from, FLY.to
+            host:ClearAllPoints()
+            host:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", a[1] + (z[1] - a[1]) * e, a[2] + (z[2] - a[2]) * e)
+            host:SetSize(a[3] + (z[3] - a[3]) * e, a[4] + (z[4] - a[4]) * e)
+        end)
+        FLY.host = host
+    end
+    local function flyGo(dir, from, to)
+        if not from or not to then return false end
+        flyMake()
+        FLY.dir, FLY.from, FLY.to, FLY.t0 = dir, from, to, GetTime()
+        FLY.host:ClearAllPoints()
+        FLY.host:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", from[1], from[2]); FLY.host:SetSize(from[3], from[4])
+        FLY.host:Show()
+        return true
+    end
+
     function UF.targetStep()
         local has = UF.target and bool(UnitExists, "target")
         if has == nil and UF.target then has = call(UnitName, "target") ~= nil end
-        if not has then if TB.f then TB.f:Hide() end; plateHide(false); return end
+        if not has then
+            -- uf14: the bar flies back down onto the plate it came from (while that plate still shows)
+            if TB.f and TB.f:IsShown() and TB.enemy and TB.lastPlate and TB.lastRect then
+                local okS, shown = pcall(function() return TB.lastPlate:IsVisible() end)
+                if okS and shown == true then
+                    flyMake()
+                    if TB.lastRGB then paint(FLY.bar, TB.lastRGB[1], TB.lastRGB[2], TB.lastRGB[3]) end
+                    flyGo("down", TB.lastRect, rectOf(plateBarOf(TB.lastPlate)))
+                end
+            end
+            TB.enemy, TB.lastPlate, TB.lastRect, TB.changed = nil, nil, nil, nil
+            if TB.f then TB.f:Hide(); TB.f:SetAlpha(1) end
+            plateHide(false)
+            return
+        end
         local f = buildTarget()
         setText(f.name, call(UnitName, "target") or "")
         paint(f.hp, plateRGB("target"))
@@ -1451,6 +1579,26 @@ do
         else f.tot:Hide() end
         plateHide(plateRule())
         f:Show()
+        -- uf14: a NEW enemy target: its plate's bar flies up into the bar (the bar shows when it lands); the fly copy follows the health
+        local rgb = { plateRGB("target") }
+        if TB.changed then
+            TB.changed = nil
+            TB.enemy = bool(UnitCanAttack, "player", "target") == true
+            local plate = TB.enemy and plateOf("target") or nil
+            TB.lastPlate = plate
+            if plate then
+                flyMake()
+                paint(FLY.bar, rgb[1], rgb[2], rgb[3])
+                feed(FLY.bar, nil, "target")
+                if flyGo("up", rectOf(plateBarOf(plate)), rectOf(f.hp)) then f:SetAlpha(0) end
+            elseif FLY.dir == "up" then FLY.host:Hide(); FLY.dir = nil; f:SetAlpha(1) end
+        end
+        if TB.enemy then
+            TB.lastRect = rectOf(f.hp) or TB.lastRect
+            TB.lastRGB = rgb
+            if FLY.bar then feed(FLY.bar, nil, "target"); paint(FLY.bar, rgb[1], rgb[2], rgb[3]) end
+        end
+        if FLY.dir ~= "up" then f:SetAlpha(1) end
     end
 
     -- ---------------------------------------------------------------- the driver: events mark dirty, a 0.1 s step draws
@@ -1468,7 +1616,7 @@ do
     drv:SetScript("OnEvent", function(_, e, unit)
         if e == "UNIT_AURA" then if unit == "target" then TB.auraDirty = true end return end
         if e == "PLAYER_ENTERING_WORLD" then K = scaleK() end
-        if e == "PLAYER_TARGET_CHANGED" then TB.auraDirty = true end
+        if e == "PLAYER_TARGET_CHANGED" then TB.auraDirty = true; TB.changed = true end      -- uf14: the fly
         stepAll()
     end)
     drv:SetScript("OnUpdate", function(_, el)

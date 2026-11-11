@@ -476,12 +476,11 @@ local function layoutButton(d)
         local r = PCALL(_G.GetPetActionInfo, d.s)
         if r[1] then
             local name, tex = realStr(SV(r[2])), SV(r[3])
-            if SV(r[4]) == true then      -- token: both are keys into _G (petactionflyout.lua)
-                if name then name = realStr(S(function() return _G[name] end)) or name end
-                local key = realStr(tex)
-                if key then tex = S(function() return _G[key] end) end
+            if type(WC.petTok) == "table" and WC.petTok.isToken(SV(r[4]), name) then   -- token: both are keys into _G (b-pet-tokens)
+                b.n, b.i, b.id = WC.petTok.name(name), WC.petTok.icon(tex) or texVal(tex), nil
+            else
+                b.n, b.i, b.id = name, texVal(tex), num(SV(r[8]))
             end
-            b.n, b.i, b.id = name, texVal(tex), num(SV(r[8]))
         end
         return b
     end
@@ -593,7 +592,38 @@ end
 -- f-class-radial: the game's pet COMMAND radial keeps fixed places (camelot/petclassflyouts.xml): Attack 1, Follow 2, Move To 3,
 -- (4 left empty on purpose), Passive 5, Defensive 6, Assist 7; any other command (Stay, Aggressive) is not on it
 local PET_CMD_PLACE = { PET_ACTION_ATTACK = 1, PET_ACTION_FOLLOW = 2, PET_ACTION_MOVE_TO = 3, PET_MODE_PASSIVE = 5,
-                        PET_MODE_DEFENSIVE = 6, PET_MODE_ASSIST = 7 }
+                        PET_MODE_DEFENSIVE = 6, PET_MODE_DEFENSIVEASSIST = 6, PET_MODE_ASSIST = 7 }
+-- b-pet-tokens (the user's hunter, 2026-11-10: "The class bars for both triggers are both blank ... the right one has lit circles with
+-- like syntax"; the radial document: every command came as a pet SPELL named "PET_ACTION_ATTACK", icon "tex:PET_ATTACK_TEXTURE"):
+-- this client does not answer GetPetActionInfo's isToken as true, so a command is known by its NAME too - a PET_ACTION_ / PET_MODE_
+-- key. Its icon: the game's texture global (blizzard_actionbar/shared/petactionbar.lua), as a file ID from the listfile (the class
+-- radial draws file IDs only), its name the game's string for the key
+local PET_TEX_FID = { PET_ATTACK_TEXTURE = 132152, PET_FOLLOW_TEXTURE = 132328, PET_MOVE_TO_TEXTURE = 457329,
+                      PET_PASSIVE_TEXTURE = 132311, PET_DEFENSIVE_TEXTURE = 132110, PET_DEFENSIVEASSIST_TEXTURE = 132110,
+                      PET_AGGRESSIVE_TEXTURE = 132277, PET_ASSIST_TEXTURE = 524348, PET_WAIT_TEXTURE = 136106,
+                      PET_DISMISS_TEXTURE = 136222 }
+local PET_TOK_NAME = { PET_ACTION_ATTACK = "Attack", PET_ACTION_FOLLOW = "Follow", PET_ACTION_MOVE_TO = "Move To",
+                       PET_ACTION_WAIT = "Stay", PET_ACTION_DISMISS = "Dismiss", PET_MODE_PASSIVE = "Passive",
+                       PET_MODE_DEFENSIVE = "Defensive", PET_MODE_DEFENSIVEASSIST = "Defensive", PET_MODE_AGGRESSIVE = "Aggressive",
+                       PET_MODE_ASSIST = "Assist" }
+local function petIsToken(flag, name)
+    if flag == true then return true end
+    local n = realStr(name)
+    return n ~= nil and (n:find("^PET_ACTION_") ~= nil or n:find("^PET_MODE_") ~= nil)
+end
+local function petTokName(name)
+    local n = realStr(name)
+    if not n then return nil end
+    return realStr(S(function() return _G[n] end)) or PET_TOK_NAME[n] or n
+end
+local function petTokIcon(tex)
+    local k = realStr(tex)
+    if not k then return nil end
+    if PET_TEX_FID[k] then return PET_TEX_FID[k] end
+    local path = realStr(S(function() return _G[k] end))
+    return path and iconOfPath(path) or nil
+end
+WC.petTok = { isToken = petIsToken, name = petTokName, icon = petTokIcon }
 
 local function petEntries(tokens)
     local list = {}
@@ -601,14 +631,15 @@ local function petEntries(tokens)
     for i = 1, n do
         local r = pack(CALL(GetPetActionInfo, i))
         -- name, texture, isToken, isActive, autoCastAllowed, autoCastEnabled, spellID
-        local name, tex, isToken, active = r[2], r[3], r[4] == true, r[5] == true
+        local name, tex, active = r[2], r[3], r[5] == true
+        local isToken = petIsToken(SV(r[4]), name)       -- b-pet-tokens
         local place = tokens and PET_CMD_PLACE[realStr(name) or ""] or (not tokens and #list < 8 and #list + 1) or nil
         if r[1] and name ~= nil and isToken == tokens and place then
             local e = { k = tokens and "petcmd" or "petspell", slot = i, act = bit01(active), p = place }
             if tokens then
                 -- a token's name and texture are GLOBAL STRING NAMES (PET_ACTION_ATTACK -> "Attack")
-                e.n = realStr(rawget(_G, realStr(name) or "")) or realStr(name)
-                e.i = iconOfPath(rawget(_G, realStr(tex) or ""))
+                e.n = petTokName(name)
+                e.i = petTokIcon(tex)
             else
                 e.n = realStr(name)
                 e.id = num(r[8])
@@ -628,12 +659,63 @@ end
 -- saved; the cells hold what the radial shows. Each entry carries its cell (`c`, `ac`) only while the built cells match it.
 local CR = { want = {}, frozen = {}, row = nil, sig = nil }
 local function crCellOf(side, e) return (side == "l" and 0 or 8) + e.p - 1 end
+
+-- b-game-wheel-shut (the user's hunter, 2026-11-10: "lb+lt is still taking my control away from my right stick", then "I dont want to
+-- compromise. do what we need to do so that it works how I want"): the chord that opens OUR class wheel also opens the GAME'S own
+-- (blizzard_gamepadactionbars classactionflyout.lua: the class button's OnUpdate clicks itself while shoulder + trigger are down), and
+-- that one is a TOGGLE (petactionflyout.lua HandleFlyoutClickOverride: TogglePopup on every press): it stays open after the chord is let
+-- go and its binding group (flyoutradial.lua: GAMEPAD_STICK_RIGHT) keeps the right stick until the chord is pressed again. Closing it
+-- from add-on code would move the game's protected buttons (blocked in a fight, a taint outside one). Hiding the wheel's frame IS the
+-- game's own supported route (flyoutradial.lua: the class button, parented to the wheel while it is open, gets OnHide -> ClosePopup ->
+-- the button back where it was, the stick binding off), and a SECURE SNIPPET may hide a protected frame in a fight too. So: one secure
+-- handler of ours whose click hides the game's three gamepad wheels, reached by a "click" cell on this row (col GF_COL), which the app
+-- taps when its class wheel opens and when it closes. While a class chord is held the game's wheel is also drawn at alpha 0 (a
+-- post-hook on its Show: alpha only), so it never shows on the top screen in the moment before the tap lands.
+local GF_COL = 24
+local GF_WHEELS = { "GamepadPetActionFlyout", "GamepadPetSpellFlyout", "GamepadSpellFlyout" }
+local GF = { btn = nil, refs = 0, hooked = {} }
+local function gfChordHeld()
+    local function down(k) return type(k) == "string" and S(function() return IsKeyDown(k) end) == true end
+    local L, LT = rawget(_G, "GAMEPAD_SHOULDER_LEFT") or "PADLSHOULDER", rawget(_G, "GAMEPAD_TRIGGER_LEFT") or "PADLTRIGGER"
+    local R, RT = rawget(_G, "GAMEPAD_SHOULDER_RIGHT") or "PADRSHOULDER", rawget(_G, "GAMEPAD_TRIGGER_RIGHT") or "PADRTRIGGER"
+    return (down(L) and down(LT)) or (down(R) and down(RT))
+end
+local function gfSetup()
+    if S(InCombatLockdown) ~= false then return GF.btn end
+    if not GF.btn then
+        local ok, b = pcall(CreateFrame, "Button", "WowCompanionGameWheelShut", UIParent, "SecureHandlerClickTemplate")
+        if not ok or not b then return nil end
+        -- no f-u-n-c-t-i-o-n word in the snippet (the secure checker refuses it, even in a comment: PadMap m94)
+        b:SetAttribute("_onclick", [=[
+            for i = 1, 3 do
+                local w = self:GetFrameRef("wheel" .. i)
+                if w and w:IsShown() then w:Hide() end
+            end
+        ]=])
+        GF.btn = b
+    end
+    for i, n in ipairs(GF_WHEELS) do
+        local w = rawget(_G, n)
+        if type(w) == "table" and GF.refs < 3 and not GF.hooked[n] then
+            local setRef = rawget(_G, "SecureHandlerSetFrameRef")
+            local okRef = (type(setRef) == "function" and pcall(setRef, GF.btn, "wheel" .. i, w))
+                or (type(GF.btn.SetFrameRef) == "function" and pcall(GF.btn.SetFrameRef, GF.btn, "wheel" .. i, w))
+            if okRef then GF.refs = GF.refs + 1 end
+            GF.hooked[n] = pcall(hooksecurefunc, w, "Show", function(self)
+                if WC.classWheelOn and gfChordHeld() then pcall(self.SetAlpha, self, 0) else pcall(self.SetAlpha, self, 1) end
+            end)
+        end
+    end
+    return GF.btn
+end
+WC.gameWheelShut = { col = GF_COL, setup = gfSetup }
 local function crInit(btn, col)
     local w = CR.want[col]
     btn:SetAttribute("type", w and w.type or nil)
     btn:SetAttribute("spell", w and w.spell or nil)
     btn:SetAttribute("action", w and w.action or nil)
     btn:SetAttribute("macrotext", w and w.macrotext or nil)
+    btn:SetAttribute("clickbutton", w and w.clickbutton or nil)
     CR.frozen[col] = w and w.sig or nil
 end
 local function crClick(col)
@@ -658,11 +740,15 @@ local function crSync(ca)
             end
         end
     end
+    -- b-game-wheel-shut: the cell that hides the game's own wheels (only while a class wheel of ours exists)
+    WC.classWheelOn = (ca and (ca.l or ca.r)) and true or false
+    local gfb = WC.classWheelOn and gfSetup() or nil
+    if gfb then want[GF_COL] = { type = "click", clickbutton = gfb, sig = "gf" .. GF.refs }; parts[#parts + 1] = GF_COL .. "=gf" .. GF.refs end
     local sig = table.concat(parts, ",")
     local pad = WC.pad
     if sig ~= CR.sig and S(InCombatLockdown) == false and type(pad) == "table" and type(pad.secureRow) == "function" then
         CR.want = want
-        local ok, row = pcall(pad.secureRow, "classr", 24, crInit, crClick)
+        local ok, row = pcall(pad.secureRow, "classr", 25, crInit, crClick)
         CR.row = (ok and type(row) == "number") and row or nil
         CR.sig = CR.row and sig or nil
         if not CR.row then CR.frozen = {} end
@@ -678,6 +764,8 @@ local function crSync(ca)
         end
     end
     if ca and not CR.row then ca.nopad = 1 end
+    -- b-game-wheel-shut: the app's tap cell, only while it is built as the shut
+    if ca and want[GF_COL] and CR.frozen[GF_COL] == want[GF_COL].sig then ca.gf = GF_COL end
 end
 
 -- 1.0.19 TOUCH CAST (the user, 2026-11-09: "When touching the top controller stuff I don't want it to open the old controller room.

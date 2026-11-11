@@ -102,10 +102,12 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
         GameUi.Row(COMPASS_CAM_ID, "Compass follows the camera", null, if (s.cam == true) UiMode.ON else UiMode.OFF, true, s.cam != true,
             if (s.cam == true) "Experiment: while the quest's marker is on screen" else "Off: it follows your character")
     }
-    /** tt1: "Hide game tooltips" (default off), shown once the add-on set has the switch */
+    /** tt1: the game's tooltips, shown once the add-on set has the switch. tt2 (the user, 2026-11-10: "the wording for the tooltips being
+     *  on or off is inconsistent with the other settings"): named for the thing as every other row is, On = they show (the default),
+     *  Off = hidden (the add-on's "hide") */
     private fun tipsRow(): GameUi.Row? = TipsSwitch.state?.let { s ->
-        GameUi.Row(TIPS_ID, "Hide game tooltips", null, if (s.hide) UiMode.ON else UiMode.OFF, true, s.hide,
-            if (s.hide) "Hidden: the game's tooltips are invisible on the top screen" else "Off: the game's tooltips show as usual")
+        GameUi.Row(TIPS_ID, "Game tooltips", null, if (s.hide) UiMode.OFF else UiMode.ON, true, s.hide,
+            if (s.hide) "Off: the game's tooltips are hidden on the top screen" else "The game's tooltips on the top screen")
     }
     /** at1: "Aggro tint" (default on; ar1's "Aggro rings" switch), shown once the add-on set has it */
     private fun ringsRow(): GameUi.Row? = RingsSwitch.state?.let { s ->
@@ -208,6 +210,7 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
                         DANGER_ID -> if (Settings.ROUTE_MODES_ON && Settings.questTracking == "safepath")
                             Settings.avoidDanger = Settings.AVOID_DANGER[sd.second]
                         GameUi.UFHP_ID -> GameUi.setHpText(sd.second)
+                        GameUi.SHOT_ID -> GameUi.setShotMode(sd.second)
                         GameUi.HUD_W_ID -> GameUi.stepHudWidth(sd.second)
                         GameUi.HUD_S_ID -> GameUi.stepHudScale(sd.second)
                         else -> GameUi.stepHudHeight(sd.second)
@@ -220,7 +223,7 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
                             LOOT_ID -> HomeLootSwitch.turn(context, m == UiMode.ON)
                             COMPASS_ID -> CompassSwitch.turn(context, m == UiMode.ON)
                             COMPASS_CAM_ID -> CompassSwitch.turnCam(context, m == UiMode.ON)
-                            TIPS_ID -> TipsSwitch.turn(context, m == UiMode.ON)
+                            TIPS_ID -> TipsSwitch.turn(context, m != UiMode.ON)          // tt2: On = they show (turn() takes "hide")
                             RINGS_ID -> RingsSwitch.turn(context, m == UiMode.ON)
                             GameUi.CASTBAR_ID -> GameUi.setCastBar(m == UiMode.ON)
                             GameUi.HUD_ID -> GameUi.setHud(m == UiMode.ON)
@@ -290,7 +293,8 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
             pMode.color = if (r.known) Theme.gold else Theme.dim
             c.drawText(Tr.t(if (r.id == GameUi.HUD_H_ID || r.id == GameUi.HUD_W_ID || r.id == GameUi.HUD_S_ID) GameUi.hudValue(r.id)
                 else if (r.id == DANGER_ID) Settings.avoidDanger.replaceFirstChar { it.uppercase() }
-                else if (r.id == GameUi.UFHP_ID) GameUi.HP_WORDS[GameUi.hpText()] else word(r.mode)),
+                else if (r.id == GameUi.UFHP_ID) GameUi.HP_WORDS[GameUi.hpText()]
+                else if (r.id == GameUi.SHOT_ID && GameUi.shotThree()) GameUi.SHOT_WORDS[GameUi.shotMode()] else word(r.mode)),
                 box.right - 24f, box.centerY() + 10f, pMode)
             rowBoxes.add(box to r.id)
             y += ROW_H + GAP
@@ -342,6 +346,20 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
             }
             pSub.color = Theme.textDim
             c.drawText(Tr.t("What the target bar writes on its health. For this character."), left + 6f, top + SEG_H + 34f, pSub)
+            return
+        }
+        if (r.id == GameUi.SHOT_ID && GameUi.shotThree()) {
+            // hub28: Off / On / In combat, the chosen one lit
+            val sw = (right - left - 2f * gap) / 3f
+            val sel = GameUi.shotMode()
+            for ((k, w) in GameUi.SHOT_WORDS.withIndex()) {
+                val b = RectF(left + k * (sw + gap), top, left + k * (sw + gap) + sw, top + SEG_H)
+                UiKit.choice(c, b, w, k == sel)
+                stepBoxes.add(b to (GameUi.SHOT_ID to k))
+            }
+            pSub.color = Theme.textDim
+            c.drawText(Tr.t(listOf("The game's switching between Auto Shot and auto attack, off.",
+                "Auto Shot at range, auto attack up close.", "On; a plain attack you start turns it off, an ability back on.")[sel]), left + 6f, top + SEG_H + 34f, pSub)
             return
         }
         if (r.id == GameUi.HUD_H_ID || r.id == GameUi.HUD_W_ID || r.id == GameUi.HUD_S_ID) {
@@ -409,6 +427,7 @@ class GameUiSection(context: Context, private val part: Part = Part.ALL) : View(
             else "The game's player frame (and its pet frame) is hidden. For this character."
         if (r.id == GameUi.ATK_ID) return if (r.mode == UiMode.ON) "Targeting an enemy (RB) starts your auto attack. For this character."
             else "Targeting an enemy only targets it. For this character."
+        if (r.id == GameUi.SHOT_ID && GameUi.shotMode() == 2) return "The game's own option, Smart: on by default; a plain attack you start out of a fight turns it off, your next ability (not Hunter's Mark) turns it back on. For this character."
         if (r.id == GameUi.SHOT_ID) return if (r.mode == UiMode.ON) "The game's own option: Auto Shot (bows, guns, wands) at range, auto attack up close."
             else "The game's own option, off: no switching between Auto Shot and auto attack."
         if (r.id == GameUi.UFP_ID) return if (r.mode == UiMode.ON) "DS Forever's party frames: real health, Party mode's pick and LB buttons. The game's are hidden. For this character."

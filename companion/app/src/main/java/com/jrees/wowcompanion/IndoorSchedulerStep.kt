@@ -211,8 +211,10 @@ object IndoorSchedulerStep : ArtHarvest.Step {
                 factory.open(g).use { gen ->
                     val root = ArtHarvest.root(ctx)
                     // the app install a deferral is good for: a new APK (even a test build with the same version) retries once
-                    val app = runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).let { "${it.longVersionCode}/${it.lastUpdateTime}" } }
-                        .getOrDefault("?")
+                    // 1.0.22 (the user: "the indoor maps are just not completing ... it does not progress" - 1616/1837, all 221 left DEFERRED by
+                    // the generator's own rules, and every new APK re-tried them all: ~10 min of full CPU a start for nothing): a deferral now
+                    // holds until the GAME build or the GENERATOR (its algorithm number, part of each deferral's identity) changes
+                    val app = "gen"
                     val scheduler = IndoorScheduler(IndoorBakeStore(root), root, g.buildKey, gen, signals, dataDir(ctx),
                         onStatus = { publishStatus(ctx, it) }, log = { Log.i(TAG, it) }, app = app)
                     val outcome = scheduler.run()
@@ -274,6 +276,9 @@ object IndoorSchedulerStep : ArtHarvest.Step {
         override fun busy(): Boolean {
             // 2026-11-07 (the user: the app "is sluggish as fuck before I ever press update"; the Thor's CPU: interiors-bake 74 % on the
             // start screen): no game = the player is on DS Forever's own screens, so the bake waits; it builds while the game runs
+            // 1.0.22 (the user: "My indoor maps are not completing for some reason they have been stuck"): while STREAMING the game runs
+            // on the PC and the Thor only shows video, so it builds then too (it waited for a local game that never came); an art run first
+            if ((InputSink.sink as? TapSink)?.route == "stream") return ArtHarvest.state is ArtHarvest.State.Running
             if (!LauncherHooks.gameUp()) return true
             // 1.0.17 (the user's pick for the 8 / 12 GB Thors, "Pause while playing, always"): it only builds while the game runs, which
             // is exactly when those models run out of memory (#37: Android killed DS Forever) - so it never bakes there

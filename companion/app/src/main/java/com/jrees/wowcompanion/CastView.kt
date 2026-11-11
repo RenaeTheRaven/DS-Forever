@@ -130,6 +130,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val ov = arrayOfNulls<String>(STATE_LAYERS)
         /** the class-only radials (hud.ca): left = LB+LT, right = RB+RT; null for classes without one */
         var caL: Radial? = null; var caR: Radial? = null
+        /** b-game-wheel-shut: the "classr" cell whose tap hides the GAME's own gamepad wheels (hud.ca.gf); null = not built */
+        var caGf: Int? = null
     }
 
     /** one class radial: its 8 PLACES as the game lays them out (0 = top, clockwise; f-class-radial: a pet command keeps its fixed
@@ -361,7 +363,21 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         set(v) { if (field != v) { field = v; invalidate() } }
     private val roomBtns = arrayOfNulls<Btn>(4)
 
+    /**
+     * p35 (the user 2026-11-10: "change the left and right D-pad button Icons to move the bar left or right. until the home bar is
+     * closed"): while Home's room bar is open (the toolbar's Down, or the Home Bar command on any button), the bare D-pad's Left / Right
+     * show the bar's arrows (the bar holds the controller then: they move it)
+     */
+    var barArrows = false
+        set(v) { if (field != v) { field = v; invalidate() } }
+    private val barBtns = arrayOfNulls<Btn>(2)
+
     private fun roomOverride(li: Int, src: Int): Btn? {
+        if (barArrows && li == N && (src == 0 || src == 2)) {
+            val i = src / 2
+            return barBtns[i] ?: Btn().apply { p = src + 1; k = "fixed"; e = true; special = if (i == 0) SP_ARROW_L else SP_ARROW_R }
+                .also { barBtns[i] = it }
+        }
         if (!roomBarOn || li != N || src > 3) return null
         val what = roomBar?.get(src + 1) ?: return null
         roomBtns[src]?.let { if (it.icon > 0 && it.shader == null) resolve(it, false); return it }
@@ -465,8 +481,12 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private fun commandOverride(li: Int, src: Int): Btn? {
         if (li !in 0 until STATE_LAYERS) return null
         val at = li * 8 + src
-        val icon = commands?.get(at)?.takeIf { it > 0 } ?: return null
+        val icon = commands?.get(at)?.takeIf { it > 0 || it == HOME_SWIRL } ?: return null
         val cached = cmdBtns[at]
+        if (icon == HOME_SWIRL) {                                          // p35: the Home Bar command, the bar Home button's own face
+            return cached?.takeIf { it.kit == "home_stone_rough" } ?: Btn().apply { p = src + 1; k = "command"; e = true; kit = "home_stone_rough"; kitCut = true; kitScale = 0.95f }
+                .also { cmdBtns[at] = it }
+        }
         if (cached != null && cached.icon == icon) { if (cached.shader == null) resolve(cached, src >= 4); return cached }
         val b = Btn().apply { p = src + 1; k = "command"; this.icon = icon; e = true }
         classify(b)
@@ -873,7 +893,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             }
         }
         o.optJSONObject("ov")?.let { ov -> for (li in 0 until STATE_LAYERS) h.ov[li] = str(ov.opt(LAYER_KEYS[li])) }
-        o.optJSONObject("ca")?.let { ca -> h.caL = parseRadial(ca.optJSONObject("l")); h.caR = parseRadial(ca.optJSONObject("r")) }
+        o.optJSONObject("ca")?.let { ca -> h.caL = parseRadial(ca.optJSONObject("l")); h.caR = parseRadial(ca.optJSONObject("r"))
+            h.caGf = if (ca.has("gf")) ca.optInt("gf", -1).takeIf { it >= 0 } else null }
         // f-class-radial: the game's stance / pet bar placement, read only (Settings > Home shows it)
         o.optJSONObject("bars")?.let { b -> GameBars.note(b.optJSONObject("st"), b.optJSONObject("ps")) }
 
@@ -1280,9 +1301,12 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     var onButtonsAlso: ((held: Int) -> Unit)? = null
 
     private fun onPad(lt: Boolean, rt: Boolean, lb: Boolean, rb: Boolean) {
+        if (lt != padLt || rt != padRt || lb != padLb || rb != padRb) shoulderAt = SystemClock.elapsedRealtime()   // b-class-free-gap
         padLt = lt; padRt = rt; padLb = lb; padRb = rb
-        onShoulders?.invoke(lb, rb)
-        noteClassRadial()                                                  // f-class-radial: Home's mirror
+        noteClassRadial()                                                 // f-class-radial: Home's mirror
+        // 1.0.20 (the user: "the LB and class radial on L and L2 are conflicting and overlapping"): LB + a trigger is the class radial's
+        // chord, so the LB picture shows for LB ALONE - never with LT / RT held or a class radial open
+        onShoulders?.invoke(lb && !lt && !rt && !classOpen, rb)
         noteJoin(SystemClock.elapsedRealtime())
         setLayer(computeLayer())
         invalidate()
@@ -2539,7 +2563,24 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     var onClassPick: ((Int) -> Unit)? = null
     private var classHeld = false
     private var classLastPointed = -1
-    private val freeLater = Runnable { if (classHeld && chordSide == ClassChord.NONE) { classHeld = false; onClassHold?.invoke(false) } }
+    private val freeLater = Runnable { freeClass() }
+    /** the last change of LB / LT / RB / RT (elapsedRealtime) */
+    private var shoulderAt = 0L
+    /** b-class-free-gap (the user 2026-11-10: "when opening my left class radial its locking up my right stick inputs until I press the
+     *  radial open again"): the left chord is LB + LT, the game's Ctrl + Shift here, and the free went out the moment the chord was let
+     *  go - inside the tap-timing rule's window (no tap within ~150 ms of a controller change), where the click can be lost; nothing
+     *  sent it again, so the add-on's stick catch kept the right stick until the next open + close. Now the free waits out the gap
+     *  (the host also checks it landed: [classHolding]) */
+    private fun freeClass() {
+        if (!classHeld || chordSide != ClassChord.NONE) return
+        val wait = CLASS_TAP_GAP_MS - (SystemClock.elapsedRealtime() - shoulderAt)
+        if (wait > 0) { removeCallbacks(freeLater); postDelayed(freeLater, wait); return }
+        classHeld = false; onClassHold?.invoke(false)
+    }
+    /** b-game-wheel-shut: the cell that hides the game's own wheel (null = the add-on has none built) */
+    fun gameWheelShutCol(): Int? = hud?.caGf
+    /** the app holds the controller for a class wheel now (its free not sent yet) */
+    fun classHolding(): Boolean = classHeld
     private fun tapOf(side: Int) = if (side == ClassChord.LEFT) HomeSettings.classTapL else HomeSettings.classTapR
     private fun pickAOf(side: Int) = if (side == ClassChord.LEFT) HomeSettings.classPickAL else HomeSettings.classPickAR
     /** the open side's radial and the place the stick points at in it now */
@@ -3565,6 +3606,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         /** b-class-takeover: the stick counts as back in the middle under this; a closed wheel lets the controller go then, or after [CLASS_FREE_MS] */
         const val CLASS_NEUTRAL = 0.3f
         const val CLASS_FREE_MS = 1_500L
+        /** b-class-free-gap: the free's tap waits this long after the last bumper / trigger change (the tap-timing rule, as LB's 180) */
+        const val CLASS_TAP_GAP_MS = 180L
         // layers: the four trigger layers carry state, the three shoulder layers do not
         private const val N = 0; private const val LT = 1; private const val RT = 2; private const val LR = 3
         private const val FR = 4; private const val HO = 5; private const val SC = 6
@@ -3607,6 +3650,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         private const val SP_JUMP = 3
         private const val SP_HAND = 4
         private const val SP_LOOT = 5
+        /** p35: [commands]' picture for the Home Bar command (HomeFightFace): the bar Home button's own face */
+        const val HOME_SWIRL = -2
         private const val SP_ARROW_L = 6        // L, U, R, D must stay consecutive
         private const val SP_ARROW_U = 7
         private const val SP_ARROW_R = 8

@@ -97,10 +97,10 @@ class StreamPartsTest {
     @Test fun aTapIsAnAbsoluteClickOnTheStream() {
         val r = Rec(); val k = StreamKeys(r, 1920, 1080) {}
         k.tap(0.5f, 0.25f)
-        assertArrayEquals(intArrayOf(959, 269, 1920, 1080), r.pos.single())
+        assertArrayEquals(intArrayOf(15000, 7500, StreamKeys.REF, StreamKeys.REF), r.pos.single())
         assertEquals(listOf(true to StreamKeys.BUTTON_LEFT, false to StreamKeys.BUTTON_LEFT), r.buttons)
         k.tap(2f, -1f)                                                                       // clamped to the screen
-        assertArrayEquals(intArrayOf(1919, 0, 1920, 1080), r.pos.last())
+        assertArrayEquals(intArrayOf(StreamKeys.REF, 0, StreamKeys.REF, StreamKeys.REF), r.pos.last())
         k.button(true, true)
         assertEquals(true to StreamKeys.BUTTON_RIGHT, r.buttons.last())
     }
@@ -262,7 +262,7 @@ class StreamPartsTest {
         assertNull(LaunchPlan.pickApp(emptyList()))
         assertEquals("resume", LaunchPlan.verb(5, 5)); assertEquals("launch", LaunchPlan.verb(0, 5)); assertEquals("launch", LaunchPlan.verb(7, 5))
         val q = LaunchPlan.query(5, StreamQuality(), ByteArray(16) { 0x11 }, 42, "&corever=1")
-        assertTrue(q.startsWith("appid=5&mode=1920x1080x60&additionalStates=1&sops=0&rikey=" + "11".repeat(16) + "&rikeyid=42"))
+        assertTrue(q.startsWith("appid=5&mode=1920x1080x60&additionalStates=1&sops=1&rikey=" + "11".repeat(16) + "&rikeyid=42"))
         assertTrue(q.contains("&localAudioPlayMode=0&surroundAudioInfo=196610"))
         assertTrue(q.endsWith("&corever=1"))
         assertArrayEquals(byteArrayOf(0, 0, 0, 42) + ByteArray(12), LaunchPlan.riIv(42))

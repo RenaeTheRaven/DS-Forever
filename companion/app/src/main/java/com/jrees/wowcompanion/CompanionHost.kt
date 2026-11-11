@@ -554,7 +554,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // that to open the pause menu"; "Wheel everywhere"); B still goes Home from a room, a room slice switches rooms
         barSelect = HomeBarSelect(this, strip, { questsPad }) { r -> if (r == Room.HOME) openPause("the bar's swirl", byStart = false) else pickRoom(r) }
         // LATER item 23a (the user: "the buttons at the top still show their presses, and that's confusing"): quiet while the cursor is up
-        barSelect.onOpenChanged = { open -> castView.quietPresses = open }
+        // p35: while the bar holds the controller its D-pad Left / Right move it: Cast shows the bar's arrows there
+        barSelect.onOpenChanged = { open -> castView.quietPresses = open; castView.barArrows = open }
         // b-cast-predict-menus (the user: "the predictive cast is triggering when I am navigating menus"): the predicted bar starts only
         // for a press that goes to the game's bars - the router's own holder (the add-on's capture), Home's guests, the menus on screen
         castView.pressesReachGame = {
@@ -828,8 +829,16 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // radials"): one overlay at a time
         // b-class-takeover: the class wheel holds the controller (the guest "class") and casts through the "classr" row
         castView.onClassHold = { hold ->
+            classFreeTry++
             val sent = guestTap(GuestPad.cells(questsPad, "class", hold))
             Log.i("WCLOG", "class radial: ${if (hold) "hold" else "free"} ${if (sent) "sent" else "not sent (no qact row)"}")
+            if (!hold) { val mine = classFreeTry; ui.postDelayed({ classFreeCheck(mine, 1) }, CLASS_FREE_CHECK_MS) }
+            // b-game-wheel-shut (the user: "do what we need to do so that it works how I want"): the same chord opened the GAME's own wheel
+            // (a toggle that keeps the right stick until pressed again): its secure cell hides it, at our open and again at our close
+            castView.gameWheelShutCol()?.let { col ->
+                val shut = TapBridge.tap(this, questsPad, "classr", col) { why -> Log.i("WCLOG", "class radial: game wheel shut refused ($why)") }
+                Log.i("WCLOG", "class radial: game wheel shut ${if (shut) "sent" else "not sent"} (${if (hold) "open" else "close"})")
+            }
         }
         castView.onClassPick = { col -> TapBridge.tap(this, questsPad, "classr", col) { why -> Log.i("WCLOG", "class radial: cast refused ($why)") } }
         castView.onClassChordLog = { what ->
@@ -881,12 +890,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         lbView = LbPartyView(this)
         // 1.0.19: Home's sides move only far enough for the picture (LbPartyView.SIDE_PX)
         lbView.onSlide = { t -> if (room == Room.HOME && !pauseView.isOpen && !tradOpen()) homeView.pauseSlide(t, LbPartyView.SIDE_PX) }
-        castView.onShoulders = { lb, rb ->
-            // 1.0.19: only in the world (never over the start-up screens: the user, "The LB menu is also appearing in the app startup screen")
-            val free = room == Room.HOME && !pauseView.isOpen && !tradOpen() && !(::radialView.isInitialized && radialView.isOpen) &&
-                GameLife.worldNow && (!::chooserPanel.isInitialized || chooserPanel.visibility != View.VISIBLE)
-            lbView.lb(lb && !rb && free)
-        }
+        castView.onShoulders = { lb, rb -> lbAloneNow = lb && !rb; lbEval() }
+        // 1.0.20: the class wheel's close done (its column back over it): the LB picture's turn
+        homeView.onClassIdle = { lbEval() }
         castView.onButtonsAlso = { m -> lbView.buttons(m) }
         // 1.0.19: a touch on a controller button presses the game's own action (ActionBar.lua's "tcast" row)
         castView.onTouchCast = { cell -> TapBridge.tap(this, questsPad, "tcast", cell) { why -> Log.i("WCLOG", "touch cast refused ($why)") } }
@@ -1541,6 +1547,18 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var chatBSaid: Boolean? = null
 
     /** the shared capture's holder as last known (the interact document's `holder`, or a guest's own hold / free answer) */
+    /** b-class-free-gap: the class wheel's free is checked [CLASS_FREE_CHECK_MS] later and sent again (up to [CLASS_FREE_TRIES]) while the
+     *  capture still names "pad:class" and no class wheel holds: a lost click left the right stick caught until the next open + close.
+     *  A spare free is harmless (Quests' freeGuest answers ok when nothing is held) */
+    private var classFreeTry = 0
+    private fun classFreeCheck(mine: Int, n: Int) {
+        if (mine != classFreeTry || castView.classHolding() || capHolder != "pad:class") return
+        val sent = guestTap(GuestPad.cells(questsPad, "class", false))
+        Log.i("WCLOG", "class radial: free once more ($n, the capture still names pad:class) ${if (sent) "sent" else "not sent"}")
+        if (n < CLASS_FREE_TRIES) ui.postDelayed({ classFreeCheck(mine, n + 1) }, CLASS_FREE_CHECK_MS)
+    }
+    private val CLASS_FREE_CHECK_MS = 700L
+    private val CLASS_FREE_TRIES = 3
     private var capHolder = ""
     /** b97: when the interact doc's holder last changed (uptime ms): Professions' book tap waits for the hand-over to settle */
     private var capHolderAt = 0L
@@ -1576,7 +1594,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             if (::interactView.isInitialized) interactView.onPadKey(k, down)     // 1.0.8: its keyboard, only while it is up
             if (k == "PADFORWARD" && down) startPressed()
             if (k == "PAD2" && down) bPressed()
-            if (down && k == "PADDDOWN" && room == Room.HOME && capHolder.isEmpty() && !DirectPad.sideHeld()
+            // p35 (the user 2026-11-10: "When pressing down on the Dpad without the DS toolbar enabled the home button is lighting up for
+            // a half second"): only while the bare Down IS the Home bar - the toolbar on, or the Home Bar command put on it
+            if (down && k == "PADDDOWN" && room == Room.HOME && capHolder.isEmpty() && !DirectPad.sideHeld() && downIsHomeBar()
                 && interactView.visibility != View.VISIBLE && dialogView.visibility != View.VISIBLE
                 && spellsOverlay.visibility != View.VISIBLE && startView.visibility != View.VISIBLE
                 && !homeView.partyHoldsDpad()) barSelect.openEarly(room)       // Party mode's D-pad: no early bar either (2026-11-04)
@@ -2755,6 +2775,18 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var slideT = 0f
 
     /** Home's panels, the bar and the room on show, at [t] of the pause wheel's open (0 = at rest) */
+    /** LB alone held now (CastView's reader) */
+    private var lbAloneNow = false
+    /** the LB picture shows while LB alone is held and nothing else has the screen: only in the world (1.0.19: never over the start-up
+     *  screens), and only once the class wheel is closed and covered (1.0.20: they take turns, HomeView.classBusy) */
+    private fun lbEval() {
+        val free = room == Room.HOME && !pauseView.isOpen && !tradOpen() && !(::radialView.isInitialized && radialView.isOpen) &&
+            // 1.0.21 (the user, streaming: "when I press L it didnt show the party member targetor"): GameLife only knows the Thor's own
+            // game; a live add-on stream (Local or Streaming) counts too
+            (GameLife.worldNow || GameInput.live(System.currentTimeMillis())) && (!::chooserPanel.isInitialized || chooserPanel.visibility != View.VISIBLE) && !homeView.classBusy()
+        lbView.lb(lbAloneNow && free)
+    }
+
     private fun pauseSlideAll(t: Float) {
         homeView.pauseSlide(t)
         // THE ROOM STEPS BACK (the user 2026-10-09: "the Pause screen needs to be pushing the other menus off screen"; UI Art's motion:
@@ -3211,6 +3243,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
 
     /** Spells' last word on the D-pad room bar (null = an older add-on) */
     private var lastDpad: PadMapModel.Dpad? = null
+    /** p35: the bare D-pad Down opens Home's room bar: the DS WoW toolbar is on, or the Home Bar command (DSHOME) is on that button */
+    private fun downIsHomeBar(): Boolean =
+        lastDpad?.want == true || lastPadMap?.let { m -> PadMapModel.slot(m, 1, 4)?.key == PadMapModel.HOME_KEY } == true
 
     // ---------------------------------------------------------------- f-new-spell-prompt: learned spells, one prompt at a time on Home
     /** the user (1.0.9): "After learning new spells when I return home they should have a prompt 1 at a time a to bind or b to dismiss" */
