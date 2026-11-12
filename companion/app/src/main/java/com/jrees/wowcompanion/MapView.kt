@@ -2322,7 +2322,11 @@ class MapView(context: Context) : View(context) {
         noteMapChange(m.optInt("mapID", 0))
         staleMs = 0
         // the group (Map.lua grpRead, b-group-map): once a second; grpN = 0 when the group went
-        if (pos.has("grpN")) group = GroupMembers.parse(pos.optJSONArray("grp"))
+        if (pos.has("grpN")) {
+            group = GroupMembers.parse(pos.optJSONArray("grp")); groupAt = android.os.SystemClock.uptimeMillis()
+            // (issue #30, 2026-11-11) a redraw just after the members would age out, so a group nobody re-sends leaves the map
+            if (group.isNotEmpty()) postInvalidateDelayed(GroupMembers.STALE_MS + 100L)
+        }
         // QuestTrail's arrow (Map.lua qtrailRead): every tick says it, absent = not showing (b-route-questtrail)
         qtrail = pos.optJSONObject("qtrail"); qtrailAt = android.os.SystemClock.elapsedRealtime()
         // why QuestTrail's golden path is not read (Map.lua gpWhy; test58: never any gp on the device), logged when it changes
@@ -2630,7 +2634,8 @@ class MapView(context: Context) : View(context) {
             if (was != st && !orderingDoc) orderTracked(trackedIds())
         }
         // QuestTrail's step (b-qtrail-focus; it always wins, a step not in the log has no arrow here), else the game's focus, else the default
-        val tq = if (qtHolds()) qtFocus() else if (st > 0) st else if (focusQid == 0) defaultQid else 0
+        // (ps3: the Polestar row's quest while it holds; an accept / go-to step has none here, Polestar draws its own arrow)
+        val tq = if (psHolds()) psFocus() else if (qtHolds()) qtFocus() else if (st > 0) st else if (focusQid == 0) defaultQid else 0
         focusTq = if (tq > 0 && shownQuest(tq)) tq else 0
         if (tq <= 0 || !shownQuest(tq)) return            // an untracked focus has no arrow (not on the map at all)
         val qs = m.optJSONArray("quests")
@@ -3482,9 +3487,87 @@ class MapView(context: Context) : View(context) {
     private var defaultQid = 0
     // in QuestTrail mode its step ALWAYS wins (the user on test61: "the QuestTrail objective needs to trump the focus objective"): while
     // it has one, never the game's / the app's focus, even for a step whose quest is not in the log (its own card: qtCard)
-    private fun shownFocus(): Int = if (qtHolds()) qtFocus() else if (focusQid != 0) focusQid else defaultQid
+    private fun shownFocus(): Int = if (psHolds()) psFocus() else if (qtHolds()) qtFocus() else if (focusQid != 0) focusQid else defaultQid
     /** true while the SHOWN focus is the default (the game has none): Home may label its card, or act on the game's focus only */
-    fun focusIsDefault(): Boolean = !qtHolds() && focusQid == 0 && defaultQid != 0
+    fun focusIsDefault(): Boolean = !psHolds() && !qtHolds() && focusQid == 0 && defaultQid != 0
+
+    // ---- POLESTAR'S OWN OBJECTIVE, THE LIGHT BLUE ROW (ps1; the user, 2026-11-11: "rather than syncing the tracked quest to polestar
+    // maybe we add a light blue objective to select from the tracker list that has the polestar objective"). With "Quest tracking:
+    // Polestar" and a live Polestar step, the list holds one more row above the tracked quests: Polestar's step (its title, and the
+    // words of the goal its arrow leads to) in light blue. Picking it (A, or a touch) makes it the SHOWN focus - Home's card, the list's
+    // top, the line - and Polestar routes to its waypoint; picking it again (or another quest) gives the normal focus back. Read from
+    // Map.lua's {"type":"pstep"}.
+    // ps3 (the user, 2026-11-11: "using the polestar objective tracker should behave like any other quest that gets focused, and should
+    // probably be the default selection if its enabled when logging in"): the row is PICKED at each login and /reload (pstep's boot stamp
+    // "b"; an off choice lasts until the next login, Settings.polestarOffBoot), and the game's focus follows it through the one focus
+    // path ([PolestarFocusSync]): the step's tracked quest focused, the focus cleared for a step with no quest in the log (the user's
+    // ruling), debounced against the game's own auto-track. The default push waits while the row is picked ([psWaits]).
+    class PolestarStep(val title: String?, val words: String?, val kind: String?, val quest: Int, val map: Int, val x: Double, val y: Double)
+    private var psStep: PolestarStep? = null
+    private var psPicked = true                          // ps3: the default at login (an older add-on without "b": in memory only)
+    private var psBoot = 0L                              // the login's stamp (pstep "b") the pick belongs to
+    private var psStepAt = 0L                            // the last pstep WITH a step (ms; 0 none yet): a lasting none is no gap
+    private var psLiveAt = 0L                            // when the game was first seen live (ms; 0 not live)
+    private val psBlue = Color.rgb(120, 200, 255)
+    private fun psShown(): Boolean = Settings.questTracking == "polestar" && psStep != null
+    private fun psHolds(): Boolean = psPicked && psShown()
+    private fun psFocus(): Int { val q = psStep?.quest ?: 0; return if (psHolds() && q > 0 && questById.containsKey(q)) q else 0 }
+    /** {"type":"pstep"}: Polestar's live objective, or none */
+    fun onPolestarStep(d: JSONObject) {
+        val before = psShown(); val beforeHolds = psHolds(); val beforeWords = psStep?.let { it.title + "|" + it.words }
+        psStep = if (d.optBoolean("none") || !d.has("m")) null else PolestarStep(
+            d.optString("t", "").ifEmpty { null }, d.optString("g", "").ifEmpty { null }, d.optString("k", "").ifEmpty { null },
+            d.optInt("q", 0), d.optInt("m", 0), d.optDouble("x", Double.NaN), d.optDouble("y", Double.NaN))
+        if (psStep != null) psStepAt = System.currentTimeMillis()   // (Map.lua re-sends a none every 15 s: only a real step stamps)
+        // ps3: a gap with no step keeps the pick (psHolds needs a step anyway); a new login's stamp picks the row again, unless this
+        // login's off choice was stored (an app restart in the same login keeps it)
+        val b = d.optLong("b", 0L)
+        // (a release before the first stamp, up to 15 s after an app restart, is kept: stored against this login's stamp)
+        if (b != 0L && b != psBoot) {
+            val first = psBoot == 0L; psBoot = b
+            psPicked = if (first && !psPicked) { Settings.polestarOffBoot = b; false } else Settings.polestarOffBoot != b
+        }
+        if (psShown() != before) { rebuildItems(); if (cursor.shown && cursor.sel == MapList.POLESTAR && !psShown()) cursor.reset() }
+        if (psHolds() != beforeHolds || psStep?.let { it.title + "|" + it.words } != beforeWords) psChanged()
+        psSyncTick()
+        postInvalidate()
+    }
+    /** A / a touch on the light blue row: follow Polestar's objective, or stop following it (its A reads "Unfocus" while it holds,
+     *  the user's word, 2026-11-11; the game's focus is left on the step's quest, which the default push then never takes back) */
+    private fun psToggle() {
+        if (!psShown()) return
+        if (psPicked) psStep?.quest?.let { focusPush.cleared(it) }
+        psSetPicked(!psPicked)
+    }
+    /** every change of the pick: this login's off choice stored (until the next login: the user, 2026-11-11) */
+    private fun psSetPicked(on: Boolean) {
+        if (psPicked == on) return
+        psPicked = on
+        Settings.polestarOffBoot = if (on) 0L else psBoot
+        if (on) psSync.picked()                          // an explicit re-pick lifts the re-send cap
+        psChanged()
+    }
+    /** ps3: an explicit focus pick outside the Map list (Home, the World map, the Quests room): the light blue row lets go */
+    fun psRelease() { if (Settings.questTracking == "polestar") psSetPicked(false) }   // (another mode: the login's default kept)
+    /** ps3: the player cleared quest [id]'s focus in another room (Remove Focus): the default push never takes it back */
+    fun focusCleared(id: Int) = focusPush.cleared(id)
+    private fun psChanged() {
+        cards.clear()
+        orderTracked(trackedIds())
+        deriveFocusTarget(map)
+        deriveQuestAreas(map)
+        firedFocus = shownFocus()
+        onShownFocusChanged?.let { cb -> post { cb() } }
+        psSyncTick()
+        invalidate()
+    }
+    /** the light blue row's card: Polestar's step title, the goal's words under it */
+    private fun psCard(): UiKit.QuestCard? {
+        val st = psStep ?: return null
+        val title = st.title ?: st.words ?: return null
+        val words = st.words?.takeIf { it != title }
+        return UiKit.QuestCard(title, 0, psBlue, listOfNotNull(words?.let { it to false }), focused = psHolds())
+    }
 
     // ---- QUESTTRAIL'S STEP AS THE FOCUS (b-qtrail-focus; the user, test51: "Using quest trail, the focused quest should be overwritten
     // by the quest trail objective"). With "Quest tracking: QuestTrail" the SHOWN focus - Home's card, the list's top spot, the gold
@@ -3558,17 +3641,59 @@ class MapView(context: Context) : View(context) {
      */
     var onShownFocusChanged: (() -> Unit)? = null
     /** the host's way to make a quest the game's focus (Home's one focus path); the default focus is pushed through it */
-    var onPushFocus: ((questId: Int) -> Unit)? = null
+    var onPushFocus: ((questId: Int) -> Boolean)? = null
     private val focusPush = DefaultFocusPush()
     private fun pushDefault() {
-        if (qtHolds() || Settings.questTracking == "vanilla") return
-        val cb = onPushFocus ?: return
         // only while the game is live: a push refused as "Waiting for the game" would wait out RETRY_MS after the first document
         // (test18: refused every 30 s for 5 minutes, then pushed only by hand)
-        if (!GameInput.live()) return
-        val q = focusPush.tick(defaultQid, focusQid, System.currentTimeMillis())
+        if (!GameInput.live()) { psLiveAt = 0L; return }
+        val now = System.currentTimeMillis()
+        if (psLiveAt == 0L) psLiveAt = now
+        // ps3 (the user, 2026-11-11: "the game really aggressivly did not want to stop trying to stay on my currently focused wow
+        // quest"): no default push while the Polestar row is picked - before its first step, and through its none-gaps
+        if (qtHolds() || Settings.questTracking == "vanilla" || psWaits(now)) return
+        val cb = onPushFocus ?: return
+        val q = focusPush.tick(defaultQid, focusQid, now)
         if (q > 0) post { cb(q) }
     }
+    private fun psWaits(now: Long): Boolean = PolestarFocusSync.waits(Settings.questTracking == "polestar", psPicked, psStep != null,
+        if (psStepAt == 0L) null else now - psStepAt, now - psLiveAt)
+
+    // ---- THE GAME'S FOCUS FOLLOWS THE POLESTAR ROW (ps3; the user, 2026-11-11). Through the host's one focus path only (Home's checks,
+    // QuestPad's cells): focus for a tracked step quest, unfocus for a step with no quest in the log (the user's ruling), nothing for a
+    // logged but untracked one. [PolestarFocusSync] waits out the game's own auto-track and caps the re-sends.
+    private val psSync = PolestarFocusSync()
+    /** the host's way to clear the game's focus (quest [questId] has it): true = the taps went out */
+    var onPushUnfocus: ((questId: Int) -> Boolean)? = null
+    /** the host's way to stop a focus check still retrying quest [questId] (the step moved on) */
+    var onCancelFocus: ((questId: Int) -> Unit)? = null
+    /** the sync's view of the step: its tracked quest, 0 = no quest in the log, LEAVE = in the log but not tracked */
+    private fun psStepQ(): Int {
+        val q = psStep?.quest ?: 0
+        return if (q > 0 && trackedNo.containsKey(q)) q else if (q > 0 && questById.containsKey(q)) PolestarFocusSync.LEAVE else 0
+    }
+    private fun psSyncTick() {
+        if (!GameInput.live() || !trackedKnown) return                   // (a current quests list: Home's checks need one)
+        val now = System.currentTimeMillis()
+        val a = psSync.tick(psHolds(), psStepQ(), focusQid, now)
+        psSync.takeCancel().takeIf { it > 0 }?.let { q -> onCancelFocus?.let { cb -> post { cb(q) } } }
+        when (a) {
+            is PolestarFocusSync.Act.Focus -> {
+                val cb = onPushFocus ?: return
+                android.util.Log.i("WCMAP", "polestar focus ${a.q} (game focus $focusQid)")
+                askedQid = a.q; askedAt = android.os.SystemClock.elapsedRealtime()
+                post { psSync.sent(a.q, cb(a.q), System.currentTimeMillis()) }
+            }
+            is PolestarFocusSync.Act.Unfocus -> {
+                val cb = onPushUnfocus ?: return
+                android.util.Log.i("WCMAP", "polestar unfocus ${a.q} (a step with no quest in the log)")
+                post { psSync.sent(0, cb(a.q), System.currentTimeMillis()) }
+            }
+            PolestarFocusSync.Act.None -> {}
+        }
+    }
+    /** where the Map list's cursor counts the focus: the light blue row while it holds */
+    private fun cursorFocus(): Int = if (psHolds()) MapList.POLESTAR else shownFocus()
     private var firedFocus = Int.MIN_VALUE
     private fun fireFocus() {
         val f = shownFocus()
@@ -3583,6 +3708,7 @@ class MapView(context: Context) : View(context) {
         val beforeIds = trackedIds()
         defaultQid = if (focusQid != 0 || m == null) 0 else FocusDefault.pick(defaultCands(m), defaultQid, trackedOrder())
         pushDefault()
+        psSyncTick()                                // ps3: every map, position and quests document
         if (shownFocus() == before) return
         cards.clear()
         orderTracked(beforeIds)
@@ -3642,6 +3768,7 @@ class MapView(context: Context) : View(context) {
 
     private fun askFocus(qid: Int) {
         if (qid == 0) return
+        psRelease()                                                // ps1: another quest picked: the normal focus again
         val cb = onFocusQuest ?: return
         if (qid == focusQid) return                      // already the focused quest: nothing to send
         askedQid = qid; askedAt = android.os.SystemClock.elapsedRealtime()
@@ -3698,7 +3825,7 @@ class MapView(context: Context) : View(context) {
         }
         val current = listOfNotNull(m?.optString("subzone", "")?.ifEmpty { null }, m?.optString("zone", "")?.ifEmpty { null })
         val groups = MapList.groups(entries, questsPlv, current, ownHeaders)
-        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups) { z -> openTabs[z] == true }
+        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups, polestar = psShown()) { z -> openTabs[z] == true }
     }
 
     private fun toggleTab(key: Int) {
@@ -3752,6 +3879,7 @@ class MapView(context: Context) : View(context) {
             }
             is MapList.Item.Group -> { cursor.touched(it.key, listKeys()); toggleTab(it.key) }
             is MapList.Item.Untracked -> { cursor.touched(it.id, listKeys()); listShow(it.id) }
+            is MapList.Item.Polestar -> { cursor.touched(MapList.POLESTAR, listKeys()); psToggle() }
             is MapList.Item.Section -> {}
         }
         invalidate()
@@ -4122,9 +4250,13 @@ class MapView(context: Context) : View(context) {
     /** the zone spots of a quest ([map, x, y, continent, wx, wy] each): the Map room's kept mapquests */
     var zoneSpots: ((Int) -> List<DoubleArray>)? = null
 
+    /** ps2: the goal [polestarGoal] picked last (map, x, y, quest) and how much nearer another must be to take over */
+    private var psGoalLast: DoubleArray? = null
+    private val PS_GOAL_STICK = 1.25
     /** Polestar's goal: the focused quest's nearest still-needed goal here, else its nearest zone spot - (uiMapID, x, y), or null */
     fun polestarGoal(): DoubleArray? {
         if (Settings.questTracking != "polestar") return null
+        if (psHolds()) psStep?.let { st -> if (st.map != 0 && !st.x.isNaN() && !st.y.isNaN()) return doubleArrayOf(st.map.toDouble(), st.x, st.y) }
         val m = map ?: return null
         val q = focusQid
         if (q <= 0 || m.optInt("onTaxi", 0) == 1) return null
@@ -4136,8 +4268,15 @@ class MapView(context: Context) : View(context) {
         val r = rect
         if (goals.isNotEmpty() && mapId != 0 && !px.isNaN()) {
             val ax = r?.width ?: 1.0; val ay = r?.height ?: 1.0
-            val g = goals.minByOrNull { hypot((it[0] - px) * ax, (it[1] - py) * ay) }!!
-            return doubleArrayOf(mapId.toDouble(), g[0], g[1])
+            fun d(g: DoubleArray) = hypot((g[0] - px) * ax, (g[1] - py) * ay)
+            val g = goals.minByOrNull { d(it) }!!
+            // ps2: the goal sent last is kept while it is still one of the quest's goals and none is clearly nearer, so walking between
+            // two goals does not make Polestar plan again and again (each new goal = a new plan from where the player stands)
+            val last = psGoalLast?.takeIf { it[0] == mapId.toDouble() && it[3] == q.toDouble() }
+            val kept = last?.let { l -> goals.firstOrNull { abs(it[0] - l[1]) < 1e-6 && abs(it[1] - l[2]) < 1e-6 } }
+            val pick = if (kept != null && d(g) * PS_GOAL_STICK >= d(kept)) kept else g
+            psGoalLast = doubleArrayOf(mapId.toDouble(), pick[0], pick[1], q.toDouble())
+            return doubleArrayOf(mapId.toDouble(), pick[0], pick[1])
         }
         val spots = zoneSpots?.invoke(q)?.filter { it.size >= 6 } ?: return null
         if (spots.isEmpty()) return null
@@ -4152,8 +4291,8 @@ class MapView(context: Context) : View(context) {
     // navigating into ... hostile mobs"; their picks: neutrals ignored, High by default, the tint only with the "Danger areas" filter,
     // elites x3). QuestieDB's hostile spawns on this map (DangerStore) as a DangerGrid for this character (level, faction); in
     // Vanilla the leg to the route's next point bends round it (A* + string-pull, kept while it costs at most [DANGER_STICK] more than
-    // a new one, worked out again after [DANGER_MOVE_YD] of walking); under Polestar / QuestTrail their route is kept and its
-    // dangerous stretches are drawn red with a note.
+    // a new one, worked out again after [DANGER_MOVE_YD] of walking); under QuestTrail its route is kept and its dangerous stretches
+    // are drawn red with a note (Polestar's path: none since ps2, the user's "I dont like the red dots").
     private var dGrid: DangerGrid? = null
     private var dGridMap = 0
     private var dGridKey = ""                              // the key of the grid built, or being built on the route thread
@@ -4832,7 +4971,9 @@ class MapView(context: Context) : View(context) {
     /** Polestar's live route on this continent, drawn as the line's dots (true = drawn) */
     private fun drawPolestarRoute(c: Canvas, x0: Float, y0: Float, sx: (Double) -> Float, sy: (Double) -> Float): Boolean {
         val r = rect ?: return false
-        val legs = polestar.liveRoute(android.os.SystemClock.elapsedRealtime()) ?: return false
+        // ps2: the walk being walked starts at the player (PolestarNav.liveRouteFrom), never back at where Polestar planned it
+        val legs = polestar.liveRouteFrom(android.os.SystemClock.elapsedRealtime(), map?.optDouble("wx", Double.NaN) ?: Double.NaN,
+            map?.optDouble("wy", Double.NaN) ?: Double.NaN, r.continent) ?: return false
         pathTmp.reset()
         var any = false
         for (leg in legs) {
@@ -4852,15 +4993,8 @@ class MapView(context: Context) : View(context) {
         pPath.strokeWidth = 9f; pPath.color = Color.argb(160, 0, 0, 0); c.drawPath(pathTmp, pPath)
         pPath.strokeWidth = 6f; pPath.color = cGold; c.drawPath(pathTmp, pPath)
         pPath.pathEffect = null
-        // its dangerous stretches (b-danger-layer: Polestar keeps its route; we warn)
-        map?.let { m ->
-            val pts = arrayListOf(doubleArrayOf(m.optDouble("x"), m.optDouble("y")))
-            for (leg in legs) if (leg.cont == null || leg.cont == r.continent) {
-                var i = 0
-                while (i + 1 < leg.pts.size) { pts.add(doubleArrayOf(r.nx(leg.pts[i + 1]), r.ny(leg.pts[i]))); i += 2 }
-            }
-            dangerWarn(c, pts, "Polestar", sx, sy)
-        }
+        // ps2 (the user, 2026-11-11: "I dont like the red dots"): no red danger dots and no "crosses hostile ground" note on Polestar's
+        // path any more; the Map room's opt-in "Danger areas" filter still shows hostile ground
         postInvalidateOnAnimation()
         return true
     }
@@ -4872,6 +5006,7 @@ class MapView(context: Context) : View(context) {
     private var cameFrom = 0
     private val routeKeep = HashMap<Int, String>()
     private val farKeep = HashMap<Int, DoubleArray>()
+    private var groupAt = 0L                                             // when [group] came (uptimeMillis; issue #30: aged out)
     /** the group's members (b-group-map) */
     private var group: List<GroupMembers.Member> = emptyList()          // each quest's spot chosen last (its hysteresis)
     private val SPOT_STICK = 1.25
@@ -5078,6 +5213,7 @@ class MapView(context: Context) : View(context) {
         if (stops.size > 1) pairs.add(glyph("up") to "Select")
         when {
             at == MapList.ME -> if (onPlayerMenu != null) pairs.add(glyph("a") to "Menu")
+            at == MapList.POLESTAR -> pairs.add(glyph("a") to (if (psHolds()) "Unfocus" else "Focus"))
             MapList.isGroup(at) -> pairs.add(glyph("a") to (if (openTabs[groupZone(at)] == true) "Close" else "Open"))
             at > 0 && at in MapList.untracked(items) -> {
                 if (onTrackFocusQuest != null) pairs.add(glyph("a") to "Track & focus")
@@ -5086,7 +5222,7 @@ class MapView(context: Context) : View(context) {
             }
         }
         if (sel != 0) {
-            if (sel != focusQid) pairs.add(glyph("a") to "Focus")
+            if (sel != (if (psHolds()) MapList.POLESTAR else focusQid)) pairs.add(glyph("a") to "Focus")
             else if (onUnfocusQuest != null) pairs.add(glyph("a") to "Unfocus")
             if (onUntrackQuest != null) pairs.add(glyph("x") to "Untrack")
             pairs.add(glyph("y") to "Open")                       // the quest's panel, as on an untracked quest
@@ -5208,7 +5344,7 @@ class MapView(context: Context) : View(context) {
                 if (msg.optBoolean("ok")) {
                     held = true; bSaid = "home"; syncB()
                     // the room just took the controller: the selection is shown at once, on the focused quest, else the first
-                    if (cursor.startAt(listKeys(), shownFocus())) { listShow(cursor.sel); revealSelected() }
+                    if (cursor.startAt(listKeys(), cursorFocus())) { listShow(cursor.sel); revealSelected() }
                 }
             }
             "free", "leave" -> held = false
@@ -5241,7 +5377,7 @@ class MapView(context: Context) : View(context) {
 
     /** the host's full map just took the controller: the selection SHOWN at once (the focused quest, else the first) */
     fun hostStart() {
-        if (cursor.startAt(listKeys(), shownFocus())) { listShow(cursor.sel); revealSelected() }
+        if (cursor.startAt(listKeys(), cursorFocus())) { listShow(cursor.sel); revealSelected() }
         invalidate()
     }
 
@@ -5258,7 +5394,8 @@ class MapView(context: Context) : View(context) {
             filterTab = (filterTab + (if (k == "PADRSHOULDER") 1 else FILTER_TABS.size - 1)) % FILTER_TABS.size
             invalidate(); return MapCursor.Do.Nothing
         }
-        val d = cursor.key(k, listKeys(), focusQid, filterOpen, MapList.untracked(items))
+        // ps3: while the light blue row holds it is the focused row (A on the game's old quest focuses it, A on the row lets go)
+        val d = cursor.key(k, listKeys(), if (psHolds()) MapList.POLESTAR else focusQid, filterOpen, MapList.untracked(items))
         when (d) {
             MapCursor.Do.Show -> { listShow(cursor.sel); landOn(cursor.sel) }
             is MapCursor.Do.Select -> {
@@ -5269,12 +5406,14 @@ class MapView(context: Context) : View(context) {
                 }
             }
             MapCursor.Do.PlayerMenu -> openPlayerMenu()
+            MapCursor.Do.Polestar -> psToggle()
             is MapCursor.Do.Toggle -> toggleTab(d.key)
             is MapCursor.Do.Track -> onTrackFocusQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
             is MapCursor.Do.Watch -> onTrackQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
             is MapCursor.Do.Open -> openPanel(d.id)
             is MapCursor.Do.Focus -> askFocus(d.id)
-            is MapCursor.Do.Unfocus -> onUnfocusQuest?.invoke(d.id) ?: note("Unfocus is not on the tap pad yet")
+            // ps3: a focus the player cleared is not pushed back as the default (the user, 2026-11-11: "aggressivly")
+            is MapCursor.Do.Unfocus -> onUnfocusQuest?.let { focusPush.cleared(d.id); it(d.id) } ?: note("Unfocus is not on the tap pad yet")
             is MapCursor.Do.Untrack -> onUntrackQuest?.let { it(d.id); trackNow(d.id, false) } ?: note("Untrack is not on the tap pad yet")
             is MapCursor.Do.ShowOnMap -> tracked.firstOrNull { it.optInt("id", 0) == d.id }?.let { q ->
                 val qx = q.optDouble("x", Double.NaN); val qy = q.optDouble("y", Double.NaN)
@@ -5447,6 +5586,7 @@ class MapView(context: Context) : View(context) {
      * Null when no TRACKED quest is focused (the list holds tracked quests only).
      */
     fun focusedCard(): UiKit.QuestCard? {
+        if (psHolds()) return psCard()                 // ps1: Polestar's objective, in its light blue
         val f = shownFocus()                     // the default focus stands in for "No focused quest" (2026-10-06)
         if (f == 0) return qtCard()
         // the tracked quest's card (its number); a focused quest the tracker does not list still gets its card, without a number
@@ -5477,6 +5617,7 @@ class MapView(context: Context) : View(context) {
     /** one item's height in the list */
     private fun itemH(it: MapList.Item): Float = when (it) {
         is MapList.Item.Me -> ME_H
+        is MapList.Item.Polestar -> psCard()?.let { UiKit.questCardHeight(it) } ?: 0f
         is MapList.Item.Tracked -> tracked.firstOrNull { e -> e.optInt("id", 0) == it.id }?.let { e -> rowContentH(e) } ?: 0f
         is MapList.Item.Section -> SECTION_H
         is MapList.Item.Group -> GROUP_H
@@ -5645,6 +5786,7 @@ class MapView(context: Context) : View(context) {
             val row = RectF(x, ct, x + w, ct + ch)
             when (it) {
                 is MapList.Item.Me -> drawMe(c, row)
+                is MapList.Item.Polestar -> psCard()?.let { UiKit.questCard(c, row, it) }
                 is MapList.Item.Tracked -> tracked.firstOrNull { e -> e.optInt("id", 0) == it.id }?.let { e -> drawRow(c, e, row) }
                 is MapList.Item.Section -> UiKit.trackerHeader(c, row.left, row.top, row.right, "Untracked", "${it.count}")
                 is MapList.Item.Group -> drawGroup(c, it, row)
@@ -6532,7 +6674,9 @@ class MapView(context: Context) : View(context) {
                 val np = UiKit.bodyPaint(18f, Color.rgb(230, 210, 160)).apply { setShadowLayer(3f, 0f, 0f, Color.BLACK) }
                 c.drawText(Tr.t("QuestTrail's arrow is not showing"), left + 16f, top + 30f, np)
             }
-        } else if ((poleOn || qtOn) && route != null && cursor.sel == qtOrGameFocus() && run {
+        } else if (poleOn && !compact && !morphOn && !px.isNaN() && !py.isNaN() && (route == null || psHolds() || cursor.sel == qtOrGameFocus()) && run {
+                // the user, 2026-11-11 ("the polestar option ... should also show the path on the bottom map"): Polestar's own path
+                // stands alone - it was drawn only while DS Forever's own route existed too, so with none of ours it never showed
                 val fb = top + fh - (if (hintsOn()) HINT_BAND else 0f)
                 val save = c.save()
                 c.clipRect(left, top, left + fw, fb)
@@ -6630,6 +6774,16 @@ class MapView(context: Context) : View(context) {
                     c.restoreToCount(save)
                 }
             }
+        }
+        // ---- HOME'S SMALL MAP, POLESTAR (the user, 2026-11-11: "the polestar option in quest tracking in home should also show the path
+        // on the bottom map sort of like safe path does"): Polestar's own walking path, its gold dots, in the small field as SafePath's
+        // checkpoints are above
+        if (compact && !morphOn && !corpseKnown() && !px.isNaN() && !py.isNaN() && Settings.questTracking == "polestar") {
+            val nb = top + compactTop()
+            val save = c.save()
+            c.clipRect(left, nb, left + fw, top + fh)
+            drawPolestarRoute(c, sx(px), sy(py), ::sx, ::sy)
+            c.restoreToCount(save)
         }
         // ---- THE CORPSE RUN's way (CorpseRoute): while a ghost, the leg's checkpoint flags, the stretch to the next one and faint dots
         // past it (the quest line's look), on the full map and Home's small one; the red rim arrow leads to its next checkpoint
@@ -6919,7 +7073,7 @@ class MapView(context: Context) : View(context) {
         rect?.takeIf { it.valid }?.let { r ->
             val nb = top + (if (compact) compactTop() else 0f)
             val l0 = left + 14f; val r0 = left + fw - 14f; val t0 = nb + 14f; val b0 = top + fh - 14f - (if (hintsOn() && !compact) HINT_BAND else 0f)
-            for (gm in group) {
+            for (gm in GroupMembers.live(group, groupAt, android.os.SystemClock.uptimeMillis())) {      // issue #30: stale members gone
                 if (gm.cont != null && gm.cont != r.continent) continue
                 val gx = sx(r.nx(gm.wy)); val gy = sy(r.ny(gm.wx))
                 if (gx in l0..r0 && gy in t0..b0) GroupMembers.draw(c, gm, gx, gy, named = !compact)

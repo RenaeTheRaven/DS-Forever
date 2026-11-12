@@ -11,6 +11,11 @@ import java.security.DigestOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import java.util.zip.Inflater
+import java.util.zip.InflaterInputStream
+import java.io.DataInputStream
+import java.io.InputStream
+import com.jrees.wowcompanion.CdnStream
+import com.jrees.wowcompanion.GameRegion
 import com.jrees.wowcompanion.WowProduct
 import com.jrees.wowcompanion.WowSwitch
 import java.time.LocalDate
@@ -25,16 +30,12 @@ object WowClientDownloader {
     private const val PLATFORM_ARCH = "arm64"
     private const val EXCLUDED_ARCH = "x86_64"
     private const val DEFAULT_CDN_PATH = "tpr/wow"
-    private val EU_COUNTRIES = setOf("AT", "BE", "BG", "CH", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FR", "GB", "GR", "HR", "HU", "IE", "IS", "IT",
-        "LT", "LU", "LV", "MT", "NL", "NO", "PL", "PT", "RO", "RU", "SE", "SI", "SK", "UA", "TR")
 
-    /** the region a direct install starts in, from the device's country (jaredgei's guess: the game's region picker can still change it) */
-    private fun directBranch() = when (java.util.Locale.getDefault().country.uppercase(java.util.Locale.ROOT)) {
-        "KR" -> "kr"
-        "TW", "HK" -> "tw"
-        in EU_COUNTRIES -> "eu"
-        else -> "us"
-    }
+    /**
+     * the region a direct install starts in: the player's pick, else the device's country (the user, 2026-11-11: regions fix - the one
+     * country table is GameRegion.guess, no second copy here)
+     */
+    private fun directBranch(region: String?) = region ?: GameRegion.guess(java.util.Locale.getDefault().country)
     private val DEFAULT_CDN_HOSTS = listOf("level3.blizzard.com", "us.cdn.blizzard.com")
 
     /** a product's patch server (versions, cdns); the tests point it at a local server */
@@ -61,6 +62,8 @@ object WowClientDownloader {
         /** the cdns row's Servers and the versions row's KeyRing (the launch row's columns at the switch) */
         val remoteCdnServers: String? = null,
         val remoteKeyRing: String? = null,
+        /** the region whose versions row this is (lowercase): .build.info's Branch / Tags after an update; null = not known */
+        val region: String? = null,
     )
 
     /** the client the game folder [gameRoot] runs ([WowProduct.of]) */
@@ -76,7 +79,12 @@ object WowClientDownloader {
     fun readBuildInfo(buildInfo: File): Map<String, String>? =
         runCatching { activeBuild(buildInfo.absoluteFile.parentFile).row }.getOrNull()
 
-    fun checkVersion(gameRoot: File): VersionCheckResult? {
+    /**
+     * [region]: the player's pick (GameRegion.chosen; the user, 2026-11-11: regions fix): the build checked, and then updated, is that
+     * region's (regions patch on different days: a US-made install played on EU needs EU's build or its realms are not listed). null =
+     * the install's own (.build.info Branch). Adapted from YoruDev-Ryland's WoWForeverywhere ab115f8 / 22a2ab9 (GPL-3.0).
+     */
+    fun checkVersion(gameRoot: File, region: String? = null): VersionCheckResult? {
         val choice = runCatching { activeBuild(gameRoot) }.getOrElse {
             Timber.w(it, "checkVersion: no readable $BUILD_INFO in $gameRoot")
             return null
@@ -95,11 +103,13 @@ object WowClientDownloader {
             return null
         }
 
-        return remoteCheck(product, row, localVersion, localBuildKey)
+        return remoteCheck(product, row, localVersion, localBuildKey, region)
     }
 
-    /** [product]'s build on its patch server for the install whose .build.info row is [row]; null = no answer */
-    private fun remoteCheck(product: WowProduct, row: Map<String, String>, localVersion: String, localBuildKey: String): VersionCheckResult? {
+    /** [product]'s build on its patch server for the install whose .build.info row is [row] and the region [region]; null = no answer */
+    private fun remoteCheck(
+        product: WowProduct, row: Map<String, String>, localVersion: String, localBuildKey: String, region: String? = null,
+    ): VersionCheckResult? {
         val versions = runCatching { fetchText("${patchUrlFor(product)}/versions") }.getOrElse {
             Timber.w(it, "checkVersion: http call failed")
             return null
@@ -107,7 +117,7 @@ object WowClientDownloader {
             Timber.w("checkVersion: response body is null or unsuccessful")
             return null
         }
-        val remoteRow = remoteRow(parsePsv(versions), "Region", row["Branch"])
+        val remoteRow = remoteRow(parsePsv(versions), "Region", region, row["Branch"])
             ?: run {
                 Timber.w("checkVersion: no remote row in $versions")
                 return null
@@ -119,11 +129,18 @@ object WowClientDownloader {
             }
         val remoteBuildKey = remoteRow["BuildConfig"].orEmpty()
 
+        // the region the row is for (the pick's, else the install's own when the pick has no row: never a hard failure)
+        val rowRegion = remoteRow["Region"]?.lowercase()?.takeIf { it.isNotBlank() }
+        if (region != null && !region.equals(rowRegion, ignoreCase = true)) {
+            Timber.w("checkVersion: no '$region' row; using '${rowRegion ?: "?"}' (the install's ${row["Branch"]})")
+        }
+
         val cdns = runCatching { fetchText("${patchUrlFor(product)}/cdns") }.getOrNull()?.let(::parsePsv).orEmpty()
-        val cdnsRow = remoteRow(cdns, "Name", row["Branch"])
+        val cdnsRow = remoteRow(cdns, "Name", rowRegion, row["Branch"])
 
         val isOutdated = localVersion != remoteVersion || (remoteBuildKey.isNotBlank() && localBuildKey != remoteBuildKey)
-        Timber.i("checkVersion: ${product.code} localVersion=$localVersion, remoteVersion=$remoteVersion, isOutdated=$isOutdated")
+        Timber.i("checkVersion: ${product.code} region=$rowRegion (Branch ${row["Branch"]}) localVersion=$localVersion, " +
+            "remoteVersion=$remoteVersion, isOutdated=$isOutdated")
         return VersionCheckResult(
             localVersion = localVersion,
             remoteVersion = remoteVersion,
@@ -135,6 +152,7 @@ object WowClientDownloader {
             product = product,
             remoteCdnServers = cdnsRow?.get("Servers"),
             remoteKeyRing = remoteRow["KeyRing"],
+            region = rowRegion,
         )
     }
 
@@ -189,19 +207,59 @@ object WowClientDownloader {
         Switch.Done(target.remoteVersion)
     }
 
+    /**
+     * REPAIR .build.info BEFORE PLAY (the user, 2026-11-11: updates on slow links; [WowSwitch.repairCdn]): the running row's empty
+     * "CDN Hosts" / "CDN Servers" (a failed CDN lookup on a flaky network; the client crashes at start without them) are filled from,
+     * in order: [known] (this screen's last check, when its cdns row answered), the patch server's cdns row now, another row of the
+     * same file that has them (the last good values), the built-in hosts. Only those cells change. Never throws; true = repaired.
+     */
+    fun repairBuildInfo(gameRoot: File, known: VersionCheckResult? = null): Boolean = runCatching {
+        val choice = activeBuild(gameRoot)
+        val product = choice.product ?: return false
+        val row = choice.row
+        if (!row["CDN Hosts"].isNullOrBlank() && !row["CDN Servers"].isNullOrBlank()) return false
+        val buildInfo = File(gameRoot, BUILD_INFO)
+        val text = buildInfo.readText()
+        val other = WowProduct.parse(text).firstOrNull { !it["CDN Hosts"].isNullOrBlank() && !it["CDN Servers"].isNullOrBlank() }
+        val (hosts, servers, from) = when {
+            known != null && known.product == product && known.remoteCdnServers != null ->
+                Triple(known.remoteCdnHosts, known.remoteCdnServers, "the last check's cdns")
+            else -> runCatching { fetchText("${patchUrlFor(product)}/cdns") }.getOrNull()?.let(::parsePsv)
+                ?.let { remoteRow(it, "Name", row["Branch"]) }?.takeIf { !it["Hosts"].isNullOrBlank() }
+                ?.let { Triple(splitHosts(it.getValue("Hosts")), it["Servers"], "the patch server's cdns") }
+                ?: other?.let { Triple(splitHosts(it.getValue("CDN Hosts")), it["CDN Servers"], "another .build.info row") }
+                ?: Triple(DEFAULT_CDN_HOSTS, null, "the built-in hosts")
+        }
+        // the row's own hosts stay when only Servers is empty (its servers then follow those hosts)
+        val useHosts = row["CDN Hosts"]?.takeIf { it.isNotBlank() }?.let(::splitHosts) ?: hosts
+        val fixed = WowSwitch.repairCdn(text, product.code, useHosts, servers) ?: return false
+        WowSwitch.replace(buildInfo, fixed.toByteArray())
+        Timber.i("repairBuildInfo: ${product.code}'s empty CDN Hosts/Servers filled from $from")
+        runCatching { android.util.Log.i("WCSETUP", "build info: empty CDN Hosts/Servers filled from $from before Play") }
+        true
+    }.getOrElse { Timber.w(it, "repairBuildInfo: not repaired"); false }
+
     /** the patch server's row for the install's region ([key] = its region column; .build.info's Branch), else us's, else the first */
     internal fun remoteRow(rows: List<Map<String, String>>, key: String, region: String?): Map<String, String>? =
         rows.firstOrNull { !region.isNullOrBlank() && it[key].equals(region, ignoreCase = true) } ?: rows.firstOrNull { it[key] == "us" }
             ?: rows.firstOrNull()
 
     /**
+     * the row for the player's pick [picked], else the install's own region [own], else us's, else the first (the user, 2026-11-11:
+     * regions fix; a pick with no row falls back rather than failing: the research found a strict hard failure did not hold up)
+     */
+    internal fun remoteRow(rows: List<Map<String, String>>, key: String, picked: String?, own: String?): Map<String, String>? =
+        rows.firstOrNull { !picked.isNullOrBlank() && it[key].equals(picked, ignoreCase = true) } ?: remoteRow(rows, key, own)
+
+    /**
      * A DIRECT INSTALL (the user 2026-11-01: "give them the option after install to use local files or install directly"; jaredgei's
      * v2.3.0): an empty folder gets the client and the indexes, about 250 MB, and the game streams the rest from Blizzard's CDN as it
      * plays and keeps it. .build.info comes last, so a stopped install is simply run again.
      */
-    fun install(gameRoot: File, onStatus: (String) -> Unit) {
+    fun install(gameRoot: File, region: String? = null, onStatus: (String) -> Unit) {
         onStatus("Checking the latest build...")
-        val target = remoteCheck(WowProduct.LAUNCH, mapOf("Branch" to directBranch()), "", "")
+        // [region]: the player's pick (regions fix), else the device's country's region
+        val target = remoteCheck(WowProduct.LAUNCH, mapOf("Branch" to directBranch(region)), "", "")
             ?.takeIf { it.remoteBuildConfig.isNotBlank() && it.remoteCdnConfig.isNotBlank() }
             ?: throw IOException("Blizzard's patch server did not answer")
         listOf("Data/data", "Data/indices", "Data/config").forEach { check(File(gameRoot, it).run { isDirectory || mkdirs() }) { "can't write to $gameRoot" } }
@@ -239,17 +297,17 @@ object WowClientDownloader {
         if (fresh) WowSwitch.replace(File(gameRoot, BUILD_INFO), WowSwitch.freshBuildInfo(WowSwitch.Remote(
             version = target.remoteVersion, buildConfig = target.remoteBuildConfig, cdnConfig = target.remoteCdnConfig,
             cdnHosts = target.remoteCdnHosts, cdnPath = target.remoteCdnPath, cdnServers = target.remoteCdnServers,
-            keyRing = target.remoteKeyRing), directBranch()).toByteArray())
+            keyRing = target.remoteKeyRing), target.region ?: directBranch(null)).toByteArray())
         updateBuildInfo(gameRoot, target, buildConfig)
     }
 
-    fun download(gameRoot: File, onStatus: (String) -> Unit) {
+    fun download(gameRoot: File, region: String? = null, onStatus: (String) -> Unit) {
         val choice = activeBuild(gameRoot)
         val row = choice.row
         val product = checkNotNull(choice.product) {
             "Incompatible game product: ${row["Product"]}. Expected ${WowProduct.values().joinToString(" or ") { it.code }}."
         }
-        val latest = checkVersion(gameRoot)
+        val latest = checkVersion(gameRoot, region)
         if (latest != null && latest.remoteBuildConfig.isNotBlank()) return updateGame(gameRoot, latest, onStatus)
 
         val cdn = Cdn(hosts = splitHosts(row.getValue("CDN Hosts")), path = row.getValue("CDN Path"))
@@ -274,7 +332,15 @@ object WowClientDownloader {
         archives: Lazy<ArchiveLocator?>,
         onStatus: (String) -> Unit,
     ) {
-        val files = parseInstall(blteDecode(cdn.require("data", buildConfig.getValue("install")[1]))).filter { it.isClientBinary() }
+        // the install manifest through a file too (issue #70): only its decoded table is held, to be parsed
+        val installEncoded = File(gameRoot, "Data/.install.blte")
+        val install = try {
+            if (!cdn.fetchTo("data", buildConfig.getValue("install")[1], installEncoded)) throw IOException("CDN is missing the install manifest")
+            ByteArrayOutputStream().also { out -> installEncoded.inputStream().buffered(CdnStream.BUF).use { blteDecode(it, out) } }.toByteArray()
+        } finally {
+            installEncoded.delete()
+        }
+        val files = parseInstall(install).filter { it.isClientBinary() }
         check(files.isNotEmpty()) { "No Windows ARM64 client files in this build" }
 
         val clientDir = File(gameRoot, product.flavorDir)
@@ -304,16 +370,29 @@ object WowClientDownloader {
         pending.forEachIndexed { index, entry ->
             onStatus("Downloading ${entry.name} (${index + 1}/${pending.size})...")
             val ekey = ekeys[entry.ckey] ?: throw IOException("${entry.name} is missing from the encoding table")
-            val encoded = cdn.fetch("data", ekey) ?: archives.value?.read(ekey) ?: throw IOException("${entry.name} not found on the CDN")
-            writeVerified(File(clientDir, entry.relativePath), entry, encoded)
+            // issue #70 (2026-11-11): the encoded client file (the exe is ~68 MB) streams to a file beside it and is decoded
+            // from there, never one byte array (the OOM at ResponseBody.bytes() <- Cdn.fetch <- syncClient, Java heap 507/512 MB)
+            val dest = File(clientDir, entry.relativePath)
+            dest.parentFile?.mkdirs()
+            val encoded = File(dest.parentFile, "${dest.name}.blte")
+            try {
+                if (!cdn.fetchTo("data", ekey, encoded) && archives.value?.readTo(ekey, encoded) != true) {
+                    throw IOException("${entry.name} not found on the CDN")
+                }
+                writeVerified(dest, entry, encoded)
+            } finally {
+                encoded.delete()
+            }
         }
     }
 
-    private fun writeVerified(dest: File, entry: InstallEntry, encoded: ByteArray) {
+    private fun writeVerified(dest: File, entry: InstallEntry, encoded: File) {
         dest.parentFile?.mkdirs()
         val temp = File(dest.parentFile, "${dest.name}.download")
         val digest = MessageDigest.getInstance("MD5")
-        DigestOutputStream(temp.outputStream().buffered(), digest).use { blteDecode(encoded, it) }
+        encoded.inputStream().buffered(CdnStream.BUF).use { input ->
+            DigestOutputStream(temp.outputStream().buffered(), digest).use { blteDecode(input, it) }
+        }
         if (hex(digest.digest(), 0, 16) != entry.ckey) {
             temp.delete()
             throw IOException("Checksum mismatch for ${entry.name}")
@@ -330,10 +409,11 @@ object WowClientDownloader {
         indicesDir.mkdirs()
         val required = listOf("archives", "patch-archives").flatMap { cdnConfig[it].orEmpty() } +
             listOf("file-index", "patch-file-index", "archive-group", "patch-archive-group").mapNotNull { cdnConfig[it]?.firstOrNull() }
-        val missing = required.distinct().filter { !File(indicesDir, "$it.index").isFile }
+        // a kept index that is not its name's (a sign-in page saved by an older build, a cut file) is fetched again
+        val missing = required.distinct().filter { !indexFileOk(File(indicesDir, "$it.index"), it) }
         missing.forEachIndexed { index, hash ->
             onStatus("Syncing index archive (${index + 1}/${missing.size})...")
-            cdn.fetch("data", "$hash.index")?.let { WowSwitch.replace(File(indicesDir, "$hash.index"), it) }
+            cdn.indexTo(hash, File(indicesDir, "$hash.index"))
         }
     }
 
@@ -341,17 +421,33 @@ object WowClientDownloader {
         val buildInfo = File(gameRoot, BUILD_INFO)
         if (!buildInfo.isFile) return
         val raw = buildInfo.readText()
+        val updated = withBuild(raw, target, buildConfig)
+        // whole or not at all, the other rows and the line ending as they were
+        if (updated != raw) WowSwitch.replace(buildInfo, updated.toByteArray())
+    }
+
+    /**
+     * .build.info [raw] with [target]'s build in the active row of its product. When [target] is another region's build (the player's
+     * pick, the user 2026-11-11: regions fix) the row's Branch, the region tag in its Tags ("US?" -> "EU?") and its CDN Servers / Hosts
+     * become that region's too, so the client downloads that region's build. A blank value never replaces one (an empty CDN Servers
+     * crashes the client at start). The other rows and the line ending stay as they were.
+     */
+    internal fun withBuild(raw: String, target: VersionCheckResult, buildConfig: Map<String, List<String>> = emptyMap()): String {
         val nl = if (raw.contains("\r\n")) "\r\n" else "\n"
         val lines = raw.split(nl).dropLastWhile { it.isEmpty() }
-        if (lines.isEmpty()) return
+        if (lines.isEmpty()) return raw
         val header = psvHeader(lines.first())
         val productIdx = header.indexOf("Product")
         val activeIdx = header.indexOf("Active")
+        val tagsIdx = header.indexOf("Tags")
         val updates = mapOf(
+            "Branch" to target.region.orEmpty(),
             "Version" to target.remoteVersion,
             "Build Key" to target.remoteBuildConfig,
             "CDN Key" to target.remoteCdnConfig,
             "CDN Hosts" to target.remoteCdnHosts.joinToString(" "),
+            // the cdns row's Servers too (the user, 2026-11-11: updates on slow links): an update no longer leaves an empty one as it was
+            "CDN Servers" to target.remoteCdnServers.orEmpty(),
             "CDN Path" to target.remoteCdnPath,
             "Install Key" to buildConfig["install"]?.getOrNull(1).orEmpty(),
             "IM Size" to buildConfig["install-size"]?.getOrNull(1).orEmpty(),
@@ -362,12 +458,19 @@ object WowClientDownloader {
             val cols = line.split("|").toMutableList()
             val matchesProduct = productIdx < 0 || cols.getOrNull(productIdx) == target.product.code
             val isActive = activeIdx < 0 || cols.getOrNull(activeIdx) == "1"
-            if (matchesProduct && isActive) updates.forEach { (i, value) -> if (i in cols.indices) cols[i] = value }
+            if (matchesProduct && isActive) {
+                updates.forEach { (i, value) -> if (i in cols.indices) cols[i] = value }
+                target.region?.takeIf { it.isNotBlank() }?.let { r -> if (tagsIdx in cols.indices) cols[tagsIdx] = regionTags(cols[tagsIdx], r) }
+            }
             cols.joinToString("|")
         }
-        // whole or not at all, the other rows and the line ending as they were
-        if (updated != lines) WowSwitch.replace(buildInfo, (updated.joinToString(nl) + nl).toByteArray())
+        if (updated == lines) return raw
+        return updated.joinToString(nl) + nl
     }
+
+    /** .build.info Tags with its region tag ("US?", "EU?", "KR?", "TW?", "CN?") made [region]'s; Tags without one stay as they are */
+    internal fun regionTags(tags: String, region: String): String =
+        Regex("""(?<=^|[ :])(US|EU|KR|TW|CN)\?(?=$|[ :])""").replace(tags, "${region.uppercase(java.util.Locale.ROOT)}?")
 
     private data class InstallEntry(val name: String, val ckey: String, val tags: Set<String>) {
         val relativePath get() = name.replace('\\', '/')
@@ -379,10 +482,71 @@ object WowClientDownloader {
         }
     }
 
-    private class Cdn(val hosts: List<String>, val path: String) {
-        fun require(kind: String, key: String) = fetch(kind, key) ?: throw IOException("CDN is missing $kind/$key")
+    /**
+     * CDN INTEGRITY (the user, 2026-11-11: updates on slow links; jaredgei PR #54, the HughGrant patch): a hotel sign-in page or a
+     * proxy answering "200 OK" is never game data. A Range request needs a 206 with exactly the asked length ([rangedOk]); a config
+     * (build config / CDN config) must hash to its own key ([configOk]); an archive index to its name ([indexOk]). A host whose answer
+     * fails goes on to the next one, and a network failure is never reported as "missing" (a 403/404 elsewhere no longer hides it).
+     */
+    internal class Cdn(val hosts: List<String>, val path: String) {
+        fun require(kind: String, key: String) =
+            fetch(kind, key, verify = if (kind == "config") ({ b -> configOk(b, key) }) else null) ?: throw IOException("CDN is missing $kind/$key")
 
-        fun fetch(kind: String, key: String, range: LongRange? = null): ByteArray? {
+        /**
+         * an archive index ("<hash>.index") streamed to [dest] whole or not at all, checked against its name by its footer (issue #70:
+         * an archive-group index is tens of MB); false = missing
+         */
+        fun indexTo(hash: String, dest: File) = fetchTo("data", "$hash.index", dest, verify = { b -> indexOk(b.tail, hash) })
+
+        /**
+         * a small body (a config, the install manifest, an encoding-table range) in memory, streamed into an array of its own length
+         * (okio's bytes() held it twice). One above [CdnStream.IN_MEMORY_MAX] is refused: those go to [fetchTo] (issue #70)
+         */
+        fun fetch(kind: String, key: String, range: LongRange? = null, verify: ((ByteArray) -> Boolean)? = null): ByteArray? =
+            each(kind, key, range) { response, host ->
+                val body = response.body ?: throw IOException("an empty answer from $host")
+                val said = body.contentLength()
+                // a range holds what the caller asked for (an encoding-table chunk); a whole body at most IN_MEMORY_MAX
+                val cap = range?.let { it.last - it.first + 1 } ?: CdnStream.IN_MEMORY_MAX
+                if (said > cap) throw IOException("$kind/$key from $host is $said B: too big to hold in memory")
+                val out = ByteArrayOutputStream(if (said > 0) said.toInt() else 8192)
+                val got = body.byteStream().use { CdnStream.copy(it, out, cap) }
+                bodyProblem(response.code, response.header("Content-Length"), response.header("Content-Range"), range, got)
+                    ?.let { throw IOException("$it from $host") }
+                val bytes = out.toByteArray()
+                if (verify != null && !verify(bytes)) throw IOException("$kind/$key from $host is not that file")
+                bytes
+            }
+
+        /**
+         * ANY BODY TO A FILE (issue #70, 2026-11-11: the Java heap OOM during a game update): the body streams to "<dest>.part"
+         * with its length and MD5 counted on the way ([CdnStream]), is checked (8838e9e9's 206 + exact length, then [verify]) and only
+         * then renamed over [dest]. true = there; false = missing on every host that answered; a failure throws (a retry, not a skip).
+         */
+        fun fetchTo(kind: String, key: String, dest: File, range: LongRange? = null, verify: ((CdnStream.Body) -> Boolean)? = null): Boolean =
+            each(kind, key, range) { response, host ->
+                val body = response.body ?: throw IOException("an empty answer from $host")
+                dest.absoluteFile.parentFile?.mkdirs()
+                val part = File(dest.absoluteFile.parentFile, "${dest.name}.part")
+                try {
+                    // never more than it said (or than the range asked): a body that runs on is stopped, not written on
+                    val limit = range?.let { it.last - it.first + 1 } ?: body.contentLength().takeIf { it >= 0 } ?: Long.MAX_VALUE
+                    val got = body.byteStream().use { input -> part.outputStream().buffered(CdnStream.BUF).use { CdnStream.copy(input, it, limit) } }
+                    bodyProblem(response.code, response.header("Content-Length"), response.header("Content-Range"), range, got)
+                        ?.let { throw IOException("$it from $host") }
+                    if (verify != null && !verify(got)) throw IOException("$kind/$key from $host is not that file")
+                    WowSwitch.move(part, dest)
+                    true
+                } finally {
+                    part.delete()
+                }
+            } ?: false
+
+        /**
+         * every host in turn: [take] reads a successful answer (it throws an IOException when the answer fails its checks, and the
+         * next host is tried). "missing" (null) only when every host that answered said so: a failed one is a network error to retry
+         */
+        private fun <T> each(kind: String, key: String, range: LongRange?, take: (okhttp3.Response, String) -> T): T? {
             var failure: IOException? = null
             var missing = false
             for (host in hosts) {
@@ -393,7 +557,7 @@ object WowClientDownloader {
                 try {
                     Net.http.newCall(request).execute().use { response ->
                         when {
-                            response.isSuccessful -> return response.body!!.bytes()
+                            response.isSuccessful -> return take(response, host)
                             response.code == 403 || response.code == 404 -> missing = true
                             else -> failure = IOException("HTTP ${response.code} from $host")
                         }
@@ -402,10 +566,46 @@ object WowClientDownloader {
                     failure = e
                 }
             }
-            if (missing) return null
+            if (missing && failure == null) return null
             throw failure ?: IOException("No CDN hosts in $BUILD_INFO")
         }
     }
+
+    /**
+     * pure (issue #70, 2026-11-11): 8838e9e9's checks on a streamed body, by its counted length: a Range answer is a 206 of
+     * exactly the asked length ([rangedOk]); any body is as long as its Content-Length says. null = fine, else why not
+     */
+    internal fun bodyProblem(code: Int, contentLength: String?, contentRange: String?, range: LongRange?, body: CdnStream.Body): String? {
+        val length = contentLength?.toLongOrNull()
+        return when {
+            range != null && !rangedOk(code, body.size, range, contentRange) -> "not the asked range (HTTP $code, ${body.size} B)"
+            length != null && length != body.size -> "a short answer (${body.size} of $length B)"
+            else -> null
+        }
+    }
+
+    /** pure: a ranged answer is a 206 with exactly [range]'s length (and, when it says, a Content-Range starting at its first byte) */
+    internal fun rangedOk(code: Int, size: Long, range: LongRange, contentRange: String? = null): Boolean {
+        if (code != 206 || size != range.last - range.first + 1) return false
+        val start = contentRange?.let { Regex("""^\s*bytes\s+(\d+)-""").find(it)?.groupValues?.get(1)?.toLongOrNull() }
+        return start == null || start == range.first
+    }
+
+    /** pure: a CDN config file (build config, CDN config) is named by the MD5 of its bytes */
+    internal fun configOk(bytes: ByteArray, key: String): Boolean = hex(MessageDigest.getInstance("MD5").digest(bytes), 0, 16) == key.lowercase()
+
+    /**
+     * Pure: an archive index is named by the MD5 of its 28-byte footer (checksum size 8, the byte 13 from the end; checked against
+     * all 1,485 .index files of the PC's install, 2026-11-11). Anything else (a sign-in page, a cut file) is not that index.
+     */
+    internal fun indexOk(bytes: ByteArray, name: String): Boolean =
+        bytes.size >= 28 && bytes[bytes.size - 13].toInt() == 8 &&
+            hex(MessageDigest.getInstance("MD5").digest(bytes.copyOfRange(bytes.size - 28, bytes.size)), 0, 16) == name.lowercase()
+
+    /** [indexOk] for a file on disk (only its footer is read) */
+    private fun indexFileOk(f: File, name: String): Boolean = f.isFile && f.length() >= 28 && runCatching {
+        java.io.RandomAccessFile(f, "r").use { r -> ByteArray(28).also { r.seek(f.length() - 28); r.readFully(it) } }.let { indexOk(it, name) }
+    }.getOrDefault(false)
 
     private class EncodingLookup(private val cdn: Cdn, private val ekey: String) {
         private data class Chunk(val encodedOffset: Long, val encodedSize: Int, val decodedOffset: Long, val decodedSize: Int)
@@ -492,15 +692,15 @@ object WowClientDownloader {
     }
 
     private class ArchiveLocator(private val cdn: Cdn, private val gameRoot: File, private val archives: List<String>) {
-        fun read(ekey: String): ByteArray? {
+        /** [ekey]'s range of the archive that holds it, streamed to [dest] (issue #70); false = in none / missing */
+        fun readTo(ekey: String, dest: File): Boolean {
             for (archive in archives) {
                 val local = File(gameRoot, "Data/indices/$archive.index")
-                val index = if (local.isFile) {
+                val index = if (indexFileOk(local, archive)) {
                     local.readBytes()
                 } else {
-                    val fetched = cdn.fetch("data", "$archive.index") ?: continue
-                    WowSwitch.replace(local, fetched)
-                    fetched
+                    if (!cdn.indexTo(archive, local)) continue
+                    local.readBytes()
                 }
                 val buffer = ByteBuffer.wrap(index)
                 for (block in 0 until index.size / 4096 * 4096 step 4096) {
@@ -509,13 +709,13 @@ object WowClientDownloader {
                         if (hex(index, pos, 16) == ekey) {
                             val size = buffer.getInt(pos + 16).toLong() and 0xFFFFFFFFL
                             val offset = buffer.getInt(pos + 20).toLong() and 0xFFFFFFFFL
-                            return cdn.fetch("data", archive, offset until offset + size)
+                            return cdn.fetchTo("data", archive, dest, offset until offset + size)
                         }
                         pos += 24
                     }
                 }
             }
-            return null
+            return false
         }
     }
 
@@ -573,50 +773,59 @@ object WowClientDownloader {
         }
     }
 
-    private fun blteDecode(data: ByteArray) = ByteArrayOutputStream(data.size).also { blteDecode(data, it) }.toByteArray()
 
-    private fun blteDecode(data: ByteArray, out: OutputStream) {
-        check(String(data, 0, 4) == "BLTE") { "Not BLTE data" }
-        val buffer = ByteBuffer.wrap(data)
-        val headerSize = buffer.getInt(4)
+    /**
+     * BLTE STREAMED (issue #70, 2026-11-11): [input] (an encoded file on disk, a whole body) decoded to [out] one chunk at a
+     * time, a 'Z' chunk through an inflater stream, so a 68 MB client file never sits in the heap. The chunk table's sizes bound each
+     * chunk; a cut stream or a truncated zlib chunk is an IOException.
+     */
+    internal fun blteDecode(input: InputStream, out: OutputStream) {
+        val d = DataInputStream(input)
+        val magic = ByteArray(4).also { d.readFully(it) }
+        check(String(magic) == "BLTE") { "Not BLTE data" }
+        val headerSize = d.readInt()
         if (headerSize == 0) {
-            out.write(decodeChunk(data.copyOfRange(8, data.size)))
+            decodeChunk(d, out)
             return
         }
-        val count = buffer.getInt(8) and 0xFFFFFF
-        var offset = headerSize
-        for (i in 0 until count) {
-            val compressedSize = buffer.getInt(12 + i * 24)
-            out.write(decodeChunk(data.copyOfRange(offset, offset + compressedSize)))
-            offset += compressedSize
+        val count = d.readInt() and 0xFFFFFF
+        val entry = ByteArray(24)
+        val sizes = LongArray(count) { d.readFully(entry); ByteBuffer.wrap(entry).getInt(0).toLong() and 0xFFFFFFFFL }
+        // the header as it says (12 + 24 per chunk; anything more is skipped, as the offset-based reader did)
+        CdnStream.Limited(d, (headerSize - 12 - 24L * count).coerceAtLeast(0)).drain()
+        for (size in sizes) CdnStream.Limited(d, size).also { decodeChunk(it, out) }.drain()
+    }
+
+    private fun decodeChunk(chunk: ByteArray): ByteArray =
+        ByteArrayOutputStream(chunk.size * 2).also { decodeChunk(chunk.inputStream(), it) }.toByteArray()
+
+    /** one chunk (its mode byte, then its body: the rest of [input]) decoded to [out] */
+    private fun decodeChunk(input: InputStream, out: OutputStream) {
+        val mode = input.read()
+        if (mode < 0) throw IOException("Empty BLTE chunk")
+        when (mode.toChar()) {
+            'N' -> input.copyTo(out, CdnStream.BUF)
+            'Z' -> inflate(input, out)
+            'F' -> blteDecode(input, out)
+            else -> throw IOException("Unsupported BLTE chunk mode ${mode.toChar()}")
         }
     }
 
-    private fun decodeChunk(chunk: ByteArray): ByteArray {
-        val body = chunk.copyOfRange(1, chunk.size)
-        return when (chunk[0].toInt().toChar()) {
-            'N' -> body
-            'Z' -> inflate(body)
-            'F' -> blteDecode(body)
-            else -> throw IOException("Unsupported BLTE chunk mode ${chunk[0].toInt().toChar()}")
-        }
-    }
-
-    private fun inflate(body: ByteArray): ByteArray {
+    private fun inflate(input: InputStream, out: OutputStream) {
         val inflater = Inflater()
-        inflater.setInput(body)
-        val out = ByteArrayOutputStream(body.size * 2)
-        val buffer = ByteArray(64 * 1024)
         try {
-            while (!inflater.finished()) {
-                val n = inflater.inflate(buffer)
-                if (n == 0 && (inflater.needsInput() || inflater.needsDictionary())) throw IOException("Truncated zlib chunk")
+            // InflaterInputStream: "Unexpected end of ZLIB input stream" (an EOFException) when the chunk is cut
+            val z = InflaterInputStream(input, inflater, CdnStream.BUF)
+            val buffer = ByteArray(CdnStream.BUF)
+            while (true) {
+                val n = z.read(buffer)
+                if (n < 0) break
                 out.write(buffer, 0, n)
             }
+            if (!inflater.finished()) throw IOException("Truncated zlib chunk")
         } finally {
             inflater.end()
         }
-        return out.toByteArray()
     }
 
     private fun md5Hex(file: File): String? {

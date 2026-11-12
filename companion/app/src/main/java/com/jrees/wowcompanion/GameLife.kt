@@ -13,6 +13,10 @@ object GameLife {
     @Volatile private var startedAt = 0L
     @Volatile private var worldSeen = false
     @Volatile private var ended = false
+    /** when the guest program last ended (epoch ms), 0 = not in this process. Issue #139 (2026-11-11): the launcher's game screen
+     *  (LauncherHooks.gameUp) stays "up" until its view detaches, after the program has ended; DependencyAddons.gameUpNow reads both */
+    @Volatile var endedAt = 0L
+        private set
     /** the launcher's note after an abnormal end; null = none */
     @Volatile var note: String? = null
         private set
@@ -21,10 +25,11 @@ object GameLife {
      * The guest program's exit status in words: 0 = closed normally; a signal (128 + n, as a shell reports it, or a negative n)
      * names it, with what Android's memory killer looks like (SIGKILL); anything else is the program's own error status.
      */
-    fun describe(status: Int): String {
+    fun describe(status: Int, closer: String? = null): String {
         val sig = when { status > 128 && status < 160 -> status - 128; status < 0 -> -status; else -> 0 }
         return when {
             status == 0 -> "closed normally"
+            closer != null -> "was closed by DS Forever ($closer${if (sig > 0) ", signal $sig" else ", status $status"}), not by Android"
             sig == 9 -> "was killed (signal 9: Android may have needed the memory)"
             sig == 11 -> "crashed (signal 11)"
             sig == 6 -> "aborted (signal 6)"
@@ -33,8 +38,15 @@ object GameLife {
         }
     }
 
-    /** an end the launcher should offer a report for */
-    fun abnormal(status: Int): Boolean = status != 0
+    /**
+     * WHO CLOSED IT (issue triage 2026-11-11: our own "Restart the game" from Settings ends the old game with signal 9, and the report
+     * then said "signal 9: Android may have needed the memory"): set by the launcher's restart / Exit game just before it closes the
+     * game, read by [ended], cleared by [started]. null = not us (Android, a crash or the game itself).
+     */
+    @Volatile var closer: String? = null
+
+    /** an end the launcher should offer a report for (not one DS Forever made itself: [closer]) */
+    fun abnormal(status: Int, closer: String? = null): Boolean = status != 0 && closer == null
 
     fun minutes(ms: Long): String = if (ms < 60_000) "${ms / 1000} s" else "${ms / 60_000} min"
 
@@ -45,7 +57,7 @@ object GameLife {
     // ------------------------------------------------------------------ the events (the launcher and the bottom screen call these)
 
     fun started(now: Long = System.currentTimeMillis()) {
-        startedAt = now; worldSeen = false; ended = false; note = null
+        startedAt = now; worldSeen = false; ended = false; note = null; closer = null
         DiagLog.event("game", "started")
         LastRun.gameStarted(now)                                   // 1.0.17: kept across the app's own death
     }
@@ -66,13 +78,15 @@ object GameLife {
     fun ended(status: Int, now: Long = System.currentTimeMillis()) {
         if (ended) return
         ended = true
+        endedAt = now
         LastRun.gameEnded()
         val ran = if (startedAt == 0L) 0L else now - startedAt
         val mem = memAvailableMiB()?.let { "$it MiB" } ?: "unknown"
+        val by = closer
         val indoor = runCatching { IndoorSchedulerStep.status?.let { "${it.phase.name.lowercase()} ${it.ready}/${it.total}" } }.getOrNull() ?: "not running"
-        DiagLog.event("game", "ended: ${describe(status)} (status $status) after ${minutes(ran)}${if (worldSeen) "" else ", before reaching the world"}; " +
+        DiagLog.event("game", "ended: ${describe(status, by)} (status $status) after ${minutes(ran)}${if (worldSeen) "" else ", before reaching the world"}; " +
             "MemAvailable $mem; indoor maps: $indoor")
-        note = if (abnormal(status)) noteText(status, ran) else null
+        note = if (abnormal(status, by)) noteText(status, ran) else null
     }
 
     /** the launcher's screen is back (the game screen gone) */

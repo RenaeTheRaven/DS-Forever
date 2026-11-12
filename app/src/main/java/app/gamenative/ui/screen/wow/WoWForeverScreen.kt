@@ -157,7 +157,7 @@ fun WoWForeverScreen(
 
     suspend fun fetchAppUpdate() {
         AppUpdater.clearCacheOnce(context)
-        appCheck = AppUpdater.check()
+        appCheck = AppUpdater.check(context)
     }
 
     fun checkAppUpdate() {
@@ -203,6 +203,14 @@ fun WoWForeverScreen(
                 errorMessage = "The update was refused: ${e.message}"
                 downloadedApk = null
                 isDownloadingAppUpdate = false
+            } catch (e: java.io.IOException) {
+                // a stall / offline keeps the partial file (the user, 2026-11-11: updates on slow links): the next Update resumes it;
+                // a bad file (wrong checksum, not an APK) was deleted and says so
+                Timber.e(e, "App update download stopped")
+                errorMessage = if (e.message == com.jrees.wowcompanion.AppUpdate.BAD_CHECKSUM || e.message?.contains("APK") == true)
+                    "The update download failed: ${e.message}" else "The update download stopped (${e.message}). Update resumes it."
+                downloadedApk = null
+                isDownloadingAppUpdate = false
             } catch (e: Exception) {
                 Timber.e(e, "Error downloading app update")
                 errorMessage = "The update download failed: ${e.message}"
@@ -218,7 +226,9 @@ fun WoWForeverScreen(
     suspend fun fetchVersionStatus() {
         switchFn?.invoke()
         isCheckingVersion = true
-        versionStatus = withContext(Dispatchers.IO) { WowClientDownloader.checkVersion(File(gamePath)) }
+        // the region the player picked decides the build checked (the user, 2026-11-11: regions fix), else the install's own
+        val region = com.jrees.wowcompanion.GameRegion.chosen(context)
+        versionStatus = withContext(Dispatchers.IO) { WowClientDownloader.checkVersion(File(gamePath), region) }
         isCheckingVersion = false
     }
 
@@ -273,6 +283,9 @@ fun WoWForeverScreen(
         // refusing - test55: after the launch switch Play said "Game art is required before Play" and no harvest ran
         if (!artReady) Timber.i("WoWForeverScreen: Play by $by waits for the game art (not ready)")
         if (!files.hasStorageAccess) return                // the bottom asks for it
+        // 2026-11-11 (review of the issue #108-cluster fix): a new Play = any earlier launch is over; its window must not hold back the
+        // art before Play (PlayGate.artMayOpen), or Play would sit at "Preparing your game art..."
+        com.jrees.wowcompanion.LauncherHooks.endLaunchWindow()
         isLaunching = true
         errorMessage = null
         statusText = "Preparing components..."
@@ -295,12 +308,20 @@ fun WoWForeverScreen(
                 // downloaded packages never went in; the start step runs once per launcher screen): what is downloaded goes in HERE, right
                 // before the game starts, on EVERY launch route (Play, the restart's Play, the auto-launch). Nothing is fetched here, and a
                 // failure never stops the launch (WCSETUP "add-ons: applied ..." / "... not applied: ...")
+                // Issues #117 #135 #83 (2026-11-11): each step after the art says what it does ("Installing add-ons: Spoken Quests...",
+                // "Checking game files..."); before, all of it sat under "Preparing your game art..." for minutes
+                statusText = "Checking add-ons..."
+                val step: (String) -> Unit = { msg -> scope.launch(Dispatchers.Main) { statusText = msg } }
                 withContext(Dispatchers.IO) {
                     runCatching {
                         com.jrees.wowcompanion.ThirdPartyAddons.init(context)
                         com.jrees.wowcompanion.ThirdPartyAddons.applyAtStart(WowClientDownloader.flavorDir(File(gamePath)),
-                            fetchSmall = false, by = "launch by $by")
+                            fetchSmall = false, by = "launch by $by", onStep = step)
                     }.onFailure { android.util.Log.w("WCSETUP", "add-ons at launch: ${it.message}") }
+                    // .build.info's empty CDN Hosts / Servers refilled before EVERY launch (the user, 2026-11-11: updates on slow
+                    // links; the client crashes at start without them). Never stops the launch
+                    step("Checking game files...")
+                    WowClientDownloader.repairBuildInfo(File(gamePath), versionStatus)
                 }
                 com.jrees.wowcompanion.LauncherHooks.launchEvent("preparing the container (${gpu.label}, by $by)")
                 val containerId = withContext(Dispatchers.IO) {
@@ -332,6 +353,9 @@ fun WoWForeverScreen(
 
     LifecycleResumeEffect(gamePath) {
         checkFiles()
+        // 2026-11-11 (review of the issue #108-cluster fix): the launcher screen in front again = no launch under way (the game screen
+        // went, or never attached); a launch job is cancelled on pause, so none runs here either
+        com.jrees.wowcompanion.LauncherHooks.endLaunchWindow()
         isLaunching = false
         statusText = READY_STATUS
         if (versionStatus == null && !WoWLauncherState.shouldAutoLaunch) {
@@ -596,7 +620,9 @@ fun WoWForeverScreen(
             try {
                 withContext(Dispatchers.IO) {
                     root.mkdirs()
-                    WowClientDownloader.install(root) { msg -> scope.launch(Dispatchers.Main) { updateStatusText = msg } }
+                    WowClientDownloader.install(root, com.jrees.wowcompanion.GameRegion.chosen(context)) { msg ->
+                        scope.launch(Dispatchers.Main) { updateStatusText = msg }
+                    }
                 }
                 gamePath = root.absolutePath
                 GamePath.save(context, gamePath)
@@ -685,12 +711,28 @@ fun WoWForeverScreen(
     // 2026-11-07 (the user: "they cant play without it just start the update and remove the prompt"): an out-of-date game updates by
     // itself, once per new build (a failed one waits for Try again, never a loop)
     var autoUpdatedFor by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(versionStatus?.isOutdated, versionStatus?.remoteVersion) {
+    LaunchedEffect(versionStatus?.isOutdated, versionStatus?.remoteVersion, versionStatus?.remoteBuildConfig) {
         val v = versionStatus ?: return@LaunchedEffect
-        if (!v.isOutdated || autoUpdatedFor == v.remoteVersion || isUpdating) return@LaunchedEffect
-        autoUpdatedFor = v.remoteVersion
+        // keyed by the build too (regions fix): another region's build can carry the same version name
+        val build = "${v.remoteVersion} ${v.remoteBuildConfig}"
+        if (!v.isOutdated || autoUpdatedFor == build || isUpdating) return@LaunchedEffect
+        autoUpdatedFor = build
         setupLog("update: starting by itself (${v.remoteVersion})")
         performUpdate()
+    }
+
+    // A NEW REGION, A NEW CHECK (the user, 2026-11-11: regions fix): regions patch on different days, so the picked region's build is
+    // checked at once (and then updated by itself as any new build is); during an update the check waits for its end
+    var regionRecheck by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        val l: (String) -> Unit = { code ->
+            scope.launch(Dispatchers.Main) { setupLog("region: $code picked; checking its build"); regionRecheck = true }
+        }
+        com.jrees.wowcompanion.GameRegion.listeners.add(l)
+        onDispose { com.jrees.wowcompanion.GameRegion.listeners.remove(l) }
+    }
+    LaunchedEffect(regionRecheck, isUpdating) {
+        if (regionRecheck && !isUpdating) { regionRecheck = false; checkVersionStatus() }
     }
 
     // the queued Update goes as soon as nothing holds it (an art step's end, a launch's end)
@@ -833,8 +875,9 @@ fun WoWForeverScreen(
             }
             com.jrees.wowcompanion.SetupFlow.Action.PLAY -> {
                 com.jrees.wowcompanion.DeviceTier.init(context)
-                if (!artNoticeSeen && com.jrees.wowcompanion.DeviceTier.lowMemory() &&
-                    com.jrees.wowcompanion.ArtHarvest.backgroundLeft(context)) artNotice = true
+                // 2026-11-11 (issue #108 cluster): the background art waits for the game to close on EVERY model now (PlayGate),
+                // so the notice is for every model too
+                if (!artNoticeSeen && com.jrees.wowcompanion.ArtHarvest.backgroundLeft(context)) artNotice = true
                 else launchGame()
             }
             com.jrees.wowcompanion.SetupFlow.Action.ART_NOTICE_PLAY -> { artNotice = false; artNoticeSeen = true; launchGame() }
@@ -857,6 +900,8 @@ fun WoWForeverScreen(
         com.jrees.wowcompanion.SetupBridge.restartGame = {
             val log = com.jrees.wowcompanion.SetupBridge.log
             com.jrees.wowcompanion.SetupBridge.restarting = true
+            // issue triage 2026-11-11: the old game's signal 9 is ours, not Android's: said so in the report
+            com.jrees.wowcompanion.GameLife.closer = "the restart from Settings"
             WoWLauncherState.shouldAutoLaunch = false
             log?.invoke("restart: close requested")
             CoroutineScope(Dispatchers.Main + SupervisorJob()).launch {
@@ -890,6 +935,7 @@ fun WoWForeverScreen(
         }
         // the waiting screen's Menu > Exit game, as the restart above: the game's own Exit Game first, the old close when it cannot
         com.jrees.wowcompanion.SetupBridge.exitGame = {
+            com.jrees.wowcompanion.GameLife.closer = "Exit game from the menu"     // issue triage 2026-11-11: ours, not Android's
             val close = { CoroutineScope(Dispatchers.Main + SupervisorJob()).launch { PluviaApp.events.emit(AndroidEvent.ForceCloseApp) }; Unit }
             val ce = com.jrees.wowcompanion.LauncherHooks.cleanExit
             if (ce == null) close() else ce("menu") { force -> if (force) close() }
@@ -1089,7 +1135,7 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
     onStatus(com.jrees.wowcompanion.LauncherSetup.run(context, File(gameRoot, product.flavorDir)))
     if (!arm64Exe.exists()) {
         try {
-            WowClientDownloader.download(gameRoot, onStatus)
+            WowClientDownloader.download(gameRoot, com.jrees.wowcompanion.GameRegion.chosen(context), onStatus)
         } catch (e: Exception) {
             if (!product.exe(gameRoot).exists()) throw IllegalStateException("Couldn't download ${product.exeName}: ${e.message}", e)
             Timber.w(e, "Client update check failed, launching the existing ${product.exeName}")

@@ -1239,7 +1239,7 @@ function WC.collectPos()
     -- QuestTrail's arrow, read (b-route-questtrail; absent = QuestTrail not there or its arrow hidden)
     local okT, qt = pcall(WC.qtrailRead)
     if okT and qt then out.qtrail = qt end
-    -- the group's members (b-group-map), once a second at most: absent between, grpN = 0 once on leaving the group
+    -- the group's members (b-group-map), once a second at most: absent between, grpN = 0 for 5 reads on leaving the group (issue #30)
     local okG, grp, grpN = pcall(WC.grpRead)
     if okG and grpN then out.grpN = grpN; out.grp = grp end
     -- NO HEIGHT IS AVAILABLE. Measured: UnitPosition returns 4 values here and the third
@@ -2851,7 +2851,7 @@ function WC.pnav.api()
 end
 function WC.pnav.say(op, ok, why)
     pcall(function()
-        WC.send(WC.encode({ type = "pnav", v = "pn1", op = op, ok = ok and true or false, why = why, have = WC.pnav.api() ~= nil }))
+        WC.send(WC.encode({ type = "pnav", v = "pn2", op = op, ok = ok and true or false, why = why, have = WC.pnav.api() ~= nil }))
         WC.push()
     end)
 end
@@ -2860,14 +2860,17 @@ function WC.pnav.go(m, x, y)
     if not api then return WC.pnav.say("go", false, "no Polestar") end
     local okN, res = pcall(api.Navigate, WC.pnav.OWNER, m, x, y, "DS Forever")
     if not okN or res == false then return WC.pnav.say("go", false, okN and "refused" or tostring(res):sub(1, 120)) end
+    -- ps3 (the user, 2026-11-11: "also the compass is still tracking my focused wow quest"): the GO kept (m, x, y, goAt), so the
+    -- top-screen compass (Trail.lua C.targets) can tell when it IS Polestar's own step
     WC.pnav.active, WC.pnav.keepAt, WC.pnav.sig = true, GetTime(), nil
+    WC.pnav.m, WC.pnav.x, WC.pnav.y, WC.pnav.goAt = m, x, y, GetTime()
     WC.pnav.say("go", true)
 end
 function WC.pnav.cancel(why)
     if not WC.pnav.active then return end
     local api = WC.pnav.api()
     if api and type(api.Cancel) == "function" then pcall(api.Cancel, WC.pnav.OWNER) end
-    WC.pnav.active, WC.pnav.sig = false, nil
+    WC.pnav.active, WC.pnav.sig, WC.pnav.m = false, nil, nil
     WC.pnav.say("cancel", true, why)
 end
 -- the route Polestar is guiding now, as legs of world points (only while the guidance is ours)
@@ -2881,6 +2884,9 @@ function WC.pnav.route()
     end
     local okG, legs = pcall(P.Nav.GetRouteGeometry)
     if not okG or type(legs) ~= "table" then return nil end
+    -- pn2 (the user, 2026-11-11: "the polestar option in quest tracking in home should also show the path on the bottom map"): Polestar
+    -- answers { legs = { ... } } (Nav/Walk.lua), not the legs themselves - read as a list it gave no route at all
+    if type(legs.legs) == "table" then legs = legs.legs end
     local n = 0
     for _, leg in ipairs(legs) do if type(leg) == "table" and type(leg.pts) == "table" then n = n + #leg.pts end end
     local step = math.max(1, math.ceil(n / WC.pnav.PTS))
@@ -2915,6 +2921,10 @@ if WC.pad and type(WC.pad.op) == "function" then
     WC.pad.op("pnav", "pnav", function(_, col)
         if type(col) ~= "number" then return end
         local P = WC.pnav
+        -- pq1: 38 = Polestar's automation mask follows (WC.pqol), the next tap 0-7 within 2 s is it
+        if col == 38 then P.digits = nil; P.qolAt = GetTime(); return end
+        if P.qolAt and col <= 7 and GetTime() - P.qolAt <= 2 then P.qolAt = nil; return pcall(WC.pqol.choose, col) end
+        P.qolAt = nil
         if col == 39 then P.digits = nil; return P.cancel("asked") end
         if col == 37 then P.keepAt = GetTime(); return end
         if col == 36 then P.digits = {}; P.digitsAt = GetTime(); return end
@@ -2942,10 +2952,141 @@ do
         if not okR or not legs then return end
         if sig ~= P.sig or GetTime() - P.sentAt > 10 then
             P.sig, P.sentAt = sig, GetTime()
-            pcall(function() WC.send(WC.encode({ type = "pnavroute", v = "pn1", legs = legs })); WC.push() end)
+            pcall(function() WC.send(WC.encode({ type = "pnavroute", v = "pn2", legs = legs })); WC.push() end)
         end
     end)
 end
+
+-- ---------------------------------------------------------------- POLESTAR'S AUTOMATION, OFF BY DEFAULT (pq1)
+-- The user (2026-11-11): "there needs to be a polestar setting added that is off by default for auto quest accept and auto vendor ...
+-- and auto repair"; the picks: one switch for accepting AND turning in guide quests, "auto vendor" = selling greys and buying what a
+-- step needs, Polestar keeps what DS Forever set (nothing put back at log out). Polestar's own options (its public namespace, Polestar
+-- = ns: Get / Set, read live by its handlers): bit 1 quest = behavior.autoAccept + behavior.autoTurnin, bit 2 vendor = qol.sellJunk +
+-- qol.buyGoals, bit 4 repair = qol.autoRepair. The choice is this character's (WowCompanionDB.pqol[name-realm], 0 = all off until the
+-- app says otherwise) and written into Polestar at every log in and every choice, out of combat. Pad row "pnav": 38, then the mask.
+-- Answers {"type":"pqol", have, m = what Polestar does now, w = the choice}.
+WC.pqol = { PATHS = { { 1, "behavior.autoAccept" }, { 1, "behavior.autoTurnin" }, { 2, "qol.sellJunk" }, { 2, "qol.buyGoals" }, { 4, "qol.autoRepair" } } }
+function WC.pqol.ns()
+    local P = _G.Polestar
+    if type(P) == "table" and type(P.Get) == "function" and type(P.Set) == "function" then return P end
+end
+function WC.pqol.key()
+    local okN, n = pcall(UnitName, "player")
+    local okR, r = pcall(GetRealmName)
+    if not okN or not okR then return nil end
+    if type(n) ~= "string" or type(r) ~= "string" then return nil end
+    return n .. "-" .. r
+end
+function WC.pqol.want()
+    local db = type(WowCompanionDB) == "table" and type(WowCompanionDB.pqol) == "table" and WowCompanionDB.pqol or nil
+    local k = WC.pqol.key()
+    local v = db and k and db[k]
+    return type(v) == "number" and v or 0
+end
+-- what Polestar does now, as the mask (a bit is on only when every option of it is on)
+function WC.pqol.now()
+    local P = WC.pqol.ns()
+    if not P then return nil end
+    local m = 0
+    for _, bit in ipairs({ 1, 2, 4 }) do
+        local all = true
+        for _, e in ipairs(WC.pqol.PATHS) do
+            if e[1] == bit then
+                local ok, v = pcall(P.Get, e[2])
+                if not ok or v ~= true then all = false end
+            end
+        end
+        if all then m = m + bit end
+    end
+    return m
+end
+function WC.pqol.apply()
+    local P = WC.pqol.ns()
+    if not P then return end
+    if InCombatLockdown() then WC.pqol.pending = true; return end      -- Polestar's own listeners may touch its secure step button
+    WC.pqol.pending = nil
+    local w = WC.pqol.want()
+    for _, e in ipairs(WC.pqol.PATHS) do
+        local on = (math.floor(w / e[1]) % 2) == 1
+        local ok, v = pcall(P.Get, e[2])
+        if not ok or v ~= on then pcall(P.Set, e[2], on) end
+    end
+end
+function WC.pqol.say()
+    pcall(function()
+        WC.send(WC.encode({ type = "pqol", v = "pq1", have = WC.pqol.ns() ~= nil, m = WC.pqol.now(), w = WC.pqol.want() }))
+        WC.push()
+    end)
+end
+function WC.pqol.choose(mask)
+    if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
+    if type(WowCompanionDB.pqol) ~= "table" then WowCompanionDB.pqol = {} end
+    local k = WC.pqol.key()
+    if k then WowCompanionDB.pqol[k] = mask end
+    WC.pqol.apply()
+    WC.pqol.say()
+end
+do
+    local f = CreateFrame("Frame")
+    pcall(function() f:RegisterEvent("PLAYER_ENTERING_WORLD") end)
+    pcall(function() f:RegisterEvent("PLAYER_REGEN_ENABLED") end)
+    f:SetScript("OnEvent", function(_, e)
+        if e == "PLAYER_REGEN_ENABLED" and not WC.pqol.pending then return end
+        pcall(WC.pqol.apply); WC.pqol.say()
+    end)
+    -- the state every 15 s (an app that connected later learns it); Polestar's own panel changed: ours again (it is the one switch)
+    C_Timer.NewTicker(15, function()
+        local n, w = WC.pqol.now(), WC.pqol.want()
+        if n ~= nil and n ~= w and not InCombatLockdown() then pcall(WC.pqol.apply) end
+        WC.pqol.say()
+    end)
+end
+
+-- ---------------------------------------------------------------- POLESTAR'S OWN OBJECTIVE, READ (ps1)
+-- The user (2026-11-11): "rather than syncing the tracked quest to polestar maybe we add a light blue objective to select from the
+-- tracker list that has the polestar objective". Read only: Polestar's live guide step (Engine.GetLiveStep / GetStepView: the step's
+-- title) and its waypoint (Engine.GetWaypoint: the goal the arrow leads to, its words, kind, map and point on Polestar's 0-100 scale)
+-- go to the app as {"type":"pstep", t, g, k, q, m, x, y} (x / y 0..1), or {"type":"pstep", none = true} when Polestar has no step;
+-- sent when it changes and every 15 s. Nothing of Polestar or the game is changed.
+-- ps2 (the user, 2026-11-11: "should probably be the default selection if its enabled when logging in"): every pstep carries b, this
+-- login's stamp (time() when this file loaded: a new one at each login and /reload; not part of sig), so the app picks the light blue
+-- row again at each login. The last read is kept (WC.pstep.last, every second) for the compass (Trail.lua C.targets).
+WC.pstep = { sig = nil, sentAt = 0, boot = (type(time) == "function" and time()) or 0 }
+function WC.pstep.read()
+    local P = _G.Polestar
+    local E = type(P) == "table" and type(P.Engine) == "table" and P.Engine or nil
+    if not (E and type(E.GetWaypoint) == "function") then return nil end
+    local okW, wp = pcall(E.GetWaypoint)
+    if not okW or type(wp) ~= "table" or type(wp.map) ~= "number" or type(wp.x) ~= "number" or type(wp.y) ~= "number" then
+        return { none = true }
+    end
+    local title, quest
+    if type(E.GetStepView) == "function" and type(wp.stepIndex) == "number" then
+        local okV, v = pcall(E.GetStepView, wp.stepIndex)
+        if okV and type(v) == "table" then
+            title = type(v.title) == "string" and v.title or nil
+            local gv = type(v.goals) == "table" and type(wp.goalIndex) == "number" and v.goals[wp.goalIndex] or nil
+            if type(gv) == "table" and type(gv.quest) == "number" then quest = gv.quest end
+        end
+    end
+    return {
+        t = title, g = type(wp.label) == "string" and wp.label or nil, k = type(wp.kind) == "string" and wp.kind or nil, q = quest,
+        m = wp.map, x = math.floor(wp.x * 100 + 0.5) / 10000, y = math.floor(wp.y * 100 + 0.5) / 10000,
+    }
+end
+C_Timer.NewTicker(1, function()
+    local P = WC.pstep
+    local okR, d = pcall(P.read)
+    if not okR or not d then P.last = nil; return end
+    P.last = d
+    local sig = d.none and "none" or table.concat({ d.t or "", d.g or "", d.k or "", tostring(d.q or 0), d.m, d.x, d.y }, "|")
+    if sig ~= P.sig or GetTime() - P.sentAt > 15 then
+        P.sig, P.sentAt = sig, GetTime()
+        d.type, d.v = "pstep", "ps2"
+        if P.boot ~= 0 then d.b = P.boot end
+        pcall(function() WC.send(WC.encode(d)); WC.push() end)
+    end
+end)
 
 -- ---------------------------------------------------------------- QUESTTRAIL'S ARROW, READ (b-route-questtrail)
 -- The user (2026-10-17): "(a) + (b)" - with Settings' "Quest tracking: QuestTrail" the map's line and arrow follow QuestTrail's own
@@ -3128,9 +3269,14 @@ end
 -- The user: party / raid members on the Map room, the map module and Home's small map, in their class colours (names in the module and
 -- the room). Read only: per member (party1-4 / raid1-40, never the player) UnitPosition (world yards and its instance / continent: the
 -- game gives nothing inside instances, so such members are left out), the name, the class and its colour as the game's own
--- RAID_CLASS_COLORS has it (so the app keeps no colour table), dead / offline. At most once a second; nothing while ungrouped except a
--- single grpN = 0 when the group goes.
-WC.grp = { at = 0, had = false, EVERY = 1.0 }
+-- RAID_CLASS_COLORS has it (so the app keeps no colour table), dead / offline. At most once a second; nothing while ungrouped except
+-- grpN = 0 for ZERO_TICKS reads when the group goes.
+-- (issue #30, the player 2026-11-06: "after leaving a party, the player dot stayed on the map at their last location"; 2026-11-11) the
+-- single grpN = 0 was lost whenever the player stood still as the group went: Core's ticker sends a position document only when its
+-- key changes, so the one read that said "no group" was built and dropped, and the app kept the last members for good. Now every read
+-- bumps G.seq (Core's key carries it, so the document goes out standing too), and the "no group" read repeats ZERO_TICKS times, one a
+-- second, so one lost document cannot keep a dot; the app also ages members out (GroupMembers.STALE_MS).
+WC.grp = { at = 0, had = false, EVERY = 1.0, ZERO_TICKS = 5, zero = 0, seq = 0 }
 function WC.grpRead()
     local G = WC.grp
     local now = GetTime()
@@ -3139,10 +3285,11 @@ function WC.grpRead()
     local okN, n = pcall(function() return GetNumGroupMembers and GetNumGroupMembers() or 0 end)
     n = (okN and type(n) == "number" and WC.isPlain(n)) and n or 0
     if n <= 0 then
-        if G.had then G.had = false; return {}, 0 end
+        if G.had then G.had = false; G.zero = G.ZERO_TICKS end
+        if G.zero > 0 then G.zero = G.zero - 1; G.seq = G.seq + 1; return {}, 0 end
         return nil
     end
-    G.had = true
+    G.had = true; G.zero = 0; G.seq = G.seq + 1
     local okR, raid = pcall(function() return IsInRaid and IsInRaid() end)
     local prefix = (okR and raid) and "raid" or "party"
     local count = (okR and raid) and n or (n - 1)

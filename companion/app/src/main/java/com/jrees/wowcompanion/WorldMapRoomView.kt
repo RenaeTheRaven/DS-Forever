@@ -490,10 +490,15 @@ class WorldMapRoomView(context: Context) : View(context) {
         if (mid != playerMap) { playerMap = mid; mapDoc?.put("mapID", mid) }
         px = pos.optDouble("x", Double.NaN).toFloat(); py = pos.optDouble("y", Double.NaN).toFloat()
         facing = pos.optDouble("facing", facing.toDouble()).toFloat()
-        if (pos.has("grpN")) group = GroupMembers.parse(pos.optJSONArray("grp"))   // the group (b-group-map)
+        if (pos.has("grpN")) {                                                       // the group (b-group-map)
+            group = GroupMembers.parse(pos.optJSONArray("grp")); groupAt = SystemClock.uptimeMillis()
+            // (issue #30, 2026-11-11) a redraw just after the members would age out, so a group nobody re-sends leaves the map
+            if (group.isNotEmpty()) postInvalidateDelayed(GroupMembers.STALE_MS + 100L)
+        }
         if (isShown) invalidate()
     }
     private var group: List<GroupMembers.Member> = emptyList()
+    private var groupAt = 0L                    // when [group] came (uptimeMillis; issue #30: members older than STALE_MS are not drawn)
 
     // ---- TRAVEL (b-travel-layer): the map module's scene (its "Travel" filter), on the zone or the continent shown; a zone names its
     // points; the cursor on one (a tap, the stick) shows its name and where it goes
@@ -553,7 +558,7 @@ class WorldMapRoomView(context: Context) : View(context) {
     private fun drawGroup(c: Canvas) {
         val w = model.maps[shown]?.world ?: return
         val world = model.assignsOf(shown).isNotEmpty()
-        for (gm in group) {
+        for (gm in GroupMembers.live(group, groupAt, SystemClock.uptimeMillis())) {      // issue #30: stale members gone
             if (!world && gm.cont != null && gm.cont != w.continent) continue
             // a world map: the member's continent through its own assignment (b-world-zoom)
             val uv = if (world) gm.cont?.let { model.project(shown, it, gm.wx, gm.wy) } ?: continue
@@ -685,6 +690,8 @@ class WorldMapRoomView(context: Context) : View(context) {
 
     var onFocusQuest: ((Int) -> Unit)? = null
     var onUnfocusQuest: ((Int) -> Unit)? = null
+    /** ps3 (the user, 2026-11-11): this room's own Focus ([on] true) / Stop Focusing on quest id, told to the Map (the Polestar row) */
+    var onFocusPicked: ((id: Int, on: Boolean) -> Unit)? = null
     var onUntrackQuest: ((Int) -> Unit)? = null
     var onLeave: (() -> Unit)? = null
 
@@ -1032,7 +1039,7 @@ class WorldMapRoomView(context: Context) : View(context) {
         if (sendQuestActs(id, acts)) {
             val now = System.currentTimeMillis()
             if (QuestPad.Act.WATCH in acts) trackPending[id] = Pending(true, now)
-            if (QuestPad.Act.FOCUS in acts) focusPending = id to now
+            if (QuestPad.Act.FOCUS in acts) { focusPending = id to now; onFocusPicked?.invoke(id, true) }
             expireLater()
         }
     }
@@ -1091,8 +1098,8 @@ class WorldMapRoomView(context: Context) : View(context) {
         val now = System.currentTimeMillis()
         when (o) {
             MapRoomKeys.Opt.TRACK, MapRoomKeys.Opt.UNTRACK -> toggleTrack(id)
-            MapRoomKeys.Opt.FOCUS -> if (sendQuestActs(id, listOf(QuestPad.Act.FOCUS))) { focusPending = id to now; expireLater() }
-            MapRoomKeys.Opt.STOP_FOCUS -> if (sendQuestActs(id, listOf(QuestPad.Act.UNFOCUS))) { focusPending = 0 to now; expireLater() }
+            MapRoomKeys.Opt.FOCUS -> if (sendQuestActs(id, listOf(QuestPad.Act.FOCUS))) { focusPending = id to now; onFocusPicked?.invoke(id, true); expireLater() }
+            MapRoomKeys.Opt.STOP_FOCUS -> if (sendQuestActs(id, listOf(QuestPad.Act.UNFOCUS))) { focusPending = 0 to now; onFocusPicked?.invoke(id, false); expireLater() }
             MapRoomKeys.Opt.SHARE -> sendOp(QuestPad.Act.SHARE, id)
             MapRoomKeys.Opt.ABANDON -> sendOp(QuestPad.Act.ARM, id)
         }
@@ -1287,7 +1294,8 @@ class WorldMapRoomView(context: Context) : View(context) {
         Filter("chest", "Chests", false, true),
         Filter("rare", "Rares", false, true),
         Filter("guess", "QuestieDB guesses", false, true))
-    private fun on(key: String): Boolean = prefs.getBoolean(key, filters.first { it.key == key }.default)
+    // issues #91 / #85 / #77 sweep (2026-11-11): a key no filter has reads false, never NoSuchElementException from a tap
+    private fun on(key: String): Boolean = prefs.getBoolean(key, filters.firstOrNull { it.key == key }?.default ?: false)
     private fun toggle(key: String) { prefs.edit().putBoolean(key, !on(key)).apply(); invalidate() }
     private var menuOpen = false
     private var menuSel = 0

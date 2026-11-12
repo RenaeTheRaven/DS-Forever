@@ -405,6 +405,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         if (RuntimeArt.needed(this)) { unpacking = true; unpackFirst(); return }
         Settings.init(this)
         GameUi.init(this)
+        PolestarQol.init(this)
         GameInput.onStatus = { s -> ui.post { status.text = s.take(110) } }
         // NOTE: do NOT set FLAG_NOT_FOCUSABLE. It leaves display 4 with no focused window, so
         // the first touch waits 5 s for a focus target and the system ANRs us at 0% CPU. This
@@ -494,13 +495,19 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         settings.pad.onLeave = { show(Room.HOME) }
         settingsRoom = settings
         // the DS WoW toolbar's switch lives in Home's Settings section since 2026-10-06 (renamed from "D-pad room bar")
-        settings.homeSection.dpadState = { lastDpad }
+        // issue #136 (2026-11-11): the row shows the player's pending choice at once (it showed the add-on's old word, "On", while the
+        // game was closed or had not taken the tap yet)
+        settings.homeSection.dpadState = { lastDpad?.let { d -> dpadShown(d) } }
         settings.homeSection.onDpad = { on -> dpadSet(on) }
         homeView = HomeView(this, mapView, castView, chatView) { r -> show(r) }
         // LATER item 10 (map session): a tap on a numbered quest bubble, or on a quest in the full map's list, focuses it through
         // Home's ONE focus path (its checks and WCHOME logging); a refusal shows on the map
         mapView.onFocusQuest = { id -> homeView.focusQuest(id) { mapView.note(it) } }
         mapView.onPushFocus = { id -> homeView.focusQuest(id) { Log.i("WCMAP", "default focus $id: $it") } }
+        // ps3 (the user, 2026-11-11): the Polestar row clears the game's focus for a step with no quest in the log (logged only: a
+        // refusal such as "In combat" draws no note), and stops a focus check still retrying the step it moved on from
+        mapView.onPushUnfocus = { id -> homeView.unfocusQuest(id) { Log.i("WCMAP", "polestar unfocus $id: $it") } }
+        mapView.onCancelFocus = { id -> homeView.cancelFocusWant(id) }
         // the Map room's X on its list (map session, the user's quest-list feedback): untrack through Home's one quest-action path
         mapView.onUntrackQuest = { id -> homeView.untrackQuest(id) { mapView.note(it) } }
         // A on the focused quest clears the focus (Quests q9, qact 39)
@@ -509,7 +516,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // the game's player menu (Quests q38)
         mapView.onTrackQuest = { id -> homeView.watchQuest(id) { mapView.note(it) } }
         // the Untracked rows (the user, 2026-10-16): A tracks and focuses; Y's panel shares and abandons (Abandon asks first)
-        mapView.onTrackFocusQuest = { id -> homeView.trackAndFocus(id) { mapView.note(it) } }
+        mapView.onTrackFocusQuest = { id -> mapView.psRelease(); homeView.trackAndFocus(id) { mapView.note(it) } }   // ps3: a pick
         mapView.onShareQuest = { id -> homeView.shareQuest(id) { mapView.note(it) } }
         mapView.onAbandonArm = { id -> homeView.armAbandon(id) { mapView.note(it) } }
         mapView.onAbandonConfirm = { id -> homeView.confirmAbandon(id) { mapView.note(it) } }
@@ -546,9 +553,14 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         Roads.files.onLoaded { mapView.postInvalidate() }
         mapView.onProbeOptions = { bits -> worldMapRoom.sendProbeOptions(bits) }   // Map: the minimap probe's options to the add-on
         worldMapRoom.onLeave = { show(Room.HOME) }
-        worldMapRoom.onFocusQuest = { id -> homeView.focusQuest(id) { } }
+        worldMapRoom.onFocusQuest = { id -> mapView.psRelease(); homeView.focusQuest(id) { } }
         worldMapRoom.onUntrackQuest = { id -> homeView.untrackQuest(id) { } }
-        worldMapRoom.onUnfocusQuest = { id -> homeView.unfocusQuest(id) { } }
+        worldMapRoom.onUnfocusQuest = { id -> mapView.psRelease(); mapView.focusCleared(id); homeView.unfocusQuest(id) { } }
+        // ps3 (the user, 2026-11-11): the World map's and the Quests room's own Focus / Remove Focus (QuestPad, sent by the rooms
+        // themselves) are the player's picks too: the Polestar row lets go (on Remove Focus as well, or the sync would re-focus the
+        // step quest), a cleared focus is not pushed back as the default
+        worldMapRoom.onFocusPicked = { id, on -> mapView.psRelease(); if (!on) mapView.focusCleared(id) }
+        questsView.onFocusPicked = { id, on -> mapView.psRelease(); if (!on) mapView.focusCleared(id) }
         // LATER item 7: Select opens a cursor on the bar; A on a room is what a touch on its picture does
         // the swirl (Home) picked on the bar = the pause wheel, on Home and in rooms (the user 2026-10-09: "if I select the spiral I want
         // that to open the pause menu"; "Wheel everywhere"); B still goes Home from a room, a room slice switches rooms
@@ -637,6 +649,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // the Controller room: the same "spells" guest on its own page (b17 croom), the same wiring as the Spellbook's tab
         controllerView = ControllerView(this, onPadCells = { cells -> padTabTap(cells) }, onBind = { e -> spellsCells(e) },
             otherReader = { castView.isShown })
+        controllerView.onDpadPick = { on, sent -> lastDpad?.let { d -> dpadChoose(d, on, "the Controller room", tap = false) }
+            ?: Log.w(HomeView.TAG, "dpad: the Controller room's switch to $on (tap ${if (sent) "sent" else "not sent"}) not kept: no toolbar word yet") }
         talentsView = TalentsView(this, onTap = { row, col -> talentsTap(row, col) })
         ProfessionsStore.init(this)
         // B that leaves the Professions room goes HOME (user ruling 2026-09-28 23:12: "Pressing be to leave the cursor should take
@@ -744,7 +758,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         settingsView.onReport = { openReport() }
         // m62 Smart buffs: the Settings section reads the latest padmap, edits by taps, names a spell by the book's two taps
         settingsView.smartDoc = { lastPadMap?.smartBuffs }
-        settingsView.smartTaps = { cells -> TapBridge.taps(this, spellsPad ?: questsPad, cells) }
+        settingsView.smartTaps = { cells -> TapBridge.tapsSpaced(this, spellsPad ?: questsPad, cells, 120L) }   // the user 11-11: Pick added nothing - a repeated cell inside 0.25 s was swallowed (as Polestar's digits)
         settingsView.smartSpellCells = { name ->
             lastBook?.let { b -> SpellsModel.tabSpells(b).firstOrNull { it.name == name }?.let { SpellsModel.bindCells(b, it) } }
         }
@@ -1949,6 +1963,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 mapView.invalidate()
             }
             "pnavroute" -> if (current) { mapView.polestar.onRoute(msg, SystemClock.elapsedRealtime()); mapView.invalidate() }
+            "pqol" -> if (current) { PolestarQol.onDoc(msg); if (::settingsView.isInitialized) settingsView.postInvalidate() }     // pq1: Polestar's automation
+            "pstep" -> if (current) mapView.onPolestarStep(msg)          // ps1: Polestar's own objective, the light blue row
             "routewp" -> if (current) {
                 routeWp.onAnswer(msg.optString("op"), msg.optBoolean("ok"), SystemClock.elapsedRealtime())
                 Log.i("WCMAP", "route pin: ${msg.optString("op")} ${if (msg.optBoolean("ok")) "ok" else "refused"} ${msg.optString("why", "")}")
@@ -2357,6 +2373,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             "facewatch" -> if (current) homeView.onFightWord(msg.optBoolean("fight", false))
             "padack" -> if (current) PadMapModel.parseAck(msg)?.let {
                 spellbookView.onPadAck(it); controllerView.onPadAck(it)
+                // issue #136 (2026-11-11): the toolbar switch refused by the game (a fight, no character) is logged; DpadChoice re-sends it
+                if (!it.ok && (it.op == "dpad-on" || it.op == "dpad-off")) Log.w(HomeView.TAG, "dpad: the game refused ${it.op} (${it.why ?: "no reason"}); kept, sent again")
                 // the player changed an In-combat setting: the backup follows the store from now on (test22 P0)
                 if (msg.optBoolean("ok") && msg.optString("op") in setOf("combat", "cface", "uncombat", "uncface", "clear") &&
                     ::combatKeep.isInitialized) combatKeep.onPlayerChange()
@@ -3323,8 +3341,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         newSpellBinding = 0
         ui.postDelayed({ if (room == Room.SPELLBOOK) show(Room.HOME); ui.postDelayed({ newSpellAsk() }, 700L) }, 900L)
     }
-    /** characters whose stored choice this run already re-applied to a game whose add-on had no answer (once per run) */
-    private val dpadApplied = HashSet<String>()
+    /** issue #136 (2026-11-11): the game run ([LauncherHooks.gameStartSec]) whose first word each character's kept choice was checked
+     *  against ([DpadChoice]: once a run the app's choice wins over a different add-on word), and when its choice was last sent */
+    private val dpadRun = HashMap<String, Long>()
+    private val dpadSentAt = HashMap<String, Long>()
 
     /** this character's choice in the app (both games share it: each game's add-on keeps its own) */
     private fun dpadKey(d: PadMapModel.Dpad): String? =
@@ -3343,14 +3363,30 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // b139 (the user, 2026-10-07: "I think that I want to have them on by default and then still have the prompt when its able to. for new characters specifically it would be great if we could keep the loading screen during the cutscene"): an unasked character gets the toolbar ON by default and the prompt still comes; the add-on's "want" that OUR default
         // tap set is not an answer while the prompt is owed ("owed_<key>", kept across restarts)
         val owed = prefs.getBoolean("owed_$key", false)
-        if (d.want != null && !owed) { if (!prefs.contains(key) || prefs.getBoolean(key, false) != d.want) prefs.edit().putBoolean(key, d.want).apply(); return }
-        if (prefs.contains(key) && !owed) {
-            if (dpadApplied.add(key) && !homeView.inFight()) {
-                val want = prefs.getBoolean(key, false)
-                Log.i(HomeView.TAG, "dpad: apply the remembered choice $want for $key")
-                spellsTap(if (want) d.colOn else d.colOff)
+        // issue #136 (the player, 2026-11-11: "Cannot disable DsWoW toolbar from settings"): the decision is DpadChoice's - an explicit
+        // choice stays pending (re-sent, the prompt never runs) until the add-on says it; at a run's first word the app's choice wins
+        val stored = if (prefs.contains(key)) prefs.getBoolean(key, false) else null
+        val pending = prefs.getBoolean("pend_$key", false)
+        val run = LauncherHooks.gameStartSec
+        val now = SystemClock.elapsedRealtime()
+        val act = DpadChoice.decide(d.want, stored, pending, owed, dpadRun[key] != run, homeView.inFight(),
+            dpadSentAt[key]?.let { now - it })
+        if (act != DpadChoice.Act.Wait && act != DpadChoice.Act.Ask) dpadRun[key] = run
+        when (act) {
+            DpadChoice.Act.None, DpadChoice.Act.Wait -> return
+            DpadChoice.Act.Confirm -> {
+                // issue #136 review (2026-11-11): also a pre-update Settings switch's owed flag (DpadChoice.held)
+                prefs.edit().remove("pend_$key").remove("owed_$key").apply(); dpadSentAt.remove(key)
+                Log.i(HomeView.TAG, "dpad: the game has the choice $stored for $key"); return
             }
-            return
+            is DpadChoice.Act.Adopt -> { prefs.edit().putBoolean(key, act.want).apply(); Log.i(HomeView.TAG, "dpad: the game's choice ${act.want} kept for $key"); return }
+            is DpadChoice.Act.Send -> {
+                dpadSentAt[key] = now
+                prefs.edit().putBoolean("pend_$key", true).remove("owed_$key").apply()
+                Log.i(HomeView.TAG, "dpad: send the choice ${act.on} for $key (${act.why})")
+                dpadTap(d, act.on); return
+            }
+            DpadChoice.Act.Ask -> {}
         }
         if (setupView.visibility == View.VISIBLE || (startView.visibility == View.VISIBLE && !setupLoading) || homeView.inFight() || setupWaiting != null) return
         if (!owed) prefs.edit().putBoolean("owed_$key", true).apply()
@@ -3358,14 +3394,16 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // DS WoW toolbar - the plain D-pad left Chat, right Map, up the radial, down the Home bar, in fights too
         val b = arrayListOf("Left: Chat     Right: Map", "Up: the radial     Down: the Home bar", "Works in fights too")
         Log.i(HomeView.TAG, "dpad: ask $key")
-        val show = {
+        val show = show@{
+            // issue #136: answered meanwhile (the Settings row): no default ON tap, no prompt
+            if (!prefs.getBoolean("owed_$key", false)) { Log.i(HomeView.TAG, "dpad prompt: dropped (already chosen for $key)"); setupPadOff(); return@show }
             // b139: ON by default the moment the game takes taps again, then the prompt asks to keep it
             spellsTap(d.colOn)
             setupLoadingDone()
             setupView.ask(CompanionSetup.Prompt("Keep the DS WoW toolbar on your D-pad?", b,
                 "No turns it off (your own D-pad). Change it any time in the Controller room (DS tab)."), "Yes", "No",
-                onYes = { prefs.edit().putBoolean(key, true).remove("owed_$key").apply(); spellsTap(d.colOn); setupView.close(); setupPadOff() },
-                onNo = { prefs.edit().putBoolean(key, false).remove("owed_$key").apply(); spellsTap(d.colOff); setupView.close(); setupPadOff() })
+                onYes = { dpadChoose(d, true, "the prompt's Yes"); setupView.close(); setupPadOff() },
+                onNo = { dpadChoose(d, false, "the prompt's No"); setupView.close(); setupPadOff() })
         }
         // b137 (the user's pick "(a) Show once ready": "if I let the cutscene play out then it takes a while"): on Home the prompt WAITS,
         // unseen, while the app asks the game for the controller; it shows the moment the game hands it over (right after the intro
@@ -3460,9 +3498,40 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
 
     /** the Settings row: true = the router mode on (cols.on), false = fully off (cols.off); refused in a fight (one red pulse) */
     private fun dpadSet(on: Boolean) {
-        val d = lastDpad ?: return
-        dpadKey(d)?.let { getSharedPreferences("dpad", MODE_PRIVATE).edit().putBoolean(it, on).apply() }
-        spellsTap(if (on) d.colOn else d.colOff)
+        val d = lastDpad ?: run { Log.w(HomeView.TAG, "dpad: the Settings switch to $on not kept (no toolbar word from the game yet)"); return }
+        dpadChoose(d, on, "the Settings row")
+    }
+
+    /**
+     * issue #136 (2026-11-11): THE PLAYER'S CHOICE (the Settings row, the prompt's Yes / No): kept, the owed prompt cleared (its default
+     * ON tap no longer runs), PENDING until the add-on's padmap says it ([DpadChoice]: re-sent then, and at the next game run), and sent
+     * now. A refused tap (the game closed or not taking taps) is logged; the choice is not lost.
+     */
+    private fun dpadChoose(d: PadMapModel.Dpad, on: Boolean, from: String, tap: Boolean = true) {
+        val key = dpadKey(d)
+        if (key == null) Log.w(HomeView.TAG, "dpad: $from chose $on but no character is known; sent, not kept")
+        else {
+            getSharedPreferences("dpad", MODE_PRIVATE).edit().putBoolean(key, on).putBoolean("pend_$key", true).remove("owed_$key").apply()
+            dpadSentAt[key] = SystemClock.elapsedRealtime()
+            Log.i(HomeView.TAG, "dpad: $from chose $on for $key (kept until the game says it)")
+        }
+        settings.homeSection.dpadChanged()
+        if (tap) dpadTap(d, on)
+    }
+
+    /** the toolbar word as the Settings row shows it: the pending choice over the add-on's ([DpadChoice.shown]) */
+    private fun dpadShown(d: PadMapModel.Dpad): PadMapModel.Dpad {
+        val key = dpadKey(d) ?: return d
+        val prefs = getSharedPreferences("dpad", MODE_PRIVATE)
+        val w = DpadChoice.shown(d.want, if (prefs.contains(key)) prefs.getBoolean(key, false) else null, prefs.getBoolean("pend_$key", false),
+            prefs.getBoolean("owed_$key", false))
+        return if (w == d.want) d else d.copy(want = w)
+    }
+
+    /** one toolbar tap (Book b15's dpad-on / dpad-off); a refusal is logged (issue #136: it was silent) */
+    private fun dpadTap(d: PadMapModel.Dpad, on: Boolean) {
+        val col = (if (on) d.colOn else d.colOff) ?: run { Log.w(HomeView.TAG, "dpad: no ${if (on) "dpad-on" else "dpad-off"} cell (an older Spells add-on)"); return }
+        TapBridge.tap(this, spellsPad, "spells", col) { why -> Log.w(HomeView.TAG, "dpad: the ${if (on) "on" else "off"} tap did not reach the game ($why); kept, sent again when the game takes it") }
     }
 
     /** the Controller tab's cells (spells' own rows `talents` 11-39 and `talentn` 36 / 37), in order: picks, then at most ONE action */
@@ -3523,9 +3592,19 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         val pad = questsPad ?: return
         if (pad.optJSONObject("rows")?.has(PolestarNav.ROW) != true) return          // an older add-on: no Polestar bridge
         val cols = mapView.polestar.tick(mapView.polestarGoal(), SystemClock.elapsedRealtime())
-        if (cols.isEmpty()) return
+        if (cols.isEmpty()) {
+            // pq1: Polestar's automation, when our choice differs from the one the add-on holds (its own batch: never inside a GO's digits)
+            val q = PolestarQol.taps(GameUi.character, SystemClock.elapsedRealtime())
+            if (q.isNotEmpty()) {
+                Log.i("WCMAP", "polestar automation: tap $q")
+                TapBridge.tapsSpaced(this, pad, q.map { PolestarNav.ROW to it }, 120L) { why -> Log.i("WCMAP", "polestar automation: tap failed: $why") }
+            }
+            return
+        }
         Log.i("WCMAP", "polestar: tap $cols")
-        TapBridge.taps(this, pad, cols.map { PolestarNav.ROW to it }) { why -> Log.i("WCMAP", "polestar: tap failed: $why") }
+        // spaced (the user, 2026-11-11: the Polestar path never showed): a cell swallows a second press within 0.25 s, so a target like
+        // "1, 34, 1" lost its second digit, the add-on never had all seven and never asked Polestar (RouteWaypoint spaces its digits too)
+        TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why -> Log.i("WCMAP", "polestar: tap failed: $why") }
     }
 
     private fun cleanExit(why: String, done: (Boolean) -> Unit) {

@@ -50,6 +50,8 @@ object ArtHarvest {
     class Job internal constructor(val ctx: Context, val game: GameFiles, val out: File, private val stepId: String,
                                    private val onProgress: (Float, String) -> Unit) {
         var inputKey: String? = null
+        /** #35 #36 #38 review (2026-11-11): this is the step's last try in this run (HarvestRetry): a failed download is kept degraded now */
+        var lastTry: Boolean = true
         /** this step's recipe (assets/harvest/<id>.json), or an empty object */
         fun recipe(name: String = stepId): JSONObject = runCatching {
             ctx.assets.open("harvest/$name.json").use { JSONObject(it.readBytes().toString(Charsets.UTF_8)) }
@@ -199,12 +201,22 @@ object ArtHarvest {
     fun pending(ctx: Context, beforePlay: Boolean? = null): List<Step> {
         val build = GameFiles.activeBuild(GameFiles.gameRoot(ctx))?.second ?: return emptyList()
         val st = stamp(ctx)
+        val now = System.currentTimeMillis()
         return STEPS.filter { s ->
-            (beforePlay == null || s.beforePlay == beforePlay) &&
-                st.optJSONObject(s.id)?.let { it.optString("build") != build || it.optInt("v") != s.version ||
-                    (s.id == "icons" && it.optString("inputs") != IconRequirements.inputKey(ctx, build)) } != false
+            val o = st.optJSONObject(s.id)
+            val stale = o?.let { it.optString("build") != build || it.optInt("v") != s.version ||
+                (s.id == "icons" && it.optString("inputs") != IconRequirements.inputKey(ctx, build)) } != false
+            queued(s.beforePlay, beforePlay, stale, !stale && KitSteps.retryDue(o?.optString("inputs"), o?.optLong("at") ?: 0L, now))
         }
     }
+
+    /**
+     * Is a step in the [query] queue (true = before Play, false = the background, null = any)? [stale]: not built for this build and
+     * version. [retryDue] (review of #35 #36 #38, 2026-11-11): built, but degraded by failed downloads and due to try them again: that
+     * is background work for every step, a before-Play one too, so a network hiccup never puts the wait before Play back.
+     */
+    internal fun queued(stepBeforePlay: Boolean, query: Boolean?, stale: Boolean, retryDue: Boolean): Boolean =
+        if (stale) query == null || stepBeforePlay == query else retryDue && query != true
 
     /** true = Play has to wait for the before-Play steps (the launcher shows the progress screen) */
     fun needsBeforePlay(ctx: Context): Boolean = pending(ctx, beforePlay = true).isNotEmpty()
@@ -231,6 +243,8 @@ object ArtHarvest {
         val st = stamp(ctx).optJSONObject(s.id) ?: return false
         if (st.optInt("v") != s.version || st.optString("build") == g.buildKey) return false
         if (s.id == "icons" && st.optString("inputs") != IconRequirements.inputKey(ctx, g.buildKey)) return false
+        // issues #35/#36/#38 (2026-11-11): a step stamped degraded (pictures that did not read) is built again for a new build, never re-stamped
+        if (st.optString("inputs").startsWith(KitSteps.DEGRADED)) return false
         val rec = fpFile(ctx, s).takeIf { it.isFile }?.let { ArtFingerprint.fromJson(it.readText()) } ?: return false
         if (rec.fids.isEmpty() && rec.names.isEmpty()) return false
         val prev = g.log; g.log = null                                 // the check's own reads are not a step's
@@ -282,8 +296,22 @@ object ArtHarvest {
         // 1.0.17 (the user's pick for the 8 / 12 GB Thors: "Pause while playing, always"): the background art waits while the game runs
         // 2026-11-08 (the native heap profile: the open game files are ~500 MB, and this wait held them through the whole session on
         // exactly the Thors that run out of memory): it leaves the run (the files close) and the worker waits outside them
-        if (bgPhase && DeviceTier.lowMemory() && LauncherHooks.gameUp()) throw PausedForGame()
+        // 2026-11-11 (issues #94 / #86 / #104 / #63: safepathzones and allicons ran beside the game on the 16 GB Thor Max too, java
+        // 250-550 MB on top of a 3-4 GB game): EVERY tier, and the launch's own window ([PlayGate])
+        // review of this fix, 2026-11-11: only on the worker thread (a step's report from GameFiles.prefetch's pool threads must not throw
+        // there: #138's uncaught PausedForGame) - the worker's next report pauses it
+        if (PlayGate.artMustPause(bgPhase, PlayGate.gameActiveNow(), onWorker = Thread.currentThread() === worker)) throw PausedForGame()
     }
+
+    /**
+     * The worker waits outside the game files for the game to close ([PausedForGame]); [state] still says Running then (the launcher's
+     * progress line), so the indoor maps' "an art run first" asks [workingNow] instead (review of this fix, 2026-11-11: a parked run
+     * held the indoor maps back for the whole session)
+     */
+    @Volatile var parkedForGame = false
+        private set
+    /** an art run that is really working now (not parked for the game) */
+    fun workingNow(): Boolean = state is State.Running && !parkedForGame
 
     /** the background art not finished yet (the notice before Play on the 8 / 12 GB models) */
     fun backgroundLeft(ctx: Context): Boolean =
@@ -328,7 +356,10 @@ object ArtHarvest {
                     } catch (e: PausedForGame) {
                         Log.i(TAG, "harvest: paused while the game runs (${DeviceTier.model()}), the game files let go")
                         bgPhase = false; currentStep = null
-                        while (DeviceTier.lowMemory() && LauncherHooks.gameUp() && !stopping && !yieldBg) Thread.sleep(3_000)
+                        parkedForGame = true
+                        try {
+                            while (PlayGate.gameActiveNow() && !stopping && !yieldBg) Thread.sleep(3_000)
+                        } finally { parkedForGame = false }
                         Log.i(TAG, "harvest: the game is closed, the background art goes on")
                         if (stopping) { stopping = false; set(State.Idle); break }
                         yieldBg = false
@@ -388,11 +419,17 @@ object ArtHarvest {
         }
         val first = pending(ctx, beforePlay = true)
         val all = pending(ctx, beforePlay = false)
-        val later = all.filter { !it.detached }
+        // a before-Play step here is a degraded one trying its failed downloads again (queued): last, so it never holds the others up
+        val later = all.filter { !it.detached }.sortedBy { it.beforePlay }
         val detached = all.filter { it.detached }
         if (first.isEmpty() && later.isEmpty()) {
             set(State.Ready); onBeforePlayDone(true); startDetached(ctx, detached); return
         }
+        // 2026-11-11 (issue #108 cluster): a run that would open the game files while the game is up or launching (a required icon asked
+        // for in game, the worker's next pass) waits outside them for the game to close; the art before Play never meets this (Play waits)
+        // review of this fix (2026-11-11): the launch window alone never holds back a run with before-Play steps (Play waits for it)
+        if (!PlayGate.artMayOpen(gameUp = !PlayGate.streamingNow() && LauncherHooks.gameUp(), launching = PlayGate.launchingNow(),
+                beforePlayDue = first.isNotEmpty())) throw PausedForGame()
         // a CDN hiccup while it fetches the build's tables passes: tried again (HarvestRetry) before the art says it failed
         // after a game update the open downloads the build's tables (about 180 MB): the launcher shows how far (b-art-progress)
         GameFiles.onTables = { line -> checkStop(); set(State.Running(first.isNotEmpty(), 0f, line)) }
@@ -450,6 +487,7 @@ object ArtHarvest {
             g.log = ArtFingerprint.Log()
             currentStep = s.id; stepLog[s.id] = "running (started ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date(t0))})"
             var job = Job(ctx, g, root(ctx), s.id) { f, what -> checkStop(); set(State.Running(beforePlay, (base + f.coerceIn(0f, 1f) * w) / total, what)) }
+            var tries = 0
             // a failure (often a CDN hiccup on a table) is tried again before the art says so (HarvestRetry); the last reason is shown
             val result = HarvestRetry.run(onRetry = { n, d, why ->
                 Log.w(TAG, "harvest step ${s.id} failed ($why), try ${n + 1} in ${d / 1000} s")
@@ -457,6 +495,7 @@ object ArtHarvest {
                 set(State.Running(beforePlay, base / total, "${s.id}: trying again in ${d / 1000} s"))
             }) {
                 job = Job(ctx, g, root(ctx), s.id) { f, what -> checkStop(); set(State.Running(beforePlay, (base + f.coerceIn(0f, 1f) * w) / total, what)) }
+                job.lastTry = ++tries > HarvestRetry.DELAYS_MS.size
                 s.run(job)
             }.onFailure { Log.w(TAG, "harvest step ${s.id} failed", it) }
             val reads = g.log; g.log = null
