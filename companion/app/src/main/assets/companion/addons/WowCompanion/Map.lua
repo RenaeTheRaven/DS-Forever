@@ -2840,9 +2840,27 @@ end
 --   36, m1, m2, m3, x1, x2, y1, y2   GO: the target (uiMapID in three base-36 digits, x / y in two each: 1296 steps)
 --   37                                KEEP: the app still wants it (none for KEEP_S: cancelled)
 --   39                                CANCEL
+--   38, 8 / 38, 9                     pn4 / ps4: the light blue Polestar row holds / not (WC.pnav.psOn; see below)
 -- Answers {"type":"pnav", op, ok, why, have} (have = Polestar's API is there); the route as {"type":"pnavroute", legs = {{k, c, p}}}
 -- (p = wx, wy pairs, at most PTS points in all), sent when it changes.
-WC.pnav = { active = false, keepAt = 0, digits = nil, digitsAt = 0, sig = nil, sentAt = 0, KEEP_S = 60, PTS = 240, OWNER = "DSForever" }
+-- pn4 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where to go",
+-- then: Polestar's own arrow stays hidden, DS Forever's compass leads): the app SAYS when its light blue Polestar row holds -
+--   38, 8                             PS ON: the row holds (re-sent every 20 s while it does; none for KEEP_S: off)
+--   38, 9                             PS OFF
+-- (38's next tap within 2 s; 0-7 stay pq1's mask, an older add-on ignores 8 / 9). While on (WC.pnav.psOn) the compass follows
+-- Polestar's own waypoint whatever the GO (Trail.lua C.targets cp37: cp35 only guessed it from the GO matching the step within
+-- 0.002, which the app re-sends only past 0.004), and Polestar's route is read whoever owns its target: Polestar drops our GO at
+-- every step change (Polestar Nav/Nav.lua stepMoved: STEP_CHANGED / GUIDE_CHANGED clear its override) and guides its own step
+-- itself, whose route geom() refused as not ours - no pnavroute (no line on the bottom map) and no WC.pnav.legs (no path marker).
+WC.pnav = { active = false, keepAt = 0, digits = nil, digitsAt = 0, sig = nil, sentAt = 0, KEEP_S = 60, PTS = 240, PTS_FULL = 2000, OWNER = "DSForever" }
+-- pn6 / ps5 (int/1429): ps-compass pn3-pn5 / ps4 and ps-noloc-guide ps4 in one file, the two signals one.
+-- pn7 / ps6 / pk1 (the user, 2026-11-12: "we need to make a way to skip a polestar objective, idealy in the home map moduale with X or
+-- Y, maybe we also add a previous step button? idk"; the picks: X Skip, Y Previous = "Undo my last skip", no confirm, Home's map + the
+-- Map room + the pause wheel): 38 then 10 = SKIP Polestar's shown step, 38 then 11 = PREVIOUS (the last skip undone); see WC.pskip.
+-- int/1429: ONE signal for both (ps-compass pn4's "row holds" and ps-noloc-guide ps4's "row picked"): 38 then 8 / 9, sent by the
+-- app's PolestarNav.tick only (at every change and every 20 s while on), forgotten after KEEP_S (60 s); ONE reader, WC.pnav.psOn(),
+-- used by the compass / geom code here and Trail.lua and by PadMap's starter-item arming (an item-started quest's item on Y only
+-- while the row holds)
 function WC.pnav.api()
     local P = _G.Polestar
     if type(P) == "table" and type(P.Nav) == "table" and type(P.Nav.API) == "table" and type(P.Nav.API.Navigate) == "function" then
@@ -2851,7 +2869,7 @@ function WC.pnav.api()
 end
 function WC.pnav.say(op, ok, why)
     pcall(function()
-        WC.send(WC.encode({ type = "pnav", v = "pn2", op = op, ok = ok and true or false, why = why, have = WC.pnav.api() ~= nil }))
+        WC.send(WC.encode({ type = "pnav", v = "pn7", op = op, ok = ok and true or false, why = why, have = WC.pnav.api() ~= nil }))
         WC.push()
     end)
 end
@@ -2866,30 +2884,100 @@ function WC.pnav.go(m, x, y)
     WC.pnav.m, WC.pnav.x, WC.pnav.y, WC.pnav.goAt = m, x, y, GetTime()
     WC.pnav.say("go", true)
 end
+-- pn4: the app's light blue row holds (its 38, 8 within KEEP_S)
+function WC.pnav.psOn()
+    local at = WC.pnav.psAt
+    return type(at) == "number" and GetTime() - at <= WC.pnav.KEEP_S
+end
 function WC.pnav.cancel(why)
     if not WC.pnav.active then return end
     local api = WC.pnav.api()
     if api and type(api.Cancel) == "function" then pcall(api.Cancel, WC.pnav.OWNER) end
     WC.pnav.active, WC.pnav.sig, WC.pnav.m = false, nil, nil
+    WC.pnav.legs, WC.pnav.legSig, WC.pnav.legsAt = nil, nil, nil       -- pn3: the compass's path marker goes with it
     WC.pnav.say("cancel", true, why)
 end
--- the route Polestar is guiding now, as legs of world points (only while the guidance is ours)
-function WC.pnav.route()
+-- the route Polestar is guiding now, as legs of world points (only while the guidance is ours).
+-- pn3 (the user, 2026-11-11: "keep players on path so that they don't resort to walking at the final objective"): full = the
+-- compass's copy (Trail.lua C.pathAhead steers by it): every point Polestar gave (its walk paths are corner points; thinned to PTS
+-- for the app, a long journey lost the current walk's corners and the 30 yd look-ahead cut across them - through a building, over
+-- a cliff edge). Only past PTS_FULL points in all (a safety cap) is it thinned. raw = Polestar's legs already read (the ticker's
+-- one read for both copies); else read here.
+function WC.pnav.geom()
     local P = _G.Polestar
     local api = WC.pnav.api()
+    WC.pnav.geomWhy = "noapi"                                           -- pn5: why geom() gave nothing (the pnavt diag's gw)
     if not (P and api and type(P.Nav.GetRouteGeometry) == "function") then return nil end
     if type(api.Active) == "function" then
         local okA, act, owner = pcall(api.Active)
-        if okA and (not act or owner ~= WC.pnav.OWNER) then return nil end
+        -- pn4: while the app's Polestar row holds, Polestar's own target (its step, after it dropped our GO) is the one we want too
+        if okA and not act then WC.pnav.geomWhy = "inactive"; return nil end
+        if okA and owner ~= WC.pnav.OWNER and not WC.pnav.psOn() then WC.pnav.geomWhy = "owner"; return nil end
     end
     local okG, legs = pcall(P.Nav.GetRouteGeometry)
-    if not okG or type(legs) ~= "table" then return nil end
+    if not okG or type(legs) ~= "table" then WC.pnav.geomWhy = okG and "none" or "err"; return nil end
+    WC.pnav.geomWhy = "ok"
     -- pn2 (the user, 2026-11-11: "the polestar option in quest tracking in home should also show the path on the bottom map"): Polestar
     -- answers { legs = { ... } } (Nav/Walk.lua), not the legs themselves - read as a list it gave no route at all
     if type(legs.legs) == "table" then legs = legs.legs end
+    return legs
+end
+-- pn5 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where to go";
+-- the device's no-goal / no-line case was not reproduced off-device): one line every 10 s while a GO of ours, the app's word or a
+-- Polestar step with a spot stands - what Polestar's Nav says (API.Active: act, its owner; Nav.GetTarget's map and 0-100 point),
+-- what geom() gave (gm: "nil", "err" or the legs and points), our GO (m, x, y), the word (on, said) and the step read (ps: nil /
+-- none / nl / loc, its frame fr). It rides the next flush: no push of its own. Read only.
+WC.pnav.DIAG_S = 10
+function WC.pnav.diag(okG, raw)
+    local P = WC.pnav
+    local S = type(WC.pstep) == "table" and WC.pstep.last or nil
+    local psLoc = type(S) == "table" and not S.none and not S.nl and type(S.m) == "number"
+    if not (P.active or P.psOn() or psLoc) then return end
+    local now = GetTime()
+    if P.diagAt and now - P.diagAt < P.DIAG_S then return end
+    P.diagAt = now
+    local api = P.api()
+    local act, own
+    if api and type(api.Active) == "function" then
+        local okA, a, o = pcall(api.Active)
+        if okA then act, own = a and true or false, type(o) == "string" and o or nil else act = "err" end
+    end
+    local tm, tx, ty
+    local PN = type(_G.Polestar) == "table" and _G.Polestar.Nav or nil
+    if type(PN) == "table" and type(PN.GetTarget) == "function" then
+        local okT, t = pcall(PN.GetTarget)
+        if okT and type(t) == "table" and type(t.map) == "number" and type(t.x) == "number" and type(t.y) == "number" then
+            tm, tx, ty = t.map, math.floor(t.x * 10 + 0.5) / 10, math.floor(t.y * 10 + 0.5) / 10
+        end
+    end
+    local gm = "nil"
+    if not (P.active or P.psOn()) then gm = "-"
+    elseif not okG then gm = "err"
+    elseif type(raw) == "table" then
+        local nl, np = 0, 0
+        for _, leg in ipairs(raw) do
+            if type(leg) == "table" and type(leg.pts) == "table" then nl = nl + 1; np = np + #leg.pts end
+        end
+        gm = nl .. "/" .. np
+    end
+    local ps = S == nil and "nil" or (S.none and "none") or (S.nl and "nl") or (psLoc and "loc") or "?"
+    pcall(function()
+        WC.send(WC.encode({ type = "cap", probe = "pnavt", v = "pn7", act = act, own = own, tm = tm, tx = tx, ty = ty, gm = gm,
+            a = P.active and true or false, gom = P.m, gox = P.x and math.floor(P.x * 10000 + 0.5) / 10000 or nil,
+            goy = P.y and math.floor(P.y * 10000 + 0.5) / 10000 or nil, on = P.psOn(), said = P.psSaid == true,
+            legs = type(P.legs) == "table" and #P.legs or 0, ps = ps, fr = type(S) == "table" and S.fr or nil,
+            psm = psLoc and S.m or nil, gw = P.geomWhy }))
+    end)
+end
+function WC.pnav.route(full, raw)
+    local legs = raw
+    if type(legs) ~= "table" then
+        legs = WC.pnav.geom()
+        if not legs then return nil end
+    end
     local n = 0
     for _, leg in ipairs(legs) do if type(leg) == "table" and type(leg.pts) == "table" then n = n + #leg.pts end end
-    local step = math.max(1, math.ceil(n / WC.pnav.PTS))
+    local step = math.max(1, math.ceil(n / (full and WC.pnav.PTS_FULL or WC.pnav.PTS)))
     local out, sig = {}, {}
     for _, leg in ipairs(legs) do
         if type(leg) == "table" and type(leg.pts) == "table" then
@@ -2924,6 +3012,16 @@ if WC.pad and type(WC.pad.op) == "function" then
         -- pq1: 38 = Polestar's automation mask follows (WC.pqol), the next tap 0-7 within 2 s is it
         if col == 38 then P.digits = nil; P.qolAt = GetTime(); return end
         if P.qolAt and col <= 7 and GetTime() - P.qolAt <= 2 then P.qolAt = nil; return pcall(WC.pqol.choose, col) end
+        if P.qolAt and (col == 8 or col == 9) and GetTime() - P.qolAt <= 2 then             -- pn4 / ps4: the Polestar row holds / not (WC.pnav.psOn)
+            P.qolAt = nil
+            P.psAt, P.psSaid = (col == 8) and GetTime() or nil, true             -- (psSaid: this app says; Trail.lua stops guessing)
+            return
+        end
+        if P.qolAt and (col == 10 or col == 11) and GetTime() - P.qolAt <= 2 then           -- pk1 / pk3: skip / previous (WC.pskip), in a fight too
+            P.qolAt = nil
+            if type(WC.pskip) == "table" then pcall(col == 10 and WC.pskip.skip or WC.pskip.prev) end
+            return
+        end
         P.qolAt = nil
         if col == 39 then P.digits = nil; return P.cancel("asked") end
         if col == 37 then P.keepAt = GetTime(); return end
@@ -2946,13 +3044,27 @@ do
     -- once a second while ours: the route when it changed (and every 10 s anyway); no word from the app for KEEP_S: cancelled
     C_Timer.NewTicker(1, function()
         local P = WC.pnav
-        if not P.active then return end
-        if GetTime() - P.keepAt > P.KEEP_S then return pcall(P.cancel, "no word from the app") end
-        local okR, legs, sig = pcall(P.route)
+        -- pn4: also while the app's Polestar row holds with no GO of ours in force (Polestar guiding its step itself)
+        if P.active and GetTime() - P.keepAt > P.KEEP_S then pcall(P.cancel, "no word from the app") end
+        local okG, raw = false, nil
+        if P.active or P.psOn() then okG, raw = pcall(P.geom) end
+        pcall(P.diag, okG, raw)
+        if not P.active and not P.psOn() then
+            if P.legs then P.legs, P.legSig, P.legsAt = nil, nil, nil end
+            return
+        end
+        local okR, legs, sig = false, nil, nil
+        if okG and raw then okR, legs, sig = pcall(P.route, false, raw) end
+        -- pn3 (the user, 2026-11-11: "The polestar doted line needs its own kind of marker to point on the compass to keep players on
+        -- path"): the last read route kept for the top-screen compass's path marker (Trail.lua C.pathAhead), every second, UNTHINNED
+        -- (route(true): every corner, the app's copy is thinned); nil when there is none (Polestar no longer guiding for us)
+        local okF, full, fsig = false, nil, nil
+        if okR and legs then okF, full, fsig = pcall(P.route, true, raw) end
+        if okF and full then P.legs, P.legSig, P.legsAt = full, fsig, GetTime() else P.legs, P.legSig, P.legsAt = nil, nil, nil end
         if not okR or not legs then return end
         if sig ~= P.sig or GetTime() - P.sentAt > 10 then
             P.sig, P.sentAt = sig, GetTime()
-            pcall(function() WC.send(WC.encode({ type = "pnavroute", v = "pn2", legs = legs })); WC.push() end)
+            pcall(function() WC.send(WC.encode({ type = "pnavroute", v = "pn7", legs = legs })); WC.push() end)
         end
     end)
 end
@@ -3046,7 +3158,8 @@ end
 -- The user (2026-11-11): "rather than syncing the tracked quest to polestar maybe we add a light blue objective to select from the
 -- tracker list that has the polestar objective". Read only: Polestar's live guide step (Engine.GetLiveStep / GetStepView: the step's
 -- title) and its waypoint (Engine.GetWaypoint: the goal the arrow leads to, its words, kind, map and point on Polestar's 0-100 scale)
--- go to the app as {"type":"pstep", t, g, k, q, m, x, y} (x / y 0..1), or {"type":"pstep", none = true} when Polestar has no step;
+-- go to the app as {"type":"pstep", t, g, k, q, m, x, y} (x / y 0..1), or {"type":"pstep", none = true} when Polestar has no step
+-- (ps3: a step with no spot of its own: {t, g, k, q, nl = true}, no m / x / y; ps4: an item-started quest's accept adds it / ih / ic / itn);
 -- sent when it changes and every 15 s. Nothing of Polestar or the game is changed.
 -- ps2 (the user, 2026-11-11: "should probably be the default selection if its enabled when logging in"): every pstep carries b, this
 -- login's stamp (time() when this file loaded: a new one at each login and /reload; not part of sig), so the app picks the light blue
@@ -3058,7 +3171,7 @@ function WC.pstep.read()
     if not (E and type(E.GetWaypoint) == "function") then return nil end
     local okW, wp = pcall(E.GetWaypoint)
     if not okW or type(wp) ~= "table" or type(wp.map) ~= "number" or type(wp.x) ~= "number" or type(wp.y) ~= "number" then
-        return { none = true }
+        return WC.pstep.noLoc(E)
     end
     local title, quest
     if type(E.GetStepView) == "function" and type(wp.stepIndex) == "number" then
@@ -3069,24 +3182,260 @@ function WC.pstep.read()
             if type(gv) == "table" and type(gv.quest) == "number" then quest = gv.quest end
         end
     end
+    -- ps4 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where to
+    -- go"): a guide point in Polestar's Era map frame (wp.f = "e": Engine.lua waypointOf carries posOf's frame; Compat.lua MapToWorld
+    -- reads it through ns.MapFrames.era, not the live map) is NOT live map percent - read raw, the app's GO, the compass and Home's map
+    -- all put it somewhere else. Polestar's own Nav.LiveCoords (Nav/Nav.lua: what its Bridges hand TomTom and the game's pin) turns it
+    -- into the live frame; when it cannot, the step goes as one with no spot (no wrong GO). Read only.
+    local m, x, y = wp.map, wp.x, wp.y
+    if wp.f ~= nil then
+        local LC = type(P.Nav) == "table" and P.Nav.LiveCoords or nil
+        local okC, lm, lx, ly = false, nil, nil, nil
+        if type(LC) == "function" then okC, lm, lx, ly = pcall(LC, wp) end
+        if not (okC and type(lm) == "number" and type(lx) == "number" and type(ly) == "number") then
+            local d = WC.pstep.noLoc(E)
+            if type(d) == "table" and not d.none then d.fr = tostring(wp.f) end
+            return d
+        end
+        m, x, y = lm, lx, ly
+    end
+    -- ps4: its world spot too (wx, wy yards and continent c, the game's own conversion), so Home's small map can mark a step on
+    -- another map of the same continent (MapView's goal disc pinned at the rim on the way to it)
+    local wx, wy, c
+    pcall(function()
+        local cont, v = C_Map.GetWorldPosFromMapPos(m, CreateVector2D(x / 100, y / 100))
+        if type(cont) == "number" and type(v) == "table" and type(v.x) == "number" and type(v.y) == "number" then
+            wx, wy, c = math.floor(v.x * 10 + 0.5) / 10, math.floor(v.y * 10 + 0.5) / 10, cont
+        end
+    end)
     return {
         t = title, g = type(wp.label) == "string" and wp.label or nil, k = type(wp.kind) == "string" and wp.kind or nil, q = quest,
-        m = wp.map, x = math.floor(wp.x * 100 + 0.5) / 10000, y = math.floor(wp.y * 100 + 0.5) / 10000,
+        m = m, x = math.floor(x * 100 + 0.5) / 10000, y = math.floor(y * 100 + 0.5) / 10000,
+        wx = wx, wy = wy, c = c, fr = wp.f ~= nil and tostring(wp.f) or nil,
     }
 end
-C_Timer.NewTicker(1, function()
+-- ps3 (the user, 2026-11-11: "The polestar tracked quest went missing from my quests"): a step with no fixed spot (talk / use / train /
+-- recruit goals) has no waypoint (Engine.GetWaypoint nil) while Polestar still guides it, so the light blue row went away. Such a step
+-- is read from Engine.GetStepIndex + GetStepView instead and sent with nl = true and no m / x / y: its title, the goal the guide marks
+-- (else its first open one) - that goal's words when plain, and its quest (else the first open goal's). {none = true} only when
+-- Polestar has no current step (no guide, or the guide is done). Read only, as ps1.
+-- ps3 review (the user, 2026-11-11, same report): {none = true} too where Polestar's own arrow has nothing to point at
+-- (Engine.lua findWaypoint): a step with no focus group (v.focus nil: every blocking goal done, e.g. a done step paged back to
+-- with Prev, which GetStepIndex returns as the pin) and a Class guide this character cannot start yet (Engine.StartGate) on its
+-- live step. The quest only ever comes from an open goal, so a done (turned in) quest never reaches the app's focus sync.
+function WC.pstep.noLoc(E)
+    if type(E.GetStepIndex) ~= "function" or type(E.GetStepView) ~= "function" then return { none = true } end
+    local okI, i = pcall(E.GetStepIndex)
+    if not okI or type(i) ~= "number" then return { none = true } end
+    local okV, v = pcall(E.GetStepView, i)
+    if not okV or type(v) ~= "table" or v.focus == nil then return { none = true } end
+    if v.live == i and type(E.StartGate) == "function" and type(E.GetGuide) == "function" then
+        local okG, gd = pcall(E.GetGuide)
+        local id = okG and type(gd) == "table" and gd.id or nil
+        if id ~= nil then
+            local okS, gate = pcall(E.StartGate, id)
+            if okS and gate then return { none = true } end
+        end
+    end
+    local goals = type(v.goals) == "table" and v.goals or {}
+    local function open(gv)
+        return type(gv) == "table" and not gv.folded and gv.status ~= "done" and gv.status ~= "skipped" and gv.status ~= "na"
+    end
+    local pick = type(v.current) == "number" and type(goals[v.current]) == "table" and goals[v.current] or nil
+    if pick and not open(pick) then pick = nil end
+    if not pick then for _, gv in ipairs(goals) do if open(gv) then pick = gv; break end end end
+    local quest = pick and type(pick.quest) == "number" and pick.quest or nil
+    if not quest then for _, gv in ipairs(goals) do if open(gv) and type(gv.quest) == "number" then quest = gv.quest; break end end end
+    local words = pick and type(pick.text) == "string" and pick.text ~= "" and pick.text or nil
+    if words and WC.isPlain and not WC.isPlain(words) then words = nil end
+    local title = type(v.title) == "string" and v.title ~= "" and v.title or nil
+    if title and WC.isPlain and not WC.isPlain(title) then title = nil end
+    if not title and not words then return { none = true } end       -- (nothing to show: the row would have no words)
+    local d = { t = title, g = words, k = pick and type(pick.t) == "string" and pick.t or nil, q = quest, nl = true }
+    WC.pstep.starter(d, pick)
+    return d
+end
+-- ps4 (the user, 2026-11-11: "My current polestar objective does not give any direction on where to go"): a quest STARTED BY AN
+-- ITEM in the bags (Polestar's accept goal with an item and no NPC / object: GetStepView's accept row with its `starter`) has no
+-- waypoint, and with Polestar's own window and arrow hidden nothing said to use the item. The step's doc carries the item: it = the
+-- item id, ih = it is in the bags (the bags' own plain count; a count the game will not give plainly: Polestar's starter.held),
+-- ic = its icon, itn = its name (plain only). The app's light blue row shows "Use <item>" with Y; PadMap arms it as Y's quest item
+-- while that row is picked (WC.pnav.psOn). Not yet held, Polestar's step is the collect (its own waypoint): nothing here.
+function WC.pstep.starter(d, pick)
+    if type(pick) ~= "table" or pick.t ~= "accept" or type(pick.item) ~= "number" then return end
+    local it = pick.item
+    local st = type(pick.starter) == "table" and pick.starter or nil
+    local okC, n = pcall(function() return (C_Item and C_Item.GetItemCount or GetItemCount)(it) end)
+    local held
+    if okC and type(n) == "number" and (not WC.isPlain or WC.isPlain(n)) then held = n > 0
+    else held = st ~= nil and st.held == true end
+    local okI, ic = pcall(function() return (C_Item and C_Item.GetItemIconByID or GetItemIcon)(it) end)
+    local name = st and type(st.item) == "string" and st.item ~= "" and st.item or nil
+    if not name then
+        local okN, nm = pcall(function() return (C_Item and C_Item.GetItemNameByID or GetItemInfo)(it) end)
+        name = okN and type(nm) == "string" and nm ~= "" and nm or nil
+    end
+    if name and WC.isPlain and not WC.isPlain(name) then name = nil end
+    d.it, d.ih = it, held and true or false
+    d.ic = okI and type(ic) == "number" and (not WC.isPlain or WC.isPlain(ic)) and ic or nil
+    d.itn = name
+end
+-- ---------------------------------------------------------------- POLESTAR: SKIP THE STEP, UNDO THE LAST SKIP (pk1, pk3)
+-- pk3 (the user's picks, 2026-11-12): "Work in fights too" - Skip / Previous run in a fight as well (they only change Polestar's
+-- guide, nothing protected; every Polestar call stays plain Lua, pcall'd, never a secure frame of ours: the pnav row is a PLAIN pad
+-- row, whose clicks reach us in combat as out of it); "Mark pull keeps Auto Shot" (Hub.lua hub44); "Two rows is fine" (Home's map
+-- keeps the merged quest's own row, pk2, unchanged). Also pk3: an answer carries u (the skips Previous can undo after it) and the
+-- step doc goes out AT ONCE after a skip / previous (no wait for the 1 s tick), so Previous is there right after a Skip.
+-- The user (2026-11-12): "we need to make a way to skip a polestar objective, idealy in the home map moduale with X or Y, maybe we also
+-- add a previous step button? idk"; the picks: X Skip, Y Previous; Previous = "Undo my last skip" (the step last skipped comes back as
+-- the live step); no confirm; on Home's map, in the Map room and on the pause wheel. The app taps the "pnav" row: 38 then 10 = SKIP,
+-- 38 then 11 = PREVIOUS (an older add-on ignores both). Polestar's own plain Lua (third-party, GPL: never changed or bundled here):
+-- Engine.Skip() skips the step shown (saved by Polestar, fires PLAYER_SKIPPED_STEP(guideId, step)), Engine.Unskip(i) opens step i
+-- again, Engine.Goto(i) shows it (and un-skips it). Every skip (ours, or Polestar's own window / slash command, heard through
+-- Polestar.On) goes on THIS character's stack for that guide (WowCompanionDB.pskip[name-realm][guideId], at most MAX), so Previous
+-- walks back one skip per press; a step no longer skipped (done, brought back in Polestar's window) is dropped from it. In combat too
+-- since pk3 (pk1 refused it). Answers {"type":"pskip", op, ok, why, i, u}; the step doc (pstep ps6) carries sk = Skip is there and
+-- u = how many skips Previous can undo. Nothing of the game is changed.
+WC.pskip = { MAX = 20 }
+function WC.pskip.engine()
+    local P = _G.Polestar
+    local E = type(P) == "table" and type(P.Engine) == "table" and P.Engine or nil
+    if E and type(E.Skip) == "function" and type(E.GetGuide) == "function" then return E, P end
+end
+-- the guide shown now: its id as Polestar keys it, and as our stack's key
+function WC.pskip.guide(E)
+    local okG, g = pcall(E.GetGuide)
+    local id = okG and type(g) == "table" and g.id or nil
+    if type(id) == "string" or type(id) == "number" then return id, tostring(id) end
+end
+-- this character's skips for guide [gk] (create: made when missing)
+function WC.pskip.stack(gk, create)
+    local who = WC.pqol.key()
+    if not who or not gk then return nil end
+    if type(WowCompanionDB) ~= "table" then if not create then return nil end; WowCompanionDB = {} end
+    local db = WowCompanionDB.pskip
+    if type(db) ~= "table" then if not create then return nil end; db = {}; WowCompanionDB.pskip = db end
+    local mine = db[who]
+    if type(mine) ~= "table" then if not create then return nil end; mine = {}; db[who] = mine end
+    local st = mine[gk]
+    if type(st) ~= "table" then if not create then return nil end; st = {}; mine[gk] = st end
+    return st
+end
+function WC.pskip.push(guideId, step)
+    if type(step) ~= "number" or guideId == nil then return end
+    local st = WC.pskip.stack(tostring(guideId), true)
+    if not st then return end
+    if st[#st] == step then return end                                  -- (the event and our own call: once)
+    for i = #st, 1, -1 do if st[i] == step then table.remove(st, i) end end
+    st[#st + 1] = step
+    while #st > WC.pskip.MAX do table.remove(st, 1) end
+end
+-- step [i] of guide [gid] is still skipped: Polestar's own saved skips when readable, else its step view
+function WC.pskip.still(E, P, gid, i)
+    if type(P.CharState) == "function" then
+        local okC, cs = pcall(P.CharState)
+        if okC and type(cs) == "table" and type(cs.skipped) == "table" then
+            local sk = cs.skipped[gid]
+            return type(sk) == "table" and sk[i] == true
+        end
+    end
+    if type(E.GetStepView) ~= "function" then return true end
+    local okV, v = pcall(E.GetStepView, i)
+    return okV and type(v) == "table" and (v.status == "skipped" or v.status == "upcoming")
+end
+-- every skip heard, from anywhere (once: Polestar.On is its message bus)
+function WC.pskip.listen()
+    if WC.pskip.heard then return end
+    local P = _G.Polestar
+    if type(P) ~= "table" or type(P.On) ~= "function" then return end
+    local ok = pcall(P.On, "PLAYER_SKIPPED_STEP", function(guideId, step) pcall(WC.pskip.push, guideId, step) end)
+    if ok then WC.pskip.heard = true end
+end
+-- Skip there (true / false), and how many skips Previous can undo (the stack pruned of steps no longer skipped)
+function WC.pskip.state()
+    local E, P = WC.pskip.engine()
+    if not E then return false, 0 end
+    local gid, gk = WC.pskip.guide(E)
+    if not gid then return false, 0 end
+    local st = WC.pskip.stack(gk)
+    if not st then return true, 0 end
+    for i = #st, 1, -1 do if not WC.pskip.still(E, P, gid, st[i]) then table.remove(st, i) end end
+    return true, #st
+end
+function WC.pskip.say(op, ok, why, i)
+    local okS, sk, u = pcall(WC.pskip.state)                            -- pk3: the count after this press, for the app at once
+    pcall(function()
+        WC.send(WC.encode({ type = "pskip", v = "pk3", op = op, ok = ok and true or false, why = why, i = i,
+            u = (okS and sk and type(u) == "number") and u or nil }))
+        WC.push()
+    end)
+end
+-- pk3: the step doc now (after a skip / previous), not at the next second
+function WC.pskip.now()
+    WC.pstep.sig = nil
+    if type(WC.pstep.tick) == "function" then pcall(WC.pstep.tick) end
+end
+function WC.pskip.skip()
+    local E = WC.pskip.engine()
+    if not E then return WC.pskip.say("skip", false, "no Polestar") end
+    local gid = WC.pskip.guide(E)
+    if not gid then return WC.pskip.say("skip", false, "no guide") end
+    pcall(WC.pskip.listen)
+    local okS, s = pcall(E.Skip)
+    if not okS then return WC.pskip.say("skip", false, tostring(s):sub(1, 120)) end
+    if type(s) ~= "number" then return WC.pskip.say("skip", false, "no step") end
+    WC.pskip.push(gid, s)
+    pcall(WC.pskip.now)                                                 -- pk3: the new step (and its u) to the app at once
+    WC.pskip.say("skip", true, nil, s)
+end
+function WC.pskip.prev()
+    local E, P = WC.pskip.engine()
+    if not E then return WC.pskip.say("prev", false, "no Polestar") end
+    local gid, gk = WC.pskip.guide(E)
+    if not gid then return WC.pskip.say("prev", false, "no guide") end
+    local st = WC.pskip.stack(gk)
+    while st and #st > 0 do
+        local i = table.remove(st)
+        if WC.pskip.still(E, P, gid, i) then
+            local back = false
+            if type(E.Unskip) == "function" then
+                local okU, r = pcall(E.Unskip, i)
+                back = okU and r == true
+            elseif type(E.Goto) == "function" then
+                back = pcall(E.Goto, i)
+            end
+            if back then
+                -- the live step again: shown with Goto when an earlier open step would stand in front of it
+                if type(E.GetStepIndex) == "function" and type(E.Goto) == "function" then
+                    local okI, cur = pcall(E.GetStepIndex)
+                    if okI and cur ~= i then pcall(E.Goto, i) end
+                end
+                pcall(WC.pskip.now)
+                return WC.pskip.say("prev", true, nil, i)
+            end
+        end
+    end
+    WC.pskip.say("prev", false, "nothing")
+end
+-- the step doc, once a second (and at once after a skip / previous: WC.pskip.now, pk3)
+function WC.pstep.tick()
     local P = WC.pstep
     local okR, d = pcall(P.read)
     if not okR or not d then P.last = nil; return end
     P.last = d
-    local sig = d.none and "none" or table.concat({ d.t or "", d.g or "", d.k or "", tostring(d.q or 0), d.m, d.x, d.y }, "|")
+    -- pk1: Skip there (sk) and how many skips Previous can still undo (u); a step shown only (none: nothing to skip)
+    if not d.none then pcall(WC.pskip.listen); local okS, sk, u = pcall(WC.pskip.state); if okS and sk then d.sk, d.u = true, u end end
+    local sig = d.none and "none" or table.concat({ d.t or "", d.g or "", d.k or "", tostring(d.q or 0),
+        tostring(d.m or "nl"), tostring(d.x or ""), tostring(d.y or ""), tostring(d.it or ""), tostring(d.ih or ""),
+        tostring(d.sk or ""), tostring(d.u or "") }, "|")
     if sig ~= P.sig or GetTime() - P.sentAt > 15 then
         P.sig, P.sentAt = sig, GetTime()
-        d.type, d.v = "pstep", "ps2"
+        d.type, d.v = "pstep", "ps6"
         if P.boot ~= 0 then d.b = P.boot end
         pcall(function() WC.send(WC.encode(d)); WC.push() end)
     end
-end)
+end
+C_Timer.NewTicker(1, function() pcall(WC.pstep.tick) end)
 
 -- ---------------------------------------------------------------- QUESTTRAIL'S ARROW, READ (b-route-questtrail)
 -- The user (2026-10-17): "(a) + (b)" - with Settings' "Quest tracking: QuestTrail" the map's line and arrow follow QuestTrail's own

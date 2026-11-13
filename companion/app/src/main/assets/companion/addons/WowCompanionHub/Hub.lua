@@ -29,7 +29,9 @@ local WC = _G.WowCompanion
 if type(WC) ~= "table" or type(WC.S) ~= "function" or type(WC.send) ~= "function" then return end
 local S = WC.S
 
-local HV = "hub32"          -- hub32: THE GAME'S COMBO POINTS UNDER A HIDDEN TARGET FRAME (issue #120, a Rogue: "I can't see the combo points that are accumulated during combat"; 2026-11-11): the game draws them on ComboFrame, a child of TargetFrame (Blizzard's Classic FrameXML), so HUD mode's target switch (TargetFrame at alpha 0) hid them with it; with our target bar off nothing showed them. Now, while the game's host frame is hidden by us and our target bar (its own pips) is off, the combo frame ignores its parent's alpha (SetIgnoreParentAlpha, alpha only like the rest of HUD mode); otherwise it follows it again; hub31: HIDE POLESTAR ON THE TOP SCREEN (the user, 2026-11-11: "one other setting to hide the polestar UI from the top"): "uisw" 30 / 31 - every top-level frame Polestar names (PolestarGuideFrame, its arrow, its pad hints, toasts ...) at alpha 0 while on, and kept there when it shows again; off gives each its alpha 1 back; alpha only, nothing of Polestar changed; the doc's sw.ps; hub30: the third choice's RULES (the user, 2026-11-10: "it would be better if it stay on out of combat incase someone else pulls me into combat, and it should turn off when I target something out of combat AND start attack and then swap back when an ability is used before that ability fires" ... "make sure hunters mark does not trigger it to swap back on"): on by default and after every fight; OFF when an attack starts out of a fight with a target (PLAYER_ENTER_COMBAT); back ON at an ability's send (UNIT_SPELLCAST_SENT, before it fires) - never for Hunter's Mark, Auto Shot or Attack; hub29 (replaced by hub30): "In combat" turns the option on AT THE PULL (the user, 2026-11-10: "I pull with arcane shot and then when they get close, my auto attack melee is not on"): a spell you cast, Auto Shot or a melee swing starting out of a fight writes 1 right then (allowed: no lockdown yet), and 0 again 8 s later if no fight came of it; hub28: COMBAT AUTO SHOT "In combat" (the user, 2026-11-10: "add a third toggle to the hunter option to basically only turn it on during combat"): "uisw" 28 / 29 - while on, the game's autoRangedCombat is written 1 as a fight starts and 0 when it ends (and 0 at once out of a fight); the doc's sw.shotf, sw.shotfk = whether the fight's write took; hub27: the Party mode switch also starts / stops the combat log (PadMap m112); hub26: DS FOREVER'S OWN PARTY FRAMES AND TARGET BAR (WC.uf, at the end of this file; "uisw" 18 / 19 our party frames, 20 / 21 our target bar; while one is on, the game's own frames of that group stay hidden); hub25: PARTY MODE is an EXPERIMENTAL switch, off by default (the user, 2026-11-07: "Make the party mode an experimental toggle that is off by default"): "uisw" 16 / 17 -> WC.partyOk, which PadMap reads (Select toggles Party mode only while it is true); hub24: the Start attack switch reported while OFF (it read as absent: no QOL row); hub23: Combat Auto Shot for EVERY class (the user: "other classes use a bow"); hub22: START ATTACK ON A HOSTILE TARGET ("uisw" 12 / 13, the secure cell "atkgo") and the hunter's AUTO SHOT (the game's own autoRangedCombat, "uisw" 14 / 15); hub21: a one-time probe of the frames in the bottom-left bar's spot (probe "barprobe"); hub20: the raid / party manager tab with the Party frames switch; hub19: the PARTY FRAMES switch on "uisw" 10 / 11; hub18: the WORLD MARKERS' switch on "uisw" 8 / 9 (Trail.lua's WC.npWant.wm; the doc's sw.wm); hub17: HUD mode SPLIT into its own switches on the row "uisw" (the player frame, the target frame, the enemy nameplates, the personal bar; columns 34 / 35 still the whole bundle for an older app; the doc's sw); hub16: HUD mode's bar WIDTH and SCALE too (column 39 selects which setting columns 36 / 37 / 38 step; the doc's prd carries w / s / sel); hub15: HUD mode's bar height (Interact's WC.prd: columns 36 down / 37 up / 38 default; the doc's prd); hub14: HUD mode wants the enemy nameplates on (ag2 / Trail.lua owns that CVar: WC.npWant.hud); hub13: HUD mode (the player and target frames hidden, alpha only, columns 34 / 35); hub12: Smart buffs' OR wheel (barcmd "smartor", PadMap m62); hub11: the game's CAST BAR on the top screen, Show / Hide by its own two columns of the row (f-top-castbar-toggle); hub10: the game's durability figure rides the "hud" element (f-durability); hub9: the PAUSE wheel's button (Spells, Home's radial pause menu); hub8: the SPELL RADIAL's button (Spells, the user's pick 2026-10-07; Home's yes); hub7: a D-pad room command takes its room's controller in the same click (Quests q16), its guestack right behind the barcmd; hub6: the "bye" document at logout (the app's waiting screen at once); hub5: the D-pad layout's four commands (map / chat / home / radial); hub2: the "hud" element carries the game's buffs, debuffs and XP bar (LATER item 20); hub3: re-checked
+-- hub40 (fix/top-party, the user 2026-11-12: the party bar "a mile long"): every top party bar one column wide, re-sized on a K change.
+-- hub39 (int/1429): party-combat hub38 (the player / pet row, the Select side tab) with combat-nav's PadMap m134-m136
+local HV = "hub44"          -- hub44: A HUNTER'S MARK PULL KEEPS AUTO SHOT (the user's pick, 2026-11-12: "Mark pull keeps Auto Shot"; the attack start PLAYER_ENTER_COMBAT reports within MARK_S of a Mark SENT / SUCCEEDED is the Mark pull's, so it writes no 0; the macro order too, the review fix: an attack start, then a Mark SENT within PULL_UNDO_S 0.3 s out of the lockdown, writes 1 back - it undoes that same press's 0; Mark still never turns it ON by itself, the hub30 rule "make sure hunters mark does not trigger it to swap back on"). hub43: COMBAT AUTO SHOT KEEPS AUTO SHOT THROUGH AN ABILITY'S OWN /startattack (the user, 2026-11-12, a level 15 Hunter: "sometimes when using arcane shot my auto fire just stops and my dude stands there"): the attack start PLAYER_ENTER_COMBAT reports is often PadMap's attack-on-cast /startattack, so the "In combat" choice's 0 no longer follows an ability's SEND (or its FAILED, a cast that never sent) within 1 s or our atkgo within 1.5 s; otherwise the plain pull's 0 is written at once, as hub30 did (a wait lost the 0 to the lockdown of an in-range first swing), and an ability's SEND after it writes 1; PLAYER_REGEN_DISABLED writes 1 again after an ability's SEND within 2 s while it reads 0; the doc's shotlog (the last 24 moments, plain values, riding along); hub42: THE TOP PARTY BLOCK MOVES WITH PARTY MODE (the user, 2026-11-12: "party members are listed in ONE column ... on the LEFT side"; in Party mode they "fade out of the left column and fade back in UNDER the player's HUD bar"; "the player should not have their HP bar on the right side with party mode any more"; the Select tab: their pick B): out of Party mode party1..4 one a row, top to bottom, in the top-left column (PF.X / PF.Y as before), no Select tab; Party mode on: the block fades out (FADE_S 0.2), moves while unseen and fades in under the HUD bar (Trail prd15 WC.prd.partyGeo: party1's bar under the HP bar's left), two a row - [party1][party2] / [party3][party4] - and the reverse when it goes off (alpha only, our own plain frames: allowed in a fight; no secure frame moves); the game's side tab, lit, at the grid's LEFT edge, the rows' full height (none on the screen's edge any more); the grid tells Trail the room it takes (WC.prd.partyRoom: the HUD's aura row under it); still no self row, every bar one column's (W_BAR), raids nothing. The user's answers the same day: three members = [party1] alone on the first row (one column's bar), then [party2][party3]; solo in Party mode the tab stands beside the [me][pet] row (the HUD bars' height), grouped beside the party rows as before; the HUD always shown in Party mode, its buff / debuff row above its bars (Trail prd15); THE ON-SCREEN GUARD (the user: "KEEP IT ON SCREEN"): the rows' room (RING_PAD under the last) told to Trail from the moment Party mode is wanted, the grid placed at Trail's lifted HUD, and a changed place under the HUD (the lift, the scale, the combo pips) re-placed only at the fade's bottom (PF.regeo); hub41: THE TOP BLOCK'S REVIEW FIXES (the user, 2026-11-12, the top screen's party renders): the Select tab follows a K change too (PF.tabScale: its place, width, cap slices and glyphs again at today's K; before, it stayed at the scale it was made with while the rows moved), and the rows' pitch 55 -> 64 so Party mode's gold ring on a row ends above the next row's name (it cut through the name); hub40: THE TOP PARTY BARS ONE COLUMN WIDE (the user, 2026-11-12: "I had someone join my group on an old build and their health bar was a mile long"): a full row's bar spanned both columns (W_FULL 510 px, hub35 / 1428 on), so one member alone, or the first rows of a party of 3 / 4, had a bar wider than the target bar; now every party bar is one column's (W_BAR 194), a full row left-aligned, and PF.place re-sizes a row when K changes (PLAYER_ENTERING_WORLD); hub39: int/1429 (hub38 + combat-nav). hub38: THE PLAYER / PET ROW AND THE SELECT TAB IN THE GAME'S ART (the user, 2026-11-11, after using 1428: "I think the pet should be to the right of the player" and "The side panel around the select button looks like an AI border. It needs to use wow assets and sit outside of the player brand look more like its attached to the side of the screen"): the top block follows PadMap m134's rows (you + the pet share the first row, the party members under it: 1-2 full rows, 3: a full row then a shared one, 4: 2x2), so the party block no longer depends on the pet; the top Select tab is the game's own side tab (atlas common-sidetab-c60-2x, sliced top / middle / bottom so its bevels keep their shape; lit = common-sidetab-selected-c60-2x over it), flush on the screen's left edge (x 0); no drawn fill or edge any more; hub37: hub35 (the party grid) and hub36 (Polestar's hide sticks) merged, both kept. hub35: THE TOP PARTY BLOCK (the user, 2026-11-11: "the other 4 party members are in a square shape in the top left", then the adaptive rows "when one two or three full sized, when 4, bottom 2 consolidate, when 5 the next 2 consolidate"): ONLY the party members, in the bottom's own arrangement (PadMap m131's entries you / pet / party1..4: the same rows and left / right sides, the rows with no party member dropped) as a compact block in the top left - a full row's bar spans both columns, a shared row's halves one each; no self row any more (picking you / your pet boxes the HUD's bars / pet strip: Trail.lua prd14); the Select tab beside the block (its rows; one row's height while solo with Party mode on); hub34: THE TOP PARTY COLUMN (party_design.md D and the user's decisions 2026-11-11): you, then party1..4, one row each in the bottom's order, every row the target bar's builder (npBar + the HUD rim, the level in a hudBox, the name above the lip, the HUD's green re-tinted every step); your own row while grouped or whenever Party mode is on; Party mode on: each row's LB glyph, a gold ring on the pick (PadMap box.u) and a white chevron at your target; dead / offline / out of range (PadMap's one rng) as the bottom; an 18 px Select tab beside the column (off / on / not bound); in a raid nothing; the combat log's switch calls retired (PadMap m129); hub33: THE PET'S STRIP IN THE HUD (the user, 2026-11-11: "find a way to include Pet HP in the HUD, and better distinguish the player HUD vs Pet HUD"): "uisw" 32 / 33 -> WC.npWant.pet (Trail.lua prd11: the pet's strip under the resource bar, on unless turned off); the game's pet frame is its own group now ("pet"): as the player frame (hidden with it while our strip stands in; a review fix 2026-11-11: never hidden by our strip alone); the doc's sw.pet / set.pet; hub32: THE GAME'S COMBO POINTS UNDER A HIDDEN TARGET FRAME (issue #120, a Rogue: "I can't see the combo points that are accumulated during combat"; 2026-11-11): the game draws them on ComboFrame, a child of TargetFrame (Blizzard's Classic FrameXML), so HUD mode's target switch (TargetFrame at alpha 0) hid them with it; with our target bar off nothing showed them. Now, while the game's host frame is hidden by us and our target bar (its own pips) is off, the combo frame ignores its parent's alpha (SetIgnoreParentAlpha, alpha only like the rest of HUD mode); otherwise it follows it again; hub31: HIDE POLESTAR ON THE TOP SCREEN (the user, 2026-11-11: "one other setting to hide the polestar UI from the top"): "uisw" 30 / 31 - every top-level frame Polestar names (PolestarGuideFrame, its arrow, its pad hints, toasts ...) at alpha 0 while on, and kept there when it shows again; off gives each its alpha 1 back; alpha only, nothing of Polestar changed; the doc's sw.ps; hub30: the third choice's RULES (the user, 2026-11-10: "it would be better if it stay on out of combat incase someone else pulls me into combat, and it should turn off when I target something out of combat AND start attack and then swap back when an ability is used before that ability fires" ... "make sure hunters mark does not trigger it to swap back on"): on by default and after every fight; OFF when an attack starts out of a fight with a target (PLAYER_ENTER_COMBAT); back ON at an ability's send (UNIT_SPELLCAST_SENT, before it fires) - never for Hunter's Mark, Auto Shot or Attack; hub29 (replaced by hub30): "In combat" turns the option on AT THE PULL (the user, 2026-11-10: "I pull with arcane shot and then when they get close, my auto attack melee is not on"): a spell you cast, Auto Shot or a melee swing starting out of a fight writes 1 right then (allowed: no lockdown yet), and 0 again 8 s later if no fight came of it; hub28: COMBAT AUTO SHOT "In combat" (the user, 2026-11-10: "add a third toggle to the hunter option to basically only turn it on during combat"): "uisw" 28 / 29 - while on, the game's autoRangedCombat is written 1 as a fight starts and 0 when it ends (and 0 at once out of a fight); the doc's sw.shotf, sw.shotfk = whether the fight's write took; hub27: the Party mode switch also starts / stops the combat log (PadMap m112); hub26: DS FOREVER'S OWN PARTY FRAMES AND TARGET BAR (WC.uf, at the end of this file; "uisw" 18 / 19 our party frames, 20 / 21 our target bar; while one is on, the game's own frames of that group stay hidden); hub25: PARTY MODE is an EXPERIMENTAL switch, off by default (the user, 2026-11-07: "Make the party mode an experimental toggle that is off by default"): "uisw" 16 / 17 -> WC.partyOk, which PadMap reads (Select toggles Party mode only while it is true); hub24: the Start attack switch reported while OFF (it read as absent: no QOL row); hub23: Combat Auto Shot for EVERY class (the user: "other classes use a bow"); hub22: START ATTACK ON A HOSTILE TARGET ("uisw" 12 / 13, the secure cell "atkgo") and the hunter's AUTO SHOT (the game's own autoRangedCombat, "uisw" 14 / 15); hub21: a one-time probe of the frames in the bottom-left bar's spot (probe "barprobe"); hub20: the raid / party manager tab with the Party frames switch; hub19: the PARTY FRAMES switch on "uisw" 10 / 11; hub18: the WORLD MARKERS' switch on "uisw" 8 / 9 (Trail.lua's WC.npWant.wm; the doc's sw.wm); hub17: HUD mode SPLIT into its own switches on the row "uisw" (the player frame, the target frame, the enemy nameplates, the personal bar; columns 34 / 35 still the whole bundle for an older app; the doc's sw); hub16: HUD mode's bar WIDTH and SCALE too (column 39 selects which setting columns 36 / 37 / 38 step; the doc's prd carries w / s / sel); hub15: HUD mode's bar height (Interact's WC.prd: columns 36 down / 37 up / 38 default; the doc's prd); hub14: HUD mode wants the enemy nameplates on (ag2 / Trail.lua owns that CVar: WC.npWant.hud); hub13: HUD mode (the player and target frames hidden, alpha only, columns 34 / 35); hub12: Smart buffs' OR wheel (barcmd "smartor", PadMap m62); hub11: the game's CAST BAR on the top screen, Show / Hide by its own two columns of the row (f-top-castbar-toggle); hub10: the game's durability figure rides the "hud" element (f-durability); hub9: the PAUSE wheel's button (Spells, Home's radial pause menu); hub8: the SPELL RADIAL's button (Spells, the user's pick 2026-10-07; Home's yes); hub7: a D-pad room command takes its room's controller in the same click (Quests q16), its guestack right behind the barcmd; hub6: the "bye" document at logout (the app's waiting screen at once); hub5: the D-pad layout's four commands (map / chat / home / radial); hub2: the "hud" element carries the game's buffs, debuffs and XP bar (LATER item 20); hub3: re-checked hub36 (hub35 is fix/party-grid's tag: merge both, keep the higher): POLESTAR'S HIDE STICKS (the user, 2026-11-11, the switch on: "The polestar window randomly reappears a lot"): Polestar fades its windows back by itself (every fight's start and end, a setting change, each window's own fade-in, windows made later), with no Show; now a secure post-hook on each frame's SetAlpha puts the 0 back in the same frame and keeps the alpha Polestar asked for, its known names looked up every 0.25 s while hidden, Off gives back every frame touched (re-parented too); hub34: THE TOP PARTY COLUMN (party_design.md D and the user's decisions 2026-11-11): you, then party1..4, one row each in the bottom's order, every row the target bar's builder (npBar + the HUD rim, the level in a hudBox, the name above the lip, the HUD's green re-tinted every step); your own row while grouped or whenever Party mode is on; Party mode on: each row's LB glyph, a gold ring on the pick (PadMap box.u) and a white chevron at your target; dead / offline / out of range (PadMap's one rng) as the bottom; an 18 px Select tab beside the column (off / on / not bound); in a raid nothing; the combat log's switch calls retired (PadMap m129); hub33: THE PET'S STRIP IN THE HUD (the user, 2026-11-11: "find a way to include Pet HP in the HUD, and better distinguish the player HUD vs Pet HUD"): "uisw" 32 / 33 -> WC.npWant.pet (Trail.lua prd11: the pet's strip under the resource bar, on unless turned off); the game's pet frame is its own group now ("pet"): as the player frame (hidden with it while our strip stands in; a review fix 2026-11-11: never hidden by our strip alone); the doc's sw.pet / set.pet; hub32: THE GAME'S COMBO POINTS UNDER A HIDDEN TARGET FRAME (issue #120, a Rogue: "I can't see the combo points that are accumulated during combat"; 2026-11-11): the game draws them on ComboFrame, a child of TargetFrame (Blizzard's Classic FrameXML), so HUD mode's target switch (TargetFrame at alpha 0) hid them with it; with our target bar off nothing showed them. Now, while the game's host frame is hidden by us and our target bar (its own pips) is off, the combo frame ignores its parent's alpha (SetIgnoreParentAlpha, alpha only like the rest of HUD mode); otherwise it follows it again; hub31: HIDE POLESTAR ON THE TOP SCREEN (the user, 2026-11-11: "one other setting to hide the polestar UI from the top"): "uisw" 30 / 31 - every top-level frame Polestar names (PolestarGuideFrame, its arrow, its pad hints, toasts ...) at alpha 0 while on, and kept there when it shows again; off gives each its alpha 1 back; alpha only, nothing of Polestar changed; the doc's sw.ps; hub30: the third choice's RULES (the user, 2026-11-10: "it would be better if it stay on out of combat incase someone else pulls me into combat, and it should turn off when I target something out of combat AND start attack and then swap back when an ability is used before that ability fires" ... "make sure hunters mark does not trigger it to swap back on"): on by default and after every fight; OFF when an attack starts out of a fight with a target (PLAYER_ENTER_COMBAT); back ON at an ability's send (UNIT_SPELLCAST_SENT, before it fires) - never for Hunter's Mark, Auto Shot or Attack; hub29 (replaced by hub30): "In combat" turns the option on AT THE PULL (the user, 2026-11-10: "I pull with arcane shot and then when they get close, my auto attack melee is not on"): a spell you cast, Auto Shot or a melee swing starting out of a fight writes 1 right then (allowed: no lockdown yet), and 0 again 8 s later if no fight came of it; hub28: COMBAT AUTO SHOT "In combat" (the user, 2026-11-10: "add a third toggle to the hunter option to basically only turn it on during combat"): "uisw" 28 / 29 - while on, the game's autoRangedCombat is written 1 as a fight starts and 0 when it ends (and 0 at once out of a fight); the doc's sw.shotf, sw.shotfk = whether the fight's write took; hub27: the Party mode switch also starts / stops the combat log (PadMap m112); hub26: DS FOREVER'S OWN PARTY FRAMES AND TARGET BAR (WC.uf, at the end of this file; "uisw" 18 / 19 our party frames, 20 / 21 our target bar; while one is on, the game's own frames of that group stay hidden); hub25: PARTY MODE is an EXPERIMENTAL switch, off by default (the user, 2026-11-07: "Make the party mode an experimental toggle that is off by default"): "uisw" 16 / 17 -> WC.partyOk, which PadMap reads (Select toggles Party mode only while it is true); hub24: the Start attack switch reported while OFF (it read as absent: no QOL row); hub23: Combat Auto Shot for EVERY class (the user: "other classes use a bow"); hub22: START ATTACK ON A HOSTILE TARGET ("uisw" 12 / 13, the secure cell "atkgo") and the hunter's AUTO SHOT (the game's own autoRangedCombat, "uisw" 14 / 15); hub21: a one-time probe of the frames in the bottom-left bar's spot (probe "barprobe"); hub20: the raid / party manager tab with the Party frames switch; hub19: the PARTY FRAMES switch on "uisw" 10 / 11; hub18: the WORLD MARKERS' switch on "uisw" 8 / 9 (Trail.lua's WC.npWant.wm; the doc's sw.wm); hub17: HUD mode SPLIT into its own switches on the row "uisw" (the player frame, the target frame, the enemy nameplates, the personal bar; columns 34 / 35 still the whole bundle for an older app; the doc's sw); hub16: HUD mode's bar WIDTH and SCALE too (column 39 selects which setting columns 36 / 37 / 38 step; the doc's prd carries w / s / sel); hub15: HUD mode's bar height (Interact's WC.prd: columns 36 down / 37 up / 38 default; the doc's prd); hub14: HUD mode wants the enemy nameplates on (ag2 / Trail.lua owns that CVar: WC.npWant.hud); hub13: HUD mode (the player and target frames hidden, alpha only, columns 34 / 35); hub12: Smart buffs' OR wheel (barcmd "smartor", PadMap m62); hub11: the game's CAST BAR on the top screen, Show / Hide by its own two columns of the row (f-top-castbar-toggle); hub10: the game's durability figure rides the "hud" element (f-durability); hub9: the PAUSE wheel's button (Spells, Home's radial pause menu); hub8: the SPELL RADIAL's button (Spells, the user's pick 2026-10-07; Home's yes); hub7: a D-pad room command takes its room's controller in the same click (Quests q16), its guestack right behind the barcmd; hub6: the "bye" document at logout (the app's waiting screen at once); hub5: the D-pad layout's four commands (map / chat / home / radial); hub2: the "hud" element carries the game's buffs, debuffs and XP bar (LATER item 20); hub3: re-checked
 local ROW = "ui"
 local MAX_BITS = 5          -- 2^5 = 32 layouts; a pad row has 40 columns
 
@@ -331,7 +333,9 @@ local SW = { PLAYER_SHOW = 0, PLAYER_HIDE = 1, TARGET_SHOW = 2, TARGET_HIDE = 3,
              -- hub28: Combat Auto Shot only in fights
              SHOTF_OFF = 28, SHOTF_ON = 29,
              -- hub31: Polestar's own windows on the top screen
-             PS_SHOW = 30, PS_HIDE = 31 }
+             PS_SHOW = 30, PS_HIDE = 31,
+             -- hub33: the pet's strip under the resource bar (Trail.lua prd11: WC.npWant.pet)
+             PET_OFF = 32, PET_ON = 33 }
 -- hub22 (the user, 2026-11-07: "a QOL setting for Start attack on Hostile targeting, so that when I press RB to target a hostile target it
 -- starts the attack, and then under that ... for hunters ... the 'Combat Auto Shot'"):
 --   ATK: a NEW hostile target starts the auto attack. The game lets no add-on start it on an event (StartAttack is protected), so the
@@ -358,11 +362,48 @@ end
 -- hub28 "IN COMBAT": the game's Auto Shot switching only while a fight is on. The write at the fight's start is made inside the fight
 -- (PLAYER_REGEN_DISABLED comes with the lockdown already on): pcall'd and read back, the answer kept for the doc (shotfk) so the app
 -- can say when the game refused it. Out of a fight the option is 0.
+local function plainTrue(f, ...)
+    if type(f) ~= "function" then return false end
+    local ok, v = pcall(f, ...)
+    if not ok then return false end
+    if type(WC.isPlain) == "function" and not WC.isPlain(v) then return false end
+    return v == true or v == 1
+end
+local function shotTime()
+    if type(GetTime) ~= "function" then return 0 end
+    local ok, t = pcall(GetTime)
+    return ok and type(t) == "number" and t or 0
+end
+-- hub43 THE SHOT LOG (the user, 2026-11-12: "sometimes when using arcane shot my auto fire just stops and my dude stands there"): an
+-- in-memory ring of the last SHOTLOG_N moments that decide Combat Auto Shot's "In combat" choice (the fight / attack / auto-repeat
+-- events, the player's casts, each write), plain values only, carried by the next hub document that goes out (never a send of its own)
+local SHOTLOG_N = 24
+hub.shotlog = {}
+local function shotLog(ev, spell)
+    if hubAtk.shotFight ~= true then return end
+    local sp = nil
+    if type(spell) == "number" or type(spell) == "string" then
+        if type(WC.isPlain) ~= "function" or WC.isPlain(spell) then sp = tonumber(spell) or spell end
+    end
+    local cv = shotNow()
+    local lock = type(InCombatLockdown) == "function" and InCombatLockdown() == true
+    local e = { t = math.floor(shotTime() * 100 + 0.5) / 100, ev = ev, spell = sp, cv = cv,
+                a6603 = type(IsCurrentSpell) == "function" and plainTrue(IsCurrentSpell, 6603) or false,
+                a75 = type(IsCurrentSpell) == "function" and plainTrue(IsCurrentSpell, 75) or false,
+                lock = lock }
+    local L = hub.shotlog
+    L[#L + 1] = e
+    while #L > SHOTLOG_N do table.remove(L, 1) end
+end
+hub.SHOTLOG_N = SHOTLOG_N
+hub.shotLog = shotLog
 local function shotWrite(on)
     local set = (C_CVar and C_CVar.SetCVar) or _G.SetCVar
     if type(set) ~= "function" then return false end
     pcall(set, "autoRangedCombat", on and "1" or "0")
-    return shotNow() == on
+    local ok = shotNow() == on
+    shotLog(on and "w1" or "w0", nil)
+    return ok
 end
 local function shotFightSync(on)
     if hubAtk.shotFight ~= true then return end
@@ -373,8 +414,30 @@ WC.shotFightSync = shotFightSync
 -- hub30 THE RULES: on by default (someone else's pull finds it on); a plain attack started OUT of a fight with a target turns it off
 -- (PLAYER_ENTER_COMBAT: the auto attack began); an ability turns it back on at its SEND, before it fires - except Hunter's Mark (every
 -- rank, by its spell IDs and by its name), Auto Shot and Attack themselves; the fight's end turns it on again
-local SHOT_KEEP = { [1130] = true, [14323] = true, [14324] = true, [14325] = true, [53338] = true, [257284] = true,   -- Hunter's Mark
-                    [75] = true, [6603] = true }                                                                      -- Auto Shot, Attack
+-- hub43 (the user, 2026-11-12, a level 15 Hunter: "sometimes when using arcane shot my auto fire just stops and my dude stands there"):
+-- every harmful spell pressed from the controller runs "/startattack [harm,nodead]" first (PadMap's attack-on-cast lines), so the
+-- attack that PLAYER_ENTER_COMBAT reports is often the companion's own, an ability's, not a plain melee pull. When the 0 stuck into
+-- the fight (the SEND before the attack start, a cast that failed with no SEND, an atkgo pull, a refused write) the next Arcane Shot's
+-- /startattack switched the Hunter to melee at range. Now:
+--   - every ability's SEND (not Hunter's Mark / Auto Shot / Attack) is kept (abilAt); an attack start within ABIL_S of one is that
+--     ability's and writes no 0; an attack start within ATKGO_S of our own atkgo document is ours too;
+--     a non-keep FAILED counts as well (the press ran its /startattack though the cast never sent);
+--   - otherwise (a plain pull) the 0 is written at once, out of the lockdown: an in-range first swing brings the fight within a
+--     frame or two, so a wait would lose it; an ability SEND after the attack start writes 1 again (the order ENTER_COMBAT, SENT);
+--   - PLAYER_REGEN_DISABLED: an ability's SEND within REGEN_S and the option reading 0 -> 1 again (pcall'd, the answer in shotfk)
+-- hub44 (the user's pick, 2026-11-12: "Mark pull keeps Auto Shot"): a pull with Hunter's Mark (every rank, by its IDs and its name) is
+-- no longer a plain melee pull: an attack start within MARK_S of a Mark SENT / SUCCEEDED (markAt) writes no 0. Mark still never writes
+-- 1 by itself (hub30: "make sure hunters mark does not trigger it to swap back on"): its SEND stays a keep, it sets no abilAt, so
+-- neither the SEND rule nor PLAYER_REGEN_DISABLED's turns it on.
+-- hub44 review fix (the order ENTER_COMBAT, SENT): a controller Mark is PadMap's attack-on-cast macro ("/startattack [harm,nodead]"
+-- THEN "/cast Hunter's Mark"), so its attack start comes BEFORE its SEND and the plain pull's 0 was already written. The plain pull's
+-- 0 is stamped (pullZeroAt); a Mark SENT / SUCCEEDED within PULL_UNDO_S of it, out of the lockdown, writes 1 back: it undoes that
+-- same press's 0, it does not turn Auto Shot on (a Mark after a real melee pull, past PULL_UNDO_S or in the fight, still never does).
+local SHOT_MARK = { [1130] = true, [14323] = true, [14324] = true, [14325] = true, [53338] = true, [257284] = true }  -- Hunter's Mark
+local SHOT_KEEP = { [75] = true, [6603] = true }                                                                     -- Auto Shot, Attack
+for k in pairs(SHOT_MARK) do SHOT_KEEP[k] = true end
+local ABIL_S, REGEN_S, ATKGO_S, MARK_S, PULL_UNDO_S = 1.0, 2.0, 1.5, 1.5, 0.3
+hub.SHOT_T = { ABIL_S = ABIL_S, REGEN_S = REGEN_S, ATKGO_S = ATKGO_S, MARK_S = MARK_S, PULL_UNDO_S = PULL_UNDO_S }
 local function markName()
     local get = (C_Spell and C_Spell.GetSpellName) or nil
     local ok, n = false, nil
@@ -382,39 +445,76 @@ local function markName()
     if (not ok or type(n) ~= "string") and type(GetSpellInfo) == "function" then ok, n = pcall(GetSpellInfo, 1130) end
     return ok and type(n) == "string" and n ~= "" and n or nil
 end
+-- hub44: Hunter's Mark, any rank: its IDs, or the name rank 1 has
+local function isMark(id)
+    if id and SHOT_MARK[id] then return true end
+    local mn = markName()
+    if mn and id then
+        local get = (C_Spell and C_Spell.GetSpellName) or nil
+        local okN, n = false, nil
+        if type(get) == "function" then okN, n = pcall(get, id) end
+        if okN and n == mn then return true end
+    end
+    return false
+end
+local function isKeep(id)
+    if id and SHOT_KEEP[id] then return true end
+    return isMark(id)
+end
+local function within(at, s)
+    return type(at) == "number" and shotTime() - at <= s
+end
+local LOGEV = { PLAYER_ENTER_COMBAT = "enter", PLAYER_LEAVE_COMBAT = "leave", START_AUTOREPEAT_SPELL = "rep+",
+                STOP_AUTOREPEAT_SPELL = "rep-", UNIT_SPELLCAST_SENT = "sent", UNIT_SPELLCAST_SUCCEEDED = "done",
+                UNIT_SPELLCAST_FAILED = "fail", PLAYER_REGEN_DISABLED = "fight", PLAYER_REGEN_ENABLED = "peace" }
 local function shotEvent(event, ...)
-    if hubAtk.shotFight ~= true then return end
-    if event == "PLAYER_ENTER_COMBAT" then
-        if not InCombatLockdown() and type(UnitExists) == "function" and UnitExists("target") then shotFightSync(false) end
-    elseif event == "UNIT_SPELLCAST_SENT" then
-        local unit, _, _, spellID = ...
+    local id = nil
+    if event == "UNIT_SPELLCAST_SENT" or event == "UNIT_SPELLCAST_SUCCEEDED" or event == "UNIT_SPELLCAST_FAILED" then
+        local unit = ...
         if unit ~= "player" then return end
-        local id = tonumber(spellID)
-        if id and SHOT_KEEP[id] then return end
-        local mn = markName()
-        if mn and id then
-            local get = (C_Spell and C_Spell.GetSpellName) or nil
-            local okN, n = false, nil
-            if type(get) == "function" then okN, n = pcall(get, id) end
-            if okN and n == mn then return end
+        local spellID
+        if event == "UNIT_SPELLCAST_SENT" then spellID = select(4, ...) else spellID = select(3, ...) end
+        if type(WC.isPlain) ~= "function" or WC.isPlain(spellID) then id = tonumber(spellID) end
+        if event ~= "UNIT_SPELLCAST_SUCCEEDED" and not isKeep(id) then hubAtk.abilAt = shotTime() end   -- SENT, or FAILED unsent
+        if event ~= "UNIT_SPELLCAST_FAILED" and id and isMark(id) then
+            hubAtk.markAt = shotTime()                                   -- hub44: a Mark pull
+            -- hub44 review fix: the macro's order (attack start, then Mark's SEND): undo that same press's own 0, out of the lockdown
+            if hubAtk.shotFight == true and within(hubAtk.pullZeroAt, PULL_UNDO_S) and not InCombatLockdown() then
+                hubAtk.pullZeroAt = nil
+                shotLog("mark", id)
+                shotFightSync(true)
+            end
         end
+    end
+    if hubAtk.shotFight ~= true then return end
+    if LOGEV[event] then shotLog(LOGEV[event], id) end
+    if event == "PLAYER_ENTER_COMBAT" then
+        if InCombatLockdown() or not plainTrue(UnitExists, "target") then return end
+        if within(hubAtk.abilAt, ABIL_S) then return end                 -- an ability's own /startattack
+        if within(hubAtk.atkgoAt, ATKGO_S) then return end               -- our atkgo cell's
+        if within(hubAtk.markAt, MARK_S) then return end                 -- hub44: a Hunter's Mark pull keeps Auto Shot
+        shotFightSync(false)                                             -- a plain pull: at once, before the lockdown
+        hubAtk.pullZeroAt = shotTime()                                   -- (a Mark SENT right behind it undoes this 0: the macro order)
+    elseif event == "UNIT_SPELLCAST_SENT" then
+        if isKeep(id) then return end
         shotFightSync(true)
+    elseif event == "PLAYER_REGEN_DISABLED" then
+        if within(hubAtk.abilAt, REGEN_S) and shotNow() == false then shotFightSync(true) end
     elseif event == "PLAYER_REGEN_ENABLED" then
+        hubAtk.pullZeroAt = nil
         shotFightSync(true)
     end
 end
 local shotFrame = CreateFrame("Frame")
-pcall(function() shotFrame:RegisterEvent("PLAYER_ENTER_COMBAT") end)
-pcall(function() shotFrame:RegisterEvent("PLAYER_REGEN_ENABLED") end)
-pcall(function() shotFrame:RegisterUnitEvent("UNIT_SPELLCAST_SENT", "player") end)
+for _, e in ipairs({ "PLAYER_ENTER_COMBAT", "PLAYER_LEAVE_COMBAT", "PLAYER_REGEN_ENABLED", "PLAYER_REGEN_DISABLED",
+                     "START_AUTOREPEAT_SPELL", "STOP_AUTOREPEAT_SPELL" }) do
+    pcall(function() shotFrame:RegisterEvent(e) end)
+end
+for _, e in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_FAILED" }) do
+    pcall(function() shotFrame:RegisterUnitEvent(e, "player") end)
+end
 shotFrame:SetScript("OnEvent", function(_, event, ...) pcall(shotEvent, event, ...) end)
 WC.shotEvent = shotEvent
-local function plainTrue(f, ...)
-    local ok, v = pcall(f, ...)
-    if not ok then return false end
-    if type(WC.isPlain) == "function" and not WC.isPlain(v) then return false end
-    return v == true or v == 1
-end
 -- a new target: worth starting the attack on?
 local function atkWanted()
     if hubAtk.on ~= true then return false end
@@ -424,7 +524,9 @@ local function atkWanted()
     if type(IsCurrentSpell) == "function" and (plainTrue(IsCurrentSpell, 6603) or plainTrue(IsCurrentSpell, 75)) then return false end
     return true
 end
-local GROUP = { PlayerFrame = "player", PetFrame = "player", TargetFrame = "target", TargetFrameToT = "target",
+-- hub33: the game's pet frame its own group: as the player frame (hidden with it while our pet strip, Trail.lua prd11, stands in)
+-- (in the game's UI PetFrame hangs off PlayerFrame, so a hidden player frame takes it along whatever its own alpha)
+local GROUP = { PlayerFrame = "player", PetFrame = "pet", TargetFrame = "target", TargetFrameToT = "target",
                 PartyFrame = "party", CompactPartyFrame = "party", CompactRaidFrameManager = "party" }
 hm.g = { player = nil, target = nil, party = nil }  -- per group: true hidden / false shown / nil as the bundle says (party: shown)
 hub.SW = SW
@@ -434,6 +536,14 @@ local function groupHidden(name)
     if type(uf) == "table" then
         if GROUP[name] == "party" and uf.party and not (type(IsInRaid) == "function" and IsInRaid() == true) then return true end
         if GROUP[name] == "target" and uf.target then return true end
+    end
+    if GROUP[name] == "pet" then
+        -- (review of hub33, 2026-11-11: hiding it whenever our strip was on left a player who SHOWS the game's player frame with no pet
+        -- health once the HUD faded out of combat, or while dead - the strip only shows with the HUD. Now it follows the player frame
+        -- only: hidden with it (HUD mode: our strip stands in), shown with it)
+        local g = hm.g.player
+        if g == nil then return hm.hidden end
+        return g
     end
     local g = hm.g[GROUP[name]]
     if g == nil then return GROUP[name] ~= "party" and hm.hidden end      -- the old HUD bundle never covered the party frames
@@ -493,7 +603,8 @@ function hub.swTap(col)
     elseif col == SW.TARGET_SHOW or col == SW.TARGET_HIDE then hm.g.target = (col == SW.TARGET_HIDE); hub.hmApply()
     elseif col == SW.PARTY_SHOW or col == SW.PARTY_HIDE then hm.g.party = (col == SW.PARTY_HIDE); hub.hmApply()
     elseif col == SW.NP_OFF or col == SW.NP_ON then WC.npWant.np = (col == SW.NP_ON)
-    elseif col == SW.PRD_OFF or col == SW.PRD_ON then WC.npWant.prd = (col == SW.PRD_ON)
+    elseif col == SW.PRD_OFF or col == SW.PRD_ON then WC.npWant.prd = (col == SW.PRD_ON); hub.hmApply()      -- hub33: the pet frame follows
+    elseif col == SW.PET_OFF or col == SW.PET_ON then WC.npWant.pet = (col == SW.PET_ON); hub.hmApply()      -- hub33: the pet's strip
     elseif col == SW.WM_OFF or col == SW.WM_ON then WC.npWant.wm = (col == SW.WM_ON)
     elseif col == SW.ATK_OFF or col == SW.ATK_ON then hubAtk.on = (col == SW.ATK_ON)
     elseif col == SW.SHOT_OFF or col == SW.SHOT_ON then shotSet(col == SW.SHOT_ON)
@@ -530,49 +641,113 @@ function hub.swTap(col)
         -- hub25: Party mode allowed (PadMap's PM.allowed); turned off, PadMap ends a Party mode that is on (out of combat)
         WC.partyOk = (col == SW.PMODE_ON)
         if type(WC.partyAllow) == "function" then pcall(WC.partyAllow, WC.partyOk) end
-        -- hub27 (PadMap m112): the combat log runs only while Party mode is allowed
-        if type(WC.clogSync) == "function" then pcall(WC.clogSync) end
-        if type(WC.clogTicker) == "function" and not InCombatLockdown() then pcall(WC.clogTicker) end
+        -- hub34: the combat log is retired (PadMap m129): nothing to start or stop here any more
     else return false end
     return true
 end
 hub.hmSet = hmSet               -- for the harness
--- hub31: Polestar's top-level frames (every global frame named Polestar..., parented to UIParent or nothing), alpha 0 while hidden; frames
--- Polestar makes later are found by the next look (every 5 s while hidden). Read only: alpha, an OnShow hook that keeps it 0.
-hub.ps = { hidden = nil, hooked = {}, seen = {} }
+-- hub31: Polestar's top-level frames (every global frame named Polestar..., parented to UIParent or nothing), alpha 0 while hidden.
+-- hub36: THE HIDE STICKS (the user, 2026-11-11, with the switch on: "The polestar window randomly reappears a lot"). Polestar 0.2.5
+-- gives its windows their alpha back by itself, with no Show, so hub31's OnShow hook never saw it and only the 5 s look put the 0 back:
+--   - every fight's start and end: PLAYER_REGEN_DISABLED / _ENABLED -> GF.ApplyAlpha(true) (UI/GuideFrame.lua:2528-2540), a fade of
+--     PolestarGuideFrame from its alpha (our 0) to ui.opacity (GuideFrame.lua:1649-1653) through Anim.To -> o:SetAlpha each frame
+--     (Theme/Anim.lua:35, :70-80); a setting change too (ui.opacity / ui.combat / ui: GuideFrame.lua:1725, :1738, :1948);
+--   - the fade-ins of its other windows as they show: the rare toast (Rares/Toast.lua:187), the transit banner (Nav/Alerts.lua:162),
+--     the menu (Theme/Widgets.lua:1185), Options / Picker (Widgets.lua:2214), Report / RouteChoice / Copy's OnShow
+--     (UI/Report.lua:464, UI/RouteChoice.lua:322, UI/Copy.lua:62), the arrow's own opacity (Nav/Arrow.lua:604);
+--   - windows made the first time they are needed (the toast, the banner, the menu, Copy, Report, RouteChoice, Welcome, the pad
+--     hints / ring), not there at our look: up to 5 s on screen;
+--   - the pad hints and ring re-parented into a window (UI/Gamepad.lua:1501, :1511) dropped out of the look, so the switch's Off
+--     never gave them their alpha back.
+-- Now: a secure post-hook on each frame's own SetAlpha (Anim calls o:SetAlpha, so the instance hook sees every step) puts the 0 back
+-- in the same frame and keeps the alpha Polestar asked for (given back at Off); OnShow as before; Polestar's known names looked up
+-- every 0.25 s while hidden (cheap: a name each), and the full look every 5 s for any other; Off gives back every frame ever touched,
+-- re-parented or not, and the hooks pass everything through. Alpha only: nothing of Polestar's code, settings, Show / Hide or parents.
+-- A protected frame (the QoL secure buttons) gets no SetAlpha hook (none of Polestar's code fades them); the 0.25 s look keeps it 0.
+hub.ps = { hidden = nil, hooked = {}, touched = {}, want = {}, busy = false,
+           NAMES = { "PolestarGuideFrame", "PolestarNavArrow", "PolestarTransitAlert", "PolestarRareToast", "PolestarMenu",
+                     "PolestarCopy", "PolestarPadHints", "PolestarPadRing", "PolestarReport", "PolestarRouteChoice", "PolestarWelcome",
+                     "PolestarOptions", "PolestarPicker", "PolestarFlightTimer", "PolestarInstanceTracker", "PolestarQuestItemButton",
+                     "PolestarHearthButton", "PolestarTargetButton", "PolestarTravelButton", "PolestarStepButton" } }
+function hub.psTop(fr)
+    if type(fr) ~= "table" or type(fr.GetObjectType) ~= "function" or type(fr.SetAlpha) ~= "function" then return false end
+    local okP, parent = pcall(fr.GetParent, fr)
+    return okP and (parent == nil or parent == UIParent)
+end
 function hub.psFrames()
     local out = {}
     for name, fr in pairs(_G) do
-        if type(name) == "string" and name:sub(1, 8) == "Polestar" and type(fr) == "table" and type(fr.GetObjectType) == "function"
-            and type(fr.SetAlpha) == "function" then
-            local okP, parent = pcall(fr.GetParent, fr)
-            if okP and (parent == nil or parent == UIParent) then out[#out + 1] = { name, fr } end
-        end
+        if type(name) == "string" and name:sub(1, 8) == "Polestar" and hub.psTop(fr) then out[#out + 1] = { name, fr } end
     end
     return out
 end
-function hub.psApply()
+function hub.psZero(fr)
     local P = hub.ps
-    for _, nf in ipairs(hub.psFrames()) do
-        local name, fr = nf[1], nf[2]
-        if P.hidden then
-            P.seen[name] = true
-            if not P.hooked[name] and type(fr.HookScript) == "function" then
-                P.hooked[name] = true
-                pcall(fr.HookScript, fr, "OnShow", function(self) if hub.ps.hidden then pcall(self.SetAlpha, self, 0) end end)
-            end
-            pcall(fr.SetAlpha, fr, 0)
-        elseif P.seen[name] then
-            pcall(fr.SetAlpha, fr, 1)
+    P.busy = true
+    pcall(fr.SetAlpha, fr, 0)
+    P.busy = false
+end
+function hub.psHook(fr)
+    local P = hub.ps
+    if P.hooked[fr] then return end
+    P.hooked[fr] = true
+    local okA, a0 = pcall(fr.GetAlpha, fr)
+    P.want[fr] = (okA and type(a0) == "number" and a0 > 0.01) and a0 or 1
+    if type(fr.HookScript) == "function" then
+        pcall(fr.HookScript, fr, "OnShow", function(self) if hub.ps.hidden then hub.psZero(self) end end)
+    end
+    local okPr, prot = pcall(function() return fr.IsProtected and fr:IsProtected() end)
+    if okPr and not prot then
+        pcall(hooksecurefunc, fr, "SetAlpha", function(self, a)
+            local Q = hub.ps
+            if Q.busy then return end
+            if type(a) == "number" then Q.want[self] = a end
+            if Q.hidden then hub.psZero(self) end
+        end)
+    end
+end
+function hub.psHide(fr)
+    local P = hub.ps
+    hub.psHook(fr)
+    P.touched[fr] = true
+    local ok, a = pcall(fr.GetAlpha, fr)
+    if not ok or type(a) ~= "number" or a > 0.01 then hub.psZero(fr) end
+end
+function hub.psQuick()
+    local P = hub.ps
+    if not P.hidden then return end
+    for _, name in ipairs(P.NAMES) do
+        local fr = _G[name]
+        if P.touched[fr] then
+            local ok, a = pcall(fr.GetAlpha, fr)
+            if ok and type(a) == "number" and a > 0.01 then hub.psZero(fr) end
+        elseif hub.psTop(fr) then
+            hub.psHide(fr)
         end
     end
-    if not P.hidden then P.seen = {} end
+end
+function hub.psApply()
+    local P = hub.ps
+    if P.hidden then
+        for _, nf in ipairs(hub.psFrames()) do hub.psHide(nf[2]) end
+        hub.psQuick()
+    else
+        for fr in pairs(P.touched) do
+            P.busy = true
+            pcall(fr.SetAlpha, fr, P.want[fr] or 1)
+            P.busy = false
+        end
+        P.touched = {}
+    end
 end
 function hub.psSet(hide)
     hub.ps.hidden = hide == true
     hub.psApply()
 end
-if type(C_Timer) == "table" and type(C_Timer.NewTicker) == "function" then C_Timer.NewTicker(5, function() if hub.ps.hidden then pcall(hub.psApply) end end) end
+if type(C_Timer) == "table" and type(C_Timer.NewTicker) == "function" then
+    C_Timer.NewTicker(5, function() if hub.ps.hidden then pcall(hub.psApply) end end)
+    C_Timer.NewTicker(0.25, function() if hub.ps.hidden then pcall(hub.psQuick) end end)
+end
 local function hmCheck()
     for _, name in ipairs(HUD_FRAMES) do
         local fr = groupHidden(name) and riderFrame(name)
@@ -627,11 +802,13 @@ local function swDoc()
              atk = atkv, shot = shotNow(), pmode = WC.partyOk == true,
              shotf = hubAtk.shotFight == true, shotfk = hubAtk.shotFightOk,
              ps = hub.ps.hidden == true,
+             -- hub33: the pet's strip (on unless turned off)
+             pet = np.pet ~= false,
              -- hub26: our own party frames / target bar on
              ufp = hub.ufFlag("party"), uft = hub.ufFlag("target"), uftot = hub.ufFlag("tot"), ufhpp = hub.ufFlag("hpp"), ufhpt = hub.ufFlag("hpt"),
              set = { player = hm.g.player ~= nil or nil, target = hm.g.target ~= nil or nil, party = hm.g.party ~= nil or nil, np = np.np ~= nil or nil, prd = np.prd ~= nil or nil, wm = np.wm ~= nil or nil,
                      atk = hubAtk.on ~= nil or nil, shot = hubAtk.shotSet or nil, pmode = WC.partyOk ~= nil or nil,
-                     shotf = hubAtk.shotFight ~= nil or nil, ps = hub.ps.hidden ~= nil or nil,
+                     shotf = hubAtk.shotFight ~= nil or nil, ps = hub.ps.hidden ~= nil or nil, pet = np.pet ~= nil or nil,
                      ufp = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.party) or nil,
                      uft = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.target) or nil,
                      uftot = (type(WC.uf) == "table" and type(WC.uf.chosen) == "table" and WC.uf.chosen.tot) or nil,
@@ -643,6 +820,15 @@ local function cbDoc()
     local have = {}
     for _, name in ipairs(CASTBARS) do if riderFrame(name) then have[#have + 1] = name end end
     return { hidden = cb.hidden, have = #have > 0 and have or nil, fix = cb.fix > 0 and cb.fix or nil }
+end
+
+-- hub43: a copy of the shot log (plain values), nil while empty
+function hub.shotlogDoc()
+    local L = hub.shotlog
+    if type(L) ~= "table" or #L == 0 then return nil end
+    local out = {}
+    for i = 1, #L do local e = L[i]; out[i] = { t = e.t, ev = e.ev, spell = e.spell, cv = e.cv, a6603 = e.a6603, a75 = e.a75, lock = e.lock } end
+    return out
 end
 
 local function document()
@@ -668,6 +854,7 @@ local function document()
         prd = prdDoc(),              -- hub15: HUD mode's own bar's place (Interact's WC.prd), stepped on columns 36 / 37 / 38
         row = hub.row and ROW or nil,
         pad = hub.row and WC.pad and WC.pad.describe() or nil,
+        shotlog = hub.shotlogDoc(),  -- hub43: Combat Auto Shot's last moments (rides along, never a send of its own)
     }
 end
 
@@ -676,7 +863,10 @@ local lastKey = nil
 -- Send if changed (or forced). Does NOT push: a heartbeat ride-along costs no flush of its own.
 local function emitHub(force)
     local doc = document()
+    local log = doc.shotlog
+    doc.shotlog = nil                                            -- hub43: the shot log rides along, it never changes the key
     local key = WC.encode(doc)
+    doc.shotlog = log
     if key == lastKey and not force then return false end
     lastKey = key
     WC.send(WC.encode({ type = "hub", hub = doc }))
@@ -763,6 +953,7 @@ if pcall(function() return atkFrame:RegisterEvent("PLAYER_TARGET_CHANGED") end) 
         local cell = WC.atkCell
         if type(cell) ~= "table" or not atkWanted() then return end
         hubAtk.sent = hubAtk.sent + 1
+        hubAtk.atkgoAt = shotTime()                                   -- hub43: the attack start it brings is ours
         pcall(function() WC.send(WC.encode({ type = "atkgo", n = hubAtk.sent, row = cell.row, col = cell.col, v = HV })) end)
         if type(WC.flush) == "function" then pcall(WC.flush) else WC.push() end
     end)
@@ -917,7 +1108,7 @@ end
 -- The switches: "uisw" UFP_OFF / UFP_ON (our party frames), UFT_OFF / UFT_ON (our target bar), UFTOT_OFF / UFTOT_ON (the bar's target of
 -- target, uf8: off by default); the app keeps each per character.
 do
-    local UF = { party = true, target = true, tot = false, hpp = false, hpt = false, V = "uf14" }
+    local UF = { party = true, target = true, tot = false, hpp = false, hpt = false, V = "uf15" }
     WC.uf = UF
     local PRD = type(WC.prd) == "table" and WC.prd or {}
     local function plainV(v) return v ~= nil and (type(WC.isPlain) ~= "function" or WC.isPlain(v)) end
@@ -955,8 +1146,8 @@ do
         b:SetMinMaxValues(0, 1); b:SetValue(1)
         return b
     end
+    -- hub34 (party_design.md D): every call re-tints (the early return left a colour the game had changed on the fill)
     local function paint(b, r, g, bl)
-        if b.rgb and b.rgb[1] == r and b.rgb[2] == g and b.rgb[3] == bl then return end
         b.rgb = { r, g, bl }
         pcall(function() b:SetStatusBarColor(r, g, bl) end)
         pcall(function() b.fill:SetVertexColor(r, g, bl) end)
@@ -1008,82 +1199,6 @@ do
         fs:SetText("LB " .. (GLYPH_WORD[key] or key))
     end
 
-    -- ---------------------------------------------------------------- THE PARTY FRAMES (a left column, party1..4)
-    local PF = { W = 250, NAME = 20, HP = 20, MP = 9, GAP = 14, X = 24, Y = 250, frames = {} }
-    UF.pf = PF
-    local function partyFrame(i)
-        if PF.frames[i] then return PF.frames[i] end
-        local unit = "party" .. i
-        local f = CreateFrame("Frame", "WowCompanionUFParty" .. i, UIParent)
-        local h = PF.NAME + PF.HP + PF.MP + 6
-        f:SetSize(u(PF.W), u(h))
-        f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", u(PF.X), -u(PF.Y + (i - 1) * (h + PF.GAP)))
-        f:SetFrameStrata("LOW"); f:EnableMouse(false); f:Hide()
-        f.unit = unit
-        f.glyph = f:CreateTexture(nil, "OVERLAY"); f.glyph:SetSize(u(18), u(18)); f.glyph:SetPoint("TOPLEFT", f, "TOPLEFT", 0, 0); f.glyph:Hide()
-        f.lb = text(f, 11); f.lb:SetPoint("LEFT", f.glyph, "RIGHT", u(2), 0)
-        f.name = text(f, 15); f.name:SetPoint("TOPLEFT", f, "TOPLEFT", u(2), -u(1)); f.name:SetJustifyH("LEFT")
-        f.lvl = text(f, 13); f.lvl:SetPoint("TOPRIGHT", f, "TOPRIGHT", -u(2), -u(2)); f.lvl:SetJustifyH("RIGHT")
-        f.hp = bar(f, PF.W, PF.HP); f.hp:SetPoint("TOPLEFT", f, "TOPLEFT", 0, -u(PF.NAME + 2))
-        paint(f.hp, 0.1, 0.8, 0.1)
-        f.mp = bar(f, PF.W, PF.MP); f.mp:SetPoint("TOPLEFT", f.hp, "BOTTOMLEFT", 0, -u(3))
-        f.state = text(f.hp, 13); f.state:SetPoint("CENTER", f.hp, "CENTER", 0, 0)
-        -- the picked member (Party mode) in gold, your target in white: a ring round the bars
-        f.ring = f:CreateTexture(nil, "BACKGROUND", nil, -3)
-        f.ring:SetPoint("TOPLEFT", f.hp, "TOPLEFT", -u(3), u(3)); f.ring:SetPoint("BOTTOMRIGHT", f.mp, "BOTTOMRIGHT", u(3), -u(3))
-        f.ring:SetColorTexture(1, 0.82, 0, 0.9); f.ring:Hide()
-        PF.frames[i] = f
-        return f
-    end
-    -- Party mode's word (PadMap's exports): on, the picked unit, the LB button of each unit
-    local function partyMode()
-        local p = type(WC.padMap) == "table" and WC.padMap.party
-        if type(p) ~= "table" then return false, nil, {} end
-        local on = type(p.on) == "function" and bool(p.on) or false
-        local box = type(p.box) == "function" and call(p.box) or nil
-        local lb = type(p.lb) == "function" and call(p.lb) or nil
-        return on == true, type(box) == "table" and box.u or nil, type(lb) == "table" and lb or {}
-    end
-    function UF.partyCount()
-        if bool(IsInRaid) then return 0 end
-        local n = call(GetNumSubgroupMembers)
-        return plainV(n) and type(n) == "number" and math.min(4, n) or 0
-    end
-    function UF.partyStep()
-        local n = UF.party and UF.partyCount() or 0
-        local pmOn, pick, lb = partyMode()
-        for i = 1, 4 do
-            local f = (i <= n) and partyFrame(i) or PF.frames[i]
-            if f then
-                if i > n then f:Hide()
-                else
-                    local unit = f.unit
-                    setText(f.name, call(UnitName, unit) or "")
-                    local r, g, b = classRGB(unit)
-                    if r then f.name:SetTextColor(r, g, b) else f.name:SetTextColor(1, 0.82, 0) end
-                    local lv = call(UnitLevel, unit)
-                    if plainV(lv) and type(lv) == "number" and lv < 0 then f.lvl:SetText("??") else setText(f.lvl, lv) end
-                    feed(f.hp, f.mp, unit)
-                    local online = bool(UnitIsConnected, unit)
-                    local dead = bool(UnitIsDeadOrGhost, unit)
-                    local ghost = bool(UnitIsGhost, unit)
-                    f.state:SetText(online == false and "Offline" or (ghost and "Ghost") or (dead and "Dead") or "")
-                    local near = bool(UnitInRange, unit)
-                    f:SetAlpha((online == false or near == false) and 0.45 or 1)
-                    -- Party mode: the LB glyph of this member, the picked member's ring; else your target's ring (white)
-                    local key = pmOn and (lb["p" .. i]) or nil
-                    setGlyph(f.glyph, f.lb, key)
-                    if key then f.name:SetPoint("TOPLEFT", f, "TOPLEFT", u(48), -u(1)) else f.name:SetPoint("TOPLEFT", f, "TOPLEFT", u(2), -u(1)) end
-                    local isTarget = bool(UnitIsUnit, unit, "target")
-                    if pmOn and pick == unit then f.ring:SetColorTexture(1, 0.82, 0, 0.9); f.ring:Show()
-                    elseif isTarget then f.ring:SetColorTexture(1, 1, 1, 0.75); f.ring:Show()
-                    else f.ring:Hide() end
-                    f:Show()
-                end
-            end
-        end
-    end
-
     -- ---------------------------------------------------------------- THE TARGET BAR (centred under the compass)
     -- uf3 (the user's sign-off 2026-11-09, layout "A: big level shield"; "the buffs/debuffs need to appear under the bar, and timers should
     -- be small inside of them", "the healthbar frame is like tiny behind the actual colored health bar", "the box for level is too small",
@@ -1092,9 +1207,15 @@ do
     -- rare dragon behind it); the raid marker on the right; combo pips, the cast bar, then the auras UNDER it, their seconds small in a
     -- corner; the colour READ from the target's nameplate (else the game's own nameplate rule, UnitSelectionColor); the target's nameplate
     -- health bar hidden (alpha) while it is targeted. No power bar.
+    -- uf15 (the user, 2026-11-12, on 1.0.26: "the target bars cast bar is too squished into it"): the pips, the cast bar and the auras
+    -- sat 5 px under the bar, inside the HUD rim's lower lip (its visible rim 3 texels + a faint fourth, k = HP / 8 px each, 12 px at
+    -- 1080); now everything under the bar starts LIP_B texels below it plus GAP px, and the stack keeps its own gaps (pips 5, cast 6).
+    -- Hub's HV stays (the party branch's hub42); this section's tag is UF.V.
     local TB = { W = 372, SHIFT = 16, NAME = 20, HP = 24, CP = 6, CAST = 15, LV = 30, ICON = 26, IGAP = 3, DEBUFF_MAX = 8, BUFF_MAX = 6,
-                 TOT_W = 140, TOT_HP = 10, AURA_S = 0.25 }
+                 TOT_W = 140, TOT_HP = 10, AURA_S = 0.25, LIP_B = 4, GAP = 5 }
     UF.tb = TB
+    -- uf15: the space under the health bar's bottom edge before anything stacks there: the rim's visible lower lip + GAP
+    function TB.under() return u(TB.HP / 8) * TB.LIP_B + u(TB.GAP) end
     local function atlas(tex, name)
         if type(PRD.atlasOn) == "function" then return PRD.atlasOn(tex, name) end
         return pcall(function() tex:SetAtlas(name) end)
@@ -1236,6 +1357,445 @@ do
         o.f:Hide()
         return o
     end
+    -- ---------------------------------------------------------------- THE PARTY BLOCK (hub35: party1..4 in the bottom's arrangement)
+    -- hub34 (party_design.md D and the user's decisions 2026-11-11): each row the target bar's own builder (npBar with the HUD rim). A
+    -- 36 px glyph slot always kept (the LB glyph while Party mode is on), the level in a hudBox, the bar, the name above its lip, the
+    -- power under it. Party mode on: a gold ring on the pick (PadMap's box.u, the bottom's box) and a small white chevron at your
+    -- target; off: a white ring on your target. Dead: a grey ground and a skull; offline or out of range (PadMap's one rng): the row at
+    -- 0.45. In a raid: nothing. Follows our party switch (SW_UFP). Beside it an 18 px Select tab ("Top screen: small Select tab (18 px)
+    -- beside the party column, same off/on/not-bound looks as the bottom"). Health and power only through feed (the widget setters);
+    -- every other read plain-checked.
+    -- hub35 (the user, 2026-11-11: "the other 4 party members are in a square shape in the top left"; the adaptive rows): ONLY the party
+    -- members, placed as on the bottom - PadMap's entries (you, the pet while out, party1..4: WC.padMap.party.units) in min(n, 3) rows,
+    -- the bottom max(0, n - 3) shared by two cells; the rows holding no party member are dropped, the rest keep their order and sides.
+    -- A full row's bar spans both columns (W_FULL), a half one column (W_HALF). You and your pet are the HUD's own bars (Trail prd14).
+    -- hub40 (the user, 2026-11-12: "I had someone join my group on an old build and their health bar was a mile long"): that spanning
+    -- bar WAS the mile - one member (or the first rows of 3 / 4) got W_FULL = 510 px, both columns and the gap, wider than the target
+    -- bar (372). Now EVERY bar is one column's bar (W_BAR = COL_W - BAR_X - 30 = 194): a full row is a row alone, left-aligned in the
+    -- left column; the right column only ever holds a shared row's right half. W_HALF / W_FULL stay as names, both W_BAR.
+    local PF = { X = 24, Y = 250, PITCH = 64, SLOT = 36, LV_X = 44, LV_W = 26, BAR_X = 76, W = 228, NAME = 15, NAME_H = 20, HP = 18,
+                 GAP = 2, MP = 7, TAB_GAP = 6, SOLO_RIM = 6, SOLO_PAD = 6, RING_PAD = 10, TAB_W = 22, FADE_S = 0.2, fa = 1, TAB_CAP = 0.3, DIM = 0.45, frames = {}, GOLD = { 1, 0.82, 0 }, SOFT = { 226 / 255, 170 / 255, 80 / 255 },
+                 EDGE = { 140 / 255, 110 / 255, 52 / 255 }, PANEL = { 20 / 255, 17 / 255, 13 / 255 },
+                 COL_W = 300, COL_GAP = 16, W_BAR = 194, W_HALF = 194, W_FULL = 194, cells = {} }
+    UF.pf = PF
+    -- a ring of four edges, recoloured in place (party_design.md: "3 px outside the row's hudFrame")
+    function PF.ring(parent, layer)
+        local r = { t = {} }
+        for i = 1, 4 do r.t[i] = parent:CreateTexture(nil, layer or "OVERLAY", nil, 6); r.t[i]:Hide() end
+        -- hub35 review (2026-11-11, the user's gold ring on the pick): ONE mouse-less area frame, TOPLEFT on tl and BOTTOMRIGHT on br, and
+        -- every edge's two points on that area alone (an edge's two points on two regions clashed: the top edge's right end on the power
+        -- bar's top, the bottom edge's left end on the health bar's bottom)
+        function r.place(tl, br, tlx, tly, brx, bry, px)
+            local t = r.t
+            if not r.area then r.area = CreateFrame("Frame", nil, parent); r.area:EnableMouse(false) end
+            local a = r.area
+            a:ClearAllPoints()
+            a:SetPoint("TOPLEFT", tl, "TOPLEFT", tlx, tly); a:SetPoint("BOTTOMRIGHT", br, "BOTTOMRIGHT", brx, bry)
+            for i = 1, 4 do t[i]:ClearAllPoints() end
+            t[1]:SetPoint("TOPLEFT", a, "TOPLEFT", 0, 0); t[1]:SetPoint("TOPRIGHT", a, "TOPRIGHT", 0, 0); t[1]:SetHeight(px)
+            t[2]:SetPoint("BOTTOMLEFT", a, "BOTTOMLEFT", 0, 0); t[2]:SetPoint("BOTTOMRIGHT", a, "BOTTOMRIGHT", 0, 0); t[2]:SetHeight(px)
+            t[3]:SetPoint("TOPLEFT", a, "TOPLEFT", 0, 0); t[3]:SetPoint("BOTTOMLEFT", a, "BOTTOMLEFT", 0, 0); t[3]:SetWidth(px)
+            t[4]:SetPoint("TOPRIGHT", a, "TOPRIGHT", 0, 0); t[4]:SetPoint("BOTTOMRIGHT", a, "BOTTOMRIGHT", 0, 0); t[4]:SetWidth(px)
+        end
+        function r.show(rr, g, b, a)
+            for i = 1, 4 do r.t[i]:SetColorTexture(rr, g, b, a); r.t[i]:Show() end
+            r.on = true
+        end
+        function r.hide() for i = 1, 4 do r.t[i]:Hide() end; r.on = false end
+        return r
+    end
+    -- hub35: the entries in pick order - PadMap's own list (one truth with the bottom), else you + the party by its plain count
+    function PF.units()
+        local p = type(WC.padMap) == "table" and WC.padMap.party
+        local list = type(p) == "table" and type(p.units) == "function" and call(p.units) or nil
+        local out = {}
+        if type(list) == "table" then
+            for _, x in ipairs(list) do if type(x) == "string" and plainV(x) then out[#out + 1] = x end end
+        end
+        if #out == 0 then
+            out[1] = "player"
+            for i = 1, UF.partyCount() do out[#out + 1] = "party" .. i end
+        end
+        return out
+    end
+    -- hub38: the bottom's arrangement for [units] (PadMap m134; the user, 2026-11-11, after using 1428: "the pet should be to the right of
+    -- the player"): you (+ the pet on your right) share the first row, which the top never draws (the HUD's own bars); the k party
+    -- members fill the rows under it by the adaptive rule among themselves - the first f full rows (f = k up to 2, else 4 - k), the rest
+    -- in pairs, left then right -> { { unit, row, side } } (rows from 0), the row count
+    -- hub42 (the user, 2026-11-12): [at] = where the block stands. "left": ONE column in the top left, one member a row, party1..4 top to
+    -- bottom (side "left"); "hud" (Party mode on): under the HUD bar, two a row - [party1][party2] / [party3][party4] (a lone last
+    -- member on the left). The bottom screen's order: party1..4 by number, whatever order PadMap's list holds them in.
+    function PF.layout(units, at)
+        local party, seen = {}, {}
+        for k = 1, math.min(#units, 6) do
+            local unit = units[k]
+            if type(unit) == "string" and unit:match("^party[1-4]$") and not seen[unit] then seen[unit] = true; party[#party + 1] = unit end
+        end
+        table.sort(party)
+        local cells, rows = {}, 0
+        -- (the user's answer, 2026-11-12: three members = [party1] alone on the first row - one column's bar, under the HP bar's left -
+        -- then [party2][party3]; one [party1], two [party1][party2], four two rows of two)
+        local full = (at == "hud" and #party == 3) and 1 or 0
+        for j, unit in ipairs(party) do
+            local row, side
+            if at == "hud" and j <= full then row, side = j - 1, "left"
+            elseif at == "hud" then
+                local q = j - full - 1
+                row, side = full + math.floor(q / 2), ((q % 2) == 0) and "left" or "right"
+            else row, side = j - 1, "left" end
+            cells[#cells + 1] = { unit = unit, row = row, side = side }
+            if row + 1 > rows then rows = row + 1 end
+        end
+        return cells, rows
+    end
+    -- hub42: the HUD bar's place (Trail prd15 WC.prd.partyGeo, UI units from UIParent's CENTER: x = its HP bar's left, y = the top of the
+    -- room under its bars) - the grid's first column has its bar under the HP bar's left. No Trail: the HUD's default place.
+    function PF.geo()
+        local P = WC.prd
+        local g = type(P) == "table" and type(P.partyGeo) == "function" and call(P.partyGeo) or nil
+        if type(g) == "table" and type(g.x) == "number" and type(g.y) == "number" then return g end
+        return { x = -u(140), y = -u(350 + 57), top = -u(350), h = u(32), fallback = true }
+    end
+    -- party member i's row (1..4): made once, never destroyed; placed by PF.place
+    function PF.frame(i)
+        if PF.frames[i] then return PF.frames[i] end
+        local f = CreateFrame("Frame", "WowCompanionUFParty" .. i, UIParent)
+        f:SetSize(u(PF.BAR_X + PF.W_BAR + 30), u(PF.NAME_H + PF.HP + PF.GAP + PF.MP))
+        f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", u(PF.X), -u(PF.Y + (i - 1) * PF.PITCH))
+        f:SetFrameStrata("LOW"); f:EnableMouse(false); f:Hide()
+        f.unit = "party" .. i
+        f.look = {}
+        -- the bar (the target bar's builder: the HUD rim), the power under it
+        f.hp = npBar(f, PF.W_BAR, PF.HP, "UI-HUD-CoolDownManager-Bar", true)
+        f.hp:SetPoint("TOPLEFT", f, "TOPLEFT", u(PF.BAR_X), -u(PF.NAME_H))
+        f.mp = npBar(f, PF.W_BAR, PF.MP, "UI-HUD-CoolDownManager-Bar", true)
+        f.mp:SetPoint("TOPLEFT", f.hp, "BOTTOMLEFT", 0, -u(PF.GAP))
+        -- the name above the bar's lip (the target bar's rule)
+        f.name = text(f, PF.NAME); f.name:SetJustifyH("LEFT")
+        f.name:SetPoint("BOTTOMLEFT", f.hp, "TOPLEFT", u(2), u(PF.HP / 8) * 3 + u(2))
+        -- the glyph slot (36 px, always kept), the LB glyph in it while Party mode is on
+        f.glyph = f:CreateTexture(nil, "OVERLAY"); f.glyph:SetSize(u(PF.SLOT - 6), u(PF.SLOT - 6))
+        f.glyph:SetPoint("CENTER", f, "TOPLEFT", u(PF.SLOT / 2), -u(PF.NAME_H + (PF.HP + PF.GAP + PF.MP) / 2)); f.glyph:Hide()
+        f.lb = text(f, 11); f.lb:SetPoint("CENTER", f.glyph, "CENTER", 0, 0)
+        -- the level in the HUD art's small box, the skull there when dead
+        f.lvBox = CreateFrame("Frame", nil, f)
+        f.lvBox:SetSize(u(PF.LV_W), u(PF.HP)); f.lvBox:SetPoint("RIGHT", f.hp, "LEFT", -u(6), 0)
+        if not hudBox(f.lvBox, PF.HP) then
+            local g = f.lvBox:CreateTexture(nil, "BACKGROUND"); g:SetAllPoints(f.lvBox); g:SetColorTexture(0.06, 0.055, 0.05, 0.94)
+            edgeBox(f.lvBox, f.lvBox, 1, 0.42, 0.39, 0.33, 1, "BORDER", 0)
+        end
+        f.lvl = text(f.lvBox, 12); f.lvl:SetAllPoints(f.lvBox); f.lvl:SetJustifyH("CENTER"); f.lvl:SetTextColor(1, 0.83, 0.42)
+        f.skull = f.lvBox:CreateTexture(nil, "ARTWORK"); f.skull:SetSize(u(15), u(15)); f.skull:SetPoint("CENTER", f.lvBox, "CENTER", 0, 0); f.skull:Hide()
+        if not atlas(f.skull, "ui-hud-nameplates-levelindicator-skull") then f.skull:SetTexture("Interface\\TargetingFrame\\UI-TargetingFrame-Skull") end
+        -- dead: a grey ground over the bar
+        f.deadG = f.hp:CreateTexture(nil, "OVERLAY", nil, 5); f.deadG:SetAllPoints(f.hp); f.deadG:SetColorTexture(0.5, 0.5, 0.5, 0.35); f.deadG:Hide()
+        -- the rings: 3 px outside the HUD frame (its lip: 3 texels up / left, 7 right, 8 down, the power bar's under the bar's)
+        local kh, km = u(PF.HP / 8), u(PF.MP / 8)
+        f.ring = PF.ring(f)
+        f.ring.place(f.hp, f.mp, -3 * kh - u(3), 3 * kh + u(3), 7 * kh + u(3), -8 * km - u(3), u(2))
+        -- your target, while Party mode is on: a small white chevron right of the bar (the pick is the gold ring)
+        f.chev = f:CreateTexture(nil, "OVERLAY"); f.chev:SetSize(u(12), u(14)); f.chev:SetPoint("LEFT", f.hp, "RIGHT", 7 * kh + u(5), 0)
+        f.chev:SetTexture("Interface\\ChatFrame\\ChatFrameExpandArrow"); pcall(function() f.chev:SetTexCoord(1, 0, 0, 1) end)
+        f.chev:SetVertexColor(1, 1, 1); f.chev:Hide()
+        f.look.k = K
+        PF.frames[i] = f
+        return f
+    end
+    -- hub40: a row made at another scale (K recomputed at PLAYER_ENTERING_WORLD after it was built): its inner offsets and sizes again
+    -- at today's K (the bar's start, the power under it, the name, the glyph slot, the level box, the ring, the chevron, the fonts)
+    function PF.rescale(f)
+        if f.look.k == K then return end
+        f.look.k = K
+        local kh, km = u(PF.HP / 8), u(PF.MP / 8)
+        f.hp:ClearAllPoints(); f.hp:SetPoint("TOPLEFT", f, "TOPLEFT", u(PF.BAR_X), -u(PF.NAME_H))
+        f.mp:ClearAllPoints(); f.mp:SetPoint("TOPLEFT", f.hp, "BOTTOMLEFT", 0, -u(PF.GAP))
+        f.name:ClearAllPoints(); f.name:SetPoint("BOTTOMLEFT", f.hp, "TOPLEFT", u(2), kh * 3 + u(2))
+        f.glyph:SetSize(u(PF.SLOT - 6), u(PF.SLOT - 6)); f.glyph:ClearAllPoints()
+        f.glyph:SetPoint("CENTER", f, "TOPLEFT", u(PF.SLOT / 2), -u(PF.NAME_H + (PF.HP + PF.GAP + PF.MP) / 2))
+        f.lvBox:SetSize(u(PF.LV_W), u(PF.HP)); f.lvBox:ClearAllPoints(); f.lvBox:SetPoint("RIGHT", f.hp, "LEFT", -u(6), 0)
+        f.skull:SetSize(u(15), u(15))
+        f.ring.place(f.hp, f.mp, -3 * kh - u(3), 3 * kh + u(3), 7 * kh + u(3), -8 * km - u(3), u(2))
+        f.chev:SetSize(u(12), u(14)); f.chev:ClearAllPoints(); f.chev:SetPoint("LEFT", f.hp, "RIGHT", 7 * kh + u(5), 0)
+        pcall(function()
+            f.name:SetFont(FONT, u(PF.NAME), "OUTLINE"); f.lb:SetFont(FONT, u(11), "OUTLINE"); f.lvl:SetFont(FONT, u(12), "OUTLINE")
+        end)
+    end
+    -- hub35: a row's place in the block (its row, its side) and its bar's width; only when it changed
+    -- hub40 (the user, 2026-11-12, "a mile long"): one column's bar whatever the side (min(W_BAR, the column's room), never W_FULL's
+    -- old two-column span), and the place keyed on K too, so a scale recomputed at PLAYER_ENTERING_WORLD re-sizes a row made before it
+    -- (its size, its two bars' width AND height, all from today's K; before, a row kept the scale it was made with until it moved)
+    -- hub42: [g] = PF.geo() while the block stands under the HUD (Party mode), nil in the top-left column; our own plain frames only (no
+    -- secure frame is moved: this runs in fights too)
+    function PF.place(f, row, side, g)
+        local key = row .. side .. "@" .. tostring(K) .. (g and string.format(":%.2f,%.2f", g.x, g.y) or "")
+        if f.look.place == key then return end
+        f.look.place, f.look.row, f.look.side, f.look.at = key, row, side, g and "hud" or "left"
+        local w = math.min(PF.W_BAR, PF.COL_W - PF.BAR_X - 30)
+        local dx = (side == "right") and (PF.COL_W + PF.COL_GAP) or 0
+        f:ClearAllPoints()
+        if g then f:SetPoint("TOPLEFT", UIParent, "CENTER", g.x - u(PF.BAR_X) + u(dx), g.y - u(row * PF.PITCH))
+        else f:SetPoint("TOPLEFT", UIParent, "TOPLEFT", u(PF.X + dx), -u(PF.Y + row * PF.PITCH)) end
+        f:SetSize(u(PF.BAR_X + w + 30), u(PF.NAME_H + PF.HP + PF.GAP + PF.MP))
+        f.hp:SetSize(u(w), u(PF.HP)); f.mp:SetSize(u(w), u(PF.MP))
+        PF.rescale(f)
+        f.look.w = w
+    end
+    -- Party mode's word (PadMap's exports): on, the picked unit, the LB button of each unit, Select's state, the one range answer
+    function PF.mode()
+        local p = type(WC.padMap) == "table" and WC.padMap.party
+        if type(p) ~= "table" then return { on = false, lb = {} } end
+        local box = type(p.box) == "function" and call(p.box) or nil
+        local lb = type(p.lb) == "function" and call(p.lb) or nil
+        return { on = type(p.on) == "function" and bool(p.on) == true, pick = type(box) == "table" and box.u or nil,
+                 lb = type(lb) == "table" and lb or {}, sel = type(p.selWant) == "function" and call(p.selWant) or nil,
+                 rng = type(p.rng) == "function" and p.rng or nil }
+    end
+    function UF.partyCount()
+        if bool(IsInRaid) then return 0 end
+        local n = call(GetNumSubgroupMembers)
+        return plainV(n) and type(n) == "number" and math.min(4, n) or 0
+    end
+    -- hub35: what shows - the party members' cells (none: a raid, our switch off, solo) and the tab's rows (the block's; one while solo
+    -- with Party mode on, so the tab still says it is on)
+    -- hub42: laid out where the block stands now (PF.at; it moves only while unseen, PF.fadeTick); the tab only under the HUD
+    function UF.partyCells(pm)
+        if not UF.party or bool(IsInRaid) then return {}, 0, 0 end
+        local cells, rows = PF.layout(PF.units(), PF.at)
+        local tab = 0
+        if PF.at == "hud" then tab = math.max(rows, 1) end
+        return cells, rows, tab
+    end
+    function PF.row(f, pm)
+        local unit = f.unit
+        setText(f.name, call(UnitName, unit) or "")
+        local r, g, b = classRGB(unit)
+        if r then f.name:SetTextColor(r, g, b) else f.name:SetTextColor(1, 0.82, 0) end
+        local lv = call(UnitLevel, unit)
+        if plainV(lv) and type(lv) == "number" and lv < 0 then f.lvl:SetText("??") else setText(f.lvl, lv) end
+        -- the health in the HUD's own green, set every step (the colour is never left to a past paint)
+        local hc = type(PRD.HEALTH_RGB) == "table" and PRD.HEALTH_RGB or { 0.12, 0.86, 0.12 }
+        paint(f.hp, hc[1], hc[2], hc[3])
+        feed(f.hp, f.mp, unit)
+        local online = bool(UnitIsConnected, unit)
+        local dead = bool(UnitIsDeadOrGhost, unit)
+        local near = nil
+        if unit ~= "player" and pm.rng then
+            local v = call(pm.rng, unit)
+            if v == false then near = false end
+        end
+        f.look.dead = dead == true
+        if dead then f.deadG:Show(); f.skull:Show(); f.lvl:Hide() else f.deadG:Hide(); f.skull:Hide(); f.lvl:Show() end
+        f.look.dim = online == false or near == false
+        f:SetAlpha((f.look.dim and PF.DIM or 1) * (PF.fa or 1))                -- hub42: times the block's fade
+        -- the LB glyph in its slot while Party mode is on (the slot stays, empty, while it is off)
+        local key = pm.on and (pm.lb["p" .. unit:sub(6)]) or nil
+        setGlyph(f.glyph, f.lb, key)
+        f.look.glyph = key
+        local isTarget = bool(UnitIsUnit, unit, "target")
+        if pm.on and pm.pick == unit then f.ring.show(PF.GOLD[1], PF.GOLD[2], PF.GOLD[3], 0.95); f.look.ring = "gold"
+        elseif not pm.on and isTarget then f.ring.show(1, 1, 1, 0.75); f.look.ring = "white"
+        else f.ring.hide(); f.look.ring = nil end
+        f.look.chev = (pm.on and isTarget) == true
+        if f.look.chev then f.chev:Show() else f.chev:Hide() end
+        f:Show()
+    end
+    -- hub38 THE GAME'S SIDE TAB (the user, 2026-11-11: "It needs to use wow assets and sit outside of the player brand look more like its
+    -- attached to the side of the screen"): [name]'s atlas in three slices on [t] (the top and bottom TAB_CAP of the art at their own
+    -- aspect, the middle stretched), so a tall narrow tab keeps the art's bevelled corners; the art's open (left) side on the screen's
+    -- edge. -> the slices, else one stretched texture (no atlas info), else an empty list (no art: the glyphs alone, never a drawn box)
+    function PF.sideTab(t, name, layer, sub)
+        local info
+        if type(C_Texture) == "table" and type(C_Texture.GetAtlasInfo) == "function" then
+            local ok, i = pcall(C_Texture.GetAtlasInfo, name)
+            if ok and type(i) == "table" and i.file and type(i.leftTexCoord) == "number" and tonumber(i.width) and tonumber(i.height) then info = i end
+        end
+        if not info then
+            local x = t:CreateTexture(nil, layer, nil, sub)
+            if atlas(x, name) then x:SetAllPoints(t); return { x } end
+            x:Hide()
+            return {}
+        end
+        local L, R, Tt, B, c = info.leftTexCoord, info.rightTexCoord, info.topTexCoord, info.bottomTexCoord, PF.TAB_CAP
+        local capR = (tonumber(info.height) * c) / tonumber(info.width)
+        local capPx = u(PF.TAB_W) * capR
+        local function piece(r0, r1)
+            local x = t:CreateTexture(nil, layer, nil, sub)
+            x:SetTexture(info.file)
+            x:SetTexCoord(L, R, Tt + (B - Tt) * r0, Tt + (B - Tt) * r1)
+            return x
+        end
+        local top, bot, mid = piece(0, c), piece(1 - c, 1), piece(c, 1 - c)
+        top:SetPoint("TOPLEFT", t, "TOPLEFT", 0, 0); top:SetPoint("TOPRIGHT", t, "TOPRIGHT", 0, 0); top:SetHeight(capPx)
+        bot:SetPoint("BOTTOMLEFT", t, "BOTTOMLEFT", 0, 0); bot:SetPoint("BOTTOMRIGHT", t, "BOTTOMRIGHT", 0, 0); bot:SetHeight(capPx)
+        mid:SetPoint("TOPLEFT", top, "BOTTOMLEFT", 0, 0); mid:SetPoint("BOTTOMRIGHT", bot, "TOPRIGHT", 0, 0)
+        top.capR, bot.capR = capR, capR
+        return { top, mid, bot }
+    end
+    PF.TAB_ART, PF.TAB_LIT = "common-sidetab-c60-2x", "common-sidetab-selected-c60-2x"
+    -- THE TOP SELECT TAB (party_design.md E, decision 2): left of the column, its full height; off (Select bound), on (lit, the B glyph
+    -- under the Select glyph), not bound (the glyph at 40 %, a lock); no words. hub38: the game's side tab flush on the screen's left
+    -- edge (x 0), lit by the game's selected side tab over it; no drawn fill or edge
+    function PF.tabMake()
+        if PF.tab then return PF.tab end
+        local t = CreateFrame("Frame", "WowCompanionUFPartyTab", UIParent)
+        t:SetFrameStrata("LOW"); t:EnableMouse(false); t:Hide()
+        t:SetWidth(u(PF.TAB_W))                                         -- (hub42: placed by PF.tabStep, beside the block under the HUD)
+        t.base = PF.sideTab(t, PF.TAB_ART, "BACKGROUND", 0)
+        t.lit = PF.sideTab(t, PF.TAB_LIT, "BORDER", 1)
+        t.sel = t:CreateTexture(nil, "ARTWORK"); t.sel:SetSize(u(PF.TAB_W - 2), u(PF.TAB_W - 2)); t.sel:SetPoint("TOP", t, "TOP", 0, -u(4))
+        t.selW = text(t, 11); t.selW:SetPoint("CENTER", t.sel, "CENTER", 0, 0)
+        t.b = t:CreateTexture(nil, "ARTWORK"); t.b:SetSize(u(PF.TAB_W - 6), u(PF.TAB_W - 6)); t.b:SetPoint("TOP", t.sel, "BOTTOM", 0, -u(3)); t.b:Hide()
+        t.lock = t:CreateTexture(nil, "OVERLAY"); t.lock:SetSize(u(12), u(14)); t.lock:SetPoint("BOTTOM", t, "BOTTOM", 0, u(3)); t.lock:Hide()
+        if not atlas(t.lock, "Forge-Lock") then t.lock:SetTexture("Interface\\LFGFrame\\UI-LFG-ICON-LOCK") end
+        local db = _G.WowCompanionSpellsDB
+        local plain = type(db) == "table" and db.padLayout == "plain"
+        local names = plain and { "Gamepad_Ltr_View_64", "Gamepad_Ltr_Minus_64", "Gamepad_Gen_Minus_64" }
+                             or { "Gamepad_Rev_Minus_64", "Gamepad_Gen_Minus_64" }
+        t.hasSel = false
+        for _, a in ipairs(names) do if atlas(t.sel, a) then t.hasSel = true break end end
+        if not t.hasSel then t.sel:Hide(); t.selW:SetText("-") end
+        local bk = glyphAtlas("PAD2")
+        t.hasB = false
+        for _, a in ipairs(bk) do if atlas(t.b, a) then t.hasB = true break end end
+        t.k = K
+        PF.tab = t
+        return t
+    end
+    -- hub41 (the user, 2026-11-12, the top screen's party renders): the tab made at another scale (K recomputed at PLAYER_ENTERING_WORLD
+    -- after it was built) - its place beside the first row, its width, the side tab's cap slices, the glyphs, the lock again at today's K
+    function PF.tabScale(t)
+        if t.k == K then return end
+        t.k = K
+        t.at = nil                                                      -- (its place again at today's K: PF.tabStep)
+        t:SetWidth(u(PF.TAB_W))
+        for _, parts in ipairs({ t.base, t.lit }) do
+            local top, bot = parts[1], parts[3]
+            if top and bot and top.capR then top:SetHeight(u(PF.TAB_W) * top.capR); bot:SetHeight(u(PF.TAB_W) * bot.capR) end
+        end
+        t.sel:SetSize(u(PF.TAB_W - 2), u(PF.TAB_W - 2)); t.sel:ClearAllPoints(); t.sel:SetPoint("TOP", t, "TOP", 0, -u(4))
+        t.b:SetSize(u(PF.TAB_W - 6), u(PF.TAB_W - 6)); t.b:ClearAllPoints(); t.b:SetPoint("TOP", t.sel, "BOTTOM", 0, -u(3))
+        t.lock:SetSize(u(12), u(14)); t.lock:ClearAllPoints(); t.lock:SetPoint("BOTTOM", t, "BOTTOM", 0, u(3))
+        pcall(function() t.selW:SetFont(FONT, u(11), "OUTLINE") end)
+    end
+    -- hub42 (the user's pick B, 2026-11-12): only while the block stands under the HUD (Party mode), at its LEFT edge - the tab's right
+    -- side TAB_GAP left of the first column's glyph slot, its top level with the first row's name, the rows' full height (one row's
+    -- while solo); no tab in the top-left column (Party mode off) and none on the screen's edge any more
+    function PF.tabStep(rows, pm, g)
+        local want = rows > 0 and WC.partyOk == true and PF.at == "hud" and g ~= nil
+        if not want then
+            if PF.tab then PF.tab:Hide() end
+            PF.tabLook = nil
+            return
+        end
+        local t = PF.tabMake()
+        PF.tabScale(t)
+        -- solo (no party row: the user's answer, 2026-11-12): beside the [me][pet] row instead - TAB_GAP + the HP bar's left rim left of
+        -- it, the HUD bars' height and a little (SOLO_PAD over and under)
+        local solo = (PF.rows or 0) == 0
+        local top = solo and type(g.top) == "number" and type(g.h) == "number"
+        local at = string.format("%.2f,%.2f,%s@%s", g.x, g.y, top and string.format("%.2f", g.top) or "-", tostring(K))
+        if t.at ~= at then
+            t.at = at
+            t:ClearAllPoints()
+            if top then t:SetPoint("TOPRIGHT", UIParent, "CENTER", g.x - u(PF.TAB_GAP + PF.SOLO_RIM), g.top + u(PF.SOLO_PAD))
+            else t:SetPoint("TOPRIGHT", UIParent, "CENTER", g.x - u(PF.BAR_X + PF.TAB_GAP), g.y - u(PF.NAME_H - 4)) end
+        end
+        if top then t:SetHeight(g.h + u(2 * PF.SOLO_PAD))
+        else t:SetHeight(u(rows * PF.PITCH - (PF.PITCH - PF.HP - PF.GAP - PF.MP) + 4)) end
+        t.solo = top and true or false
+        t:SetAlpha(PF.fa or 1)
+        -- (lit through its fade out too: Party mode just went off, the block leaving)
+        local look = (pm.on or PF.fdir == -1) and "on" or (pm.sel == "bound" and "off" or "unbound")
+        if look ~= PF.tabLook then
+            PF.tabLook = look
+            -- hub38: lit = the game's selected side tab over the plain one; off / not bound: the plain one alone, dimmer while not bound
+            for _, x in ipairs(t.base) do x:SetAlpha(look == "unbound" and 0.6 or 1); x:Show() end
+            for _, x in ipairs(t.lit) do if look == "on" then x:Show() else x:Hide() end end
+            t.sel:SetAlpha(look == "unbound" and 0.4 or 1); t.selW:SetAlpha(look == "unbound" and 0.4 or 1)
+            if look == "on" and t.hasB then t.b:Show() else t.b:Hide() end
+            if look == "unbound" then t.lock:Show() else t.lock:Hide() end
+        end
+        t:Show()
+    end
+    -- hub42: draw the block where it stands (PF.at), at the fade's alpha; under the HUD it tells Trail the room it takes (prd15
+    -- WC.prd.partyRoom: the HUD's aura row moves under it, as it moved under the pet strip)
+    function PF.draw(pm)
+        local cells, rows, tab = UF.partyCells(pm)
+        -- (a re-place under the HUD waits for the fade's bottom: the held place until then)
+        local g = (PF.at == "hud") and ((PF.regeo and PF.g) or PF.geo()) or nil
+        local at = {}
+        for _, c in ipairs(cells) do at[tonumber(c.unit:sub(6))] = c end
+        for i = 1, 4 do
+            local c = at[i]
+            local f = c and PF.frame(i) or PF.frames[i]
+            if f then
+                if c then PF.place(f, c.row, c.side, g); PF.row(f, pm) else f:Hide() end
+            end
+        end
+        PF.cells, PF.rows, PF.g = cells, rows, g
+        PF.tabStep(tab, pm, g)                                           -- (PF.rows set first: the solo tab reads it)
+    end
+    -- the room the rows WILL take under the HUD (from the moment Party mode is wanted, so Trail's on-screen guard knows its lift before
+    -- the fade's bottom): the rows' height and the last row's ring under it (RING_PAD); 0 out of Party mode / solo / a raid / switched off
+    function PF.roomStep()
+        local rows = 0
+        if PF.want == "hud" and UF.party and not bool(IsInRaid) then
+            local _, r = PF.layout(PF.units(), "hud")
+            rows = r
+        end
+        local room = rows > 0 and u(rows * PF.PITCH - (PF.PITCH - PF.NAME_H - PF.HP - PF.GAP - PF.MP) + PF.RING_PAD) or 0
+        if room ~= PF.room then
+            PF.room = room
+            local P = WC.prd
+            if type(P) == "table" and type(P.partyRoom) == "function" then pcall(P.partyRoom, room) end
+        end
+    end
+    local function geoMoved(a, b)
+        if not (a and b) then return false end
+        return math.abs(a.x - b.x) > 0.01 or math.abs(a.y - b.y) > 0.01 or math.abs((a.top or 0) - (b.top or 0)) > 0.01
+    end
+    function PF.anyShown()
+        for i = 1, 4 do local f = PF.frames[i]; if f and f:IsShown() then return true end end
+        return PF.tab ~= nil and PF.tab:IsShown() == true
+    end
+    -- hub42 THE SEAMLESS MOVE (the user, 2026-11-12: "fade out of the left column and fade back in UNDER the player's HUD bar"): the block
+    -- fades out (FADE_S), moves while unseen, fades in (FADE_S); the reverse when Party mode goes off. Alpha only, on our own plain
+    -- frames (allowed in a fight); a turn back mid-fade fades in where it stands. Nothing shown: it moves at once.
+    function PF.fadeTick(el)
+        if not PF.fdir then return end
+        PF.fa = (PF.fa or 1) + PF.fdir * (tonumber(el) or 0) / PF.FADE_S
+        if PF.fdir < 0 and PF.fa <= 0 then
+            PF.fa, PF.fdir = 0, 1
+            PF.at = PF.want or PF.at
+            PF.regeo = nil
+            PF.draw(PF.mode())                                           -- moved while unseen
+        elseif PF.fdir > 0 and PF.fa >= 1 then
+            PF.fa, PF.fdir = 1, nil
+        end
+        for i = 1, 4 do
+            local f = PF.frames[i]
+            if f and f:IsShown() then f:SetAlpha((f.look.dim and PF.DIM or 1) * PF.fa) end
+        end
+        if PF.tab and PF.tab:IsShown() then PF.tab:SetAlpha(PF.fa) end
+    end
+    function UF.partyStep()
+        local pm = PF.mode()
+        PF.want = (pm.on and WC.partyOk == true) and "hud" or "left"
+        if PF.at == nil then PF.at = PF.want end
+        PF.roomStep()                                                    -- (before the geometry: the guard's lift reads it)
+        if PF.want ~= PF.at then
+            if PF.fdir ~= -1 then
+                if PF.anyShown() then PF.fdir = -1
+                else PF.at, PF.fa, PF.fdir = PF.want, 0, 1 end              -- nothing shown: moved at once, faded in there
+            end
+        elseif PF.fdir == -1 and not PF.regeo then
+            PF.fdir = 1                                                  -- turned back mid-fade: in again where it stands
+        elseif PF.at == "hud" and not PF.regeo and geoMoved(PF.g, PF.geo()) and PF.anyShown() then
+            PF.regeo, PF.fdir = true, -1                                 -- the HUD's place changed (the guard's lift, the scale, the pips): out, re-placed, in
+        end
+        PF.draw(pm)
+    end
+
     local function buildTarget()
         if TB.f then return TB.f end
         local f = CreateFrame("Frame", "WowCompanionUFTarget", UIParent)
@@ -1280,7 +1840,7 @@ do
         f.prompt = pr
         -- combo points: a thin pip strip right under the bar (0..max with the gaps drawn over)
         f.cp = npBar(f, TB.W * 0.4, TB.CP, "UI-HUD-CoolDownManager-Bar", false)
-        f.cp:SetPoint("TOP", f.hp, "BOTTOM", 0, -u(5)); paint(f.cp, 1, 0.82, 0.1); f.cp:Hide()
+        f.cp:SetPoint("TOP", f.hp, "BOTTOM", 0, -TB.under()); paint(f.cp, 1, 0.82, 0.1); f.cp:Hide()
         f.cpGaps = {}
         -- the cast bar under it, in the game's casting bar fill
         f.cast = npBar(f, TB.W - TB.CAST - 8, TB.CAST, "ui-castingbar-filling-standard", false)
@@ -1448,16 +2008,17 @@ do
         return out
     end
     -- below the bar: the combo pips, the cast bar, then the auras (the stack closes up when a part is not shown)
+    -- uf15: from the bar's top, clear of its rim's lower lip (TB.under) - not 5 px into it
     local function underLayout(f)
-        local y = TB.HP + 5
-        if f.cp:IsShown() then y = y + TB.CP + 5 end
-        f.cast:ClearAllPoints(); f.cast:SetPoint("TOPRIGHT", f.hp, "TOPRIGHT", 0, -u(y))
-        if f.casting then y = y + TB.CAST + 6 end
-        f.auraY = -u(y)
+        local y = u(TB.HP) + TB.under()
+        if f.cp:IsShown() then y = y + u(TB.CP + 5) end
+        f.cast:ClearAllPoints(); f.cast:SetPoint("TOPRIGHT", f.hp, "TOPRIGHT", 0, -y)
+        if f.casting then y = y + u(TB.CAST + 6) end
+        f.auraY = -y
     end
     local function putAuras(objs, list, fromRight)
         local step = u(TB.ICON + TB.IGAP)
-        local y = TB.f.auraY or -u(TB.HP + 5)
+        local y = TB.f.auraY or -(u(TB.HP) + TB.under())
         for i, o in ipairs(objs) do
             local a = list[i]
             if not a then o.f:Hide()
@@ -1682,6 +2243,7 @@ do
             local now, c = GetTime() * 1000, TB.f.chan
             pcall(function() TB.f.cast:SetValue(c and (c[1] + c[2] - now) or now) end)
         end
+        if UF.pf and UF.pf.fdir then pcall(UF.pf.fadeTick, el) end     -- hub42: the party block's fade, every frame
         acc = acc + (el or 0)
         if acc < 0.1 then return end
         acc = 0

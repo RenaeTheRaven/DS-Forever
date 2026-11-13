@@ -27,19 +27,50 @@ import android.view.ViewConfiguration
  */
 class SettingsView(context: Context, private val onReload: () -> Unit) : View(context) {
 
-    /** the tab shown (the room sets it) */
-    var tab: SettingsTabs.Tab = SettingsTabs.Tab.HOME
+    /** the tab shown, for a view that draws a whole tab ([only] null: each block under its own heading, as before the six tabs) */
+    var tab: SettingsTabs.Tab = SettingsTabs.Tab.GENERAL
         set(v) { if (field != v) { field = v; requestLayout(); invalidate() } }
+    /**
+     * THE SIX TABS' FOLDING GROUPS (the user's approved layout, 2026-11-12): the room draws each group's SettingsView rows with a SLICE
+     * of this view ([slice]) that draws ONLY [only]'s blocks (no block heading: the group's folding heading is the room's, except a
+     * [SettingsTabs.Block.subHead] block's own sub-heading, the wheels'). A slice takes its host's wiring ([hub]: the logins, the
+     * report, the picker, Smart Y's taps ...), and the host's invalidate / requestLayout / partyChanged / onSmartAck reach every slice.
+     */
+    var only: Set<SettingsTabs.Block>? = null
+        set(v) { field = v; requestLayout(); invalidate() }
+    private fun blocksHere(): List<SettingsTabs.Block> =
+        only?.let { o -> SettingsTabs.Block.values().filter { it in o && SettingsTabs.shown(it) } } ?: SettingsTabs.viewBlocks(tab)
+    /** a block's own heading is drawn: every block in a whole-tab view; in a slice only a sub-headed one (the wheels) */
+    private fun headed(b: SettingsTabs.Block): Boolean = only == null || b.subHead
+    /** this view has something to draw on [t] (a whole-tab view) */
+    fun hasBlocks(t: SettingsTabs.Tab): Boolean = SettingsTabs.viewBlocks(t).isNotEmpty()
+
+    /** the view whose wiring this slice uses (null = its own: the host's view) */
+    private var hub: SettingsView? = null
+    /** the slices made from this view (the host's): its invalidate / requestLayout and the host's calls reach them */
+    private var slices: ArrayList<SettingsView>? = null
+    /** a view drawing only [blocks], wired through this one (the room's groups) */
+    fun slice(blocks: Set<SettingsTabs.Block>): SettingsView = SettingsView(context, onReload).also { s ->
+        s.hub = this
+        s.only = blocks
+        (slices ?: ArrayList<SettingsView>().also { slices = it }).add(s)
+    }
+    /** the slices made from this view (the room's) */
+    fun sliceViews(): List<SettingsView> = slices?.toList() ?: emptyList()
+
+    override fun invalidate() { super.invalidate(); slices?.forEach { it.invalidate() } }
+    override fun postInvalidate() { super.postInvalidate(); slices?.forEach { it.postInvalidate() } }
+    override fun requestLayout() { super.requestLayout(); slices?.forEach { it.requestLayout() } }
 
     private val pFill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 2f }
     private val pTitle = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 44f; color = Theme.gold; typeface = Typeface.DEFAULT_BOLD
     }
-    private val pSection = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 32f; color = Theme.gold }   // a heading, in Morpheus
-    private val pSubHead = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 26f; color = Theme.gold }   // a block under [SettingsTabs.HOME_MODULES]
-    private val pLabel = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 31f; color = Theme.text }
-    private val pSub = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; color = Theme.textDim }
+    private val pSection by themed { Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 32f; color = Theme.gold } }   // a heading, in Morpheus
+    private val pSubHead by themed { Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 26f; color = Theme.gold } }   // a wheel's sub-heading inside its group
+    private val pLabel by themed { Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 31f; color = Theme.text } }
+    private val pSub by themed { Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 22f; color = Theme.textDim } }
     private val pBtn = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = 27f; textAlign = Paint.Align.CENTER; typeface = Typeface.DEFAULT_BOLD
     }
@@ -57,13 +88,21 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
      * the host's login prompt.
      */
     var loginRow = false
-        set(v) { if (field != v) { field = v; requestLayout(); invalidate() } }
+        get() = hub?.loginRow ?: field
+        set(v) { if (field != v) { field = v; requestLayout(); invalidate(); onContent?.invoke() } }
+    /** a row that decides whether a group shows came or went (the login row): the room shows / hides the group */
+    var onContent: (() -> Unit)? = null
     var loginSaved: () -> Boolean = { false }
+        get() = hub?.loginSaved ?: field
     var onLogin: () -> Unit = {}
+        get() = hub?.onLogin ?: field
     /** "Send a problem report" (board f-problem-report): the host opens the report page; [onReportSendNow] while recording; the note */
     var onReport: () -> Unit = {}
+        get() = hub?.onReport ?: field
     var onReportSendNow: () -> Unit = {}
+        get() = hub?.onReportSendNow ?: field
     var onReportOpenSaved: () -> Unit = {}
+        get() = hub?.onReportOpenSaved ?: field
     private var btnReport = RectF()
     private var btnStream = RectF()
     private var btnReportDismiss = RectF()
@@ -72,11 +111,14 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private val segLayout = Array(LAYOUTS.size) { RectF() }
     private val segLocation = Array(LOCATIONS.size) { RectF() }
     private val segChat = Array(CHAT_INPUTS.size) { RectF() }
-    private val segQt = Array(4) { RectF() }
+    private val segQt = Array(2) { RectF() }                          // Vanilla / Polestar (the user, 2026-11-12: SafePath, QuestTrail gone)
+    private val segGuide = Array(2) { RectF() }                       // Add-ons > Polestar quest guide On / Off (2026-11-12)
+    private var btnGuidePending = RectF()                             // its Restart game / Try again
     private val segDanger = Array(3) { RectF() }
     private val segFog = Array(2) { RectF() }
     private val segPsTop = Array(2) { RectF() }          // hub31: Polestar on the top screen, Show / Hide
     private val segLang = Array(Tr.LANGS.size) { RectF() }          // 2026-11-07: Settings > System > Language
+    private val segTheme = Array(Theme.presets.size) { RectF() }    // 2026-11-12: Settings > System > Theme (one tile a preset)
     private val segLight = Array(2) { RectF() }
     private val segLowGfx = Array(2) { RectF() }                      // 2026-11-08: Settings > System > Low-memory graphics                       // 1.0.17: Settings > Performance > Lighter mode
     /** Map > Indoor maps: build in the background On / Off (Settings.indoorBuild; b-interiors-stutter) */
@@ -90,6 +132,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** Route data's "Review paths" (b-safepath-review): the host opens SafePath's review over this room */
     private var btnRouteReview = RectF()
     var onRouteReview: () -> Unit = {}
+        get() = hub?.onRouteReview ?: field
     private var deferredOpen = false
     private var progress: IndoorScheduler.Status? = null
     private val LIST_LINE = 38f
@@ -129,9 +172,12 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
      * the next game start.
      */
     var onChooseDll: () -> Unit = {}
+        get() = hub?.onChooseDll ?: field
     var gameRunning: () -> Boolean = { false }
+        get() = hub?.gameRunning ?: field
     /** "Restart the game" (the launcher's restart: close, wait, Play again; SetupBridge.restartGame) */
     var onRestart: () -> Unit = {}
+        get() = hub?.onRestart ?: field
     private var btnDll = RectF()
     private var btnRestart = RectF()
     /** the frame-generation rows the last measure counted ([fgRows]) */
@@ -169,6 +215,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private val addonOptionSegs = LinkedHashMap<String, Array<RectF>>()
 
     init {
+        Theme.init(context)
+        Theme.onChange { postInvalidate() }
         ThirdPartyAddons.init(context)
         ThirdPartyAddons.onChange { postInvalidate() }
         Settings.onChange { postInvalidate() }
@@ -210,7 +258,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     fun focusTargets(): List<RectF> =
         (listOf(btnReload) + (if (loginRow) listOf(btnLogin) else emptyList()) + listOf(btnReport, btnReportDismiss, btnStream) +
             listOf(btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus) + segQt.toList() + segPsTop.toList() + segPq.flatMap { it.toList() } + segDanger.toList() + segFog.toList() + segChat.toList() +
-            segLang.toList() + segLight.toList() + segLocation.toList() + segLayout.toList() + segPauseOpen.toList() + segPausePick.toList() + segOpen.toList() + segPick.toList() +
+            segTheme.toList() + segLang.toList() + segLight.toList() + segLocation.toList() + segLayout.toList() + segPauseOpen.toList() + segPausePick.toList() + segOpen.toList() + segPick.toList() +
             // test40 ("I can't press down ... even though it appears like there are options below"): the spell wheel's and the class
             // radials' segments were drawn but never listed, so the cursor stopped at the item wheel
             segSpellOpen.toList() + segSpellPick.toList() + segClassLOpen.toList() + segClassLPick.toList() + segClassROpen.toList() +
@@ -228,7 +276,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     fun isReload(r: RectF): Boolean = !btnReload.isEmpty && r == btnReload
 
     /** the Add-ons tab's controls, in reading order (each module's box, then each option's two segments) */
-    private fun addonFocus(): List<RectF> = listOf(addonRestart) + addonCoreBtn.values.toList() + addonSettingsBtn.values.toList() + addonModuleBoxes.values.toList() +
+    private fun addonFocus(): List<RectF> = segGuide.toList() + listOf(btnGuidePending, addonRestart) + addonCoreBtn.values.toList() + addonSettingsBtn.values.toList() + addonModuleBoxes.values.toList() +
         addonOptionSegs.values.flatMap { it.toList() }
 
     /** the rows as last drawn, with their words (the "What it does" panel follows the row under the cursor or a touch) */
@@ -241,45 +289,75 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private fun clearBoxes() {
         rowHits.clear(); sbHits.clear()
         addonModuleBoxes.clear(); addonOptionSegs.clear(); addonCoreBtn.clear(); addonRestart.setEmpty(); addonSettingsBtn.clear()
+        btnGuidePending.setEmpty(); for (r in segGuide) r.setEmpty()
         for (r in listOf(btnReload, btnLogin, btnReport, btnReportDismiss, btnStream, btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus,
                          btnDeferred, btnRouteReview, btnDll, btnFlowMinus, btnFlowPlus, btnRestart)) r.setEmpty()
         for (a in listOf(segIndoor, segLocation, segLayout, segPauseOpen, segPausePick, segOpen, segPick, segSpellOpen, segSpellPick, segClassLOpen, segClassLPick,
-                         segClassROpen, segClassRPick, segChat, segQt, segPsTop, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segLight,
+                         segClassROpen, segClassRPick, segChat, segQt, segPsTop, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segTheme, segLight,
                          segLimit, segFg, segMult, segPerf))
             for (r in a) r.setEmpty()
     }
 
     /** the part's height, laid out exactly as onDraw lays it out (the room's scroll asks; nothing here scrolls) */
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthSpec), Math.round(layoutHeight()))
+        // the Frame rows counted HERE (the draw compares its own count with this one and asks for a new layout when a row came or went)
+        measuredFg = fgRows().size
+        val h = Math.round(layoutHeight())
+        // a part shrunk to nothing is never drawn again (a 0 px child is skipped): its last boxes must not stay pressable
+        if (h == 0) clearBoxes()
+        setMeasuredDimension(MeasureSpec.getSize(widthSpec), h)
     }
 
+    /** this view has rows to draw now (the room hides a group whose parts have none) */
+    fun hasContent(): Boolean = layoutHeight() > 0f
+
     private fun layoutHeight(): Float {
-        val blocks = SettingsTabs.viewBlocks(tab)
+        val blocks = drawnBlocks()
         if (blocks.isEmpty()) return 0f
-        return TOP_PAD + (if (tab == SettingsTabs.Tab.HOME) MODULES_HEAD else 0f) + blocks.sumOf { blockHeight(it).toDouble() }.toFloat() + SECTION_GAP * (blocks.size - 1) + BOTTOM_PAD
+        var h = topPad()
+        for ((i, b) in blocks.withIndex()) {
+            if (i > 0) h += gap()
+            if (headed(b)) h += headGap()
+            h += blockHeight(b)
+        }
+        return h + bottomPad()
     }
+
+    /** the blocks drawn now (a block with nothing to show - no login row, Polestar's top-screen row while it is not in use - none) */
+    private fun drawnBlocks(): List<SettingsTabs.Block> = blocksHere().filter { blockHeight(it) > 0f }
+    // a whole-tab view keeps the page's measured spacing; a slice sits under its group's heading, its rows 10 px apart as in a block
+    private fun topPad() = if (only == null) TOP_PAD else SLICE_PAD
+    private fun bottomPad() = if (only == null) BOTTOM_PAD else SLICE_PAD
+    private fun gap() = if (only == null) SECTION_GAP else 10f
+    /** a block heading's room above its first row (its baseline 12 px above that row) */
+    private fun headGap() = if (only == null) 16f else 52f
 
     /** hub31: the "Polestar on the top screen" row shows (Polestar installed, the add-on has the switch) - the draw and the height agree */
     private fun psTopRow(): Boolean =
         ThirdPartyAddons.status(ThirdPartyAddons.POLESTAR, "core").kind == ThirdPartyAddons.Kind.INSTALLED && GameUi.swNow(GameUi.SW_PS) != null
+    /** Top screen > Navigation's Polestar row: shown when it was under Add-ons > Polestar (the guide on and installed) */
+    private fun psTopShown(): Boolean = guideOn() && ThirdPartyAddons.coreInstalled(ThirdPartyAddons.POLESTAR) && psTopRow()
 
-    /** a block's height from its heading's y to its last row's bottom, laid out exactly as its draw function lays it out */
+    /** a block's rows' height (from its first row's top to its last row's bottom), laid out exactly as its draw function lays it out */
     private fun blockHeight(b: SettingsTabs.Block): Float = when (b) {
-        SettingsTabs.Block.LANGUAGE -> 16f + ROW_H
-        SettingsTabs.Block.LIGHTER -> 16f + ROW_H + 10f + ROW_H
-        SettingsTabs.Block.GAME -> 16f + ROW_H + (if (loginRow) 10f + ROW_H else 0f) + 10f + ROW_H
-        // four rows (the two zooms, Quest tracking, Avoid dangerous areas): it said two, and the page's last row was cut short
-        SettingsTabs.Block.STREAMING -> 16f + ROW_H
-        SettingsTabs.Block.MAP -> 16f + 5 * ROW_H + 4 * 10f     // zoom out, zoom in, Quest tracking, World map, SafePath network
-        SettingsTabs.Block.INDOOR -> 16f + ROW_H + 10f + ROW_H + deferredListH() + 10f + ROW_H
-        SettingsTabs.Block.CONTROLLER -> 16f + ROW_H + 10f + ROW_H
+        SettingsTabs.Block.LANGUAGE -> ROW_H
+        SettingsTabs.Block.THEME -> themeGridH()
+        SettingsTabs.Block.LIGHTER -> ROW_H + 10f + ROW_H
+        SettingsTabs.Block.ACCOUNT -> if (loginRow) ROW_H else 0f
+        SettingsTabs.Block.HELP -> ROW_H + 10f + ROW_H
+        SettingsTabs.Block.STREAMING -> ROW_H
+        // zoom out, zoom in, World map (Quest tracking moved to Add-ons > Polestar, 2026-11-12)
+        SettingsTabs.Block.MAP -> 3 * ROW_H + 2 * 10f
+        SettingsTabs.Block.QUEST_TRACKING -> ROW_H
+        SettingsTabs.Block.POLESTAR_TOP -> if (psTopShown()) ROW_H else 0f
+        SettingsTabs.Block.INDOOR -> ROW_H + 10f + ROW_H + deferredListH() + 10f + ROW_H
+        SettingsTabs.Block.CONTROLLER -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.PAUSE_WHEEL, SettingsTabs.Block.ITEM_WHEEL, SettingsTabs.Block.SPELL_WHEEL,
-        SettingsTabs.Block.CLASS_LEFT, SettingsTabs.Block.CLASS_RIGHT -> 16f + ROW_H + 10f + ROW_H
-        SettingsTabs.Block.CHAT -> 16f + ROW_H
-        SettingsTabs.Block.FRAMES -> 16f + fgHeight()
-        SettingsTabs.Block.SMART_Y -> sbLines().size.let { n -> 16f + n * ROW_H + (n - 1) * 10f } + pbHeight()
-        else -> SettingsTabs.addonOf(b)?.let { a -> val n = addonRows(a); 16f + n * ROW_H + (n - 1) * 10f } ?: 0f
+        SettingsTabs.Block.CLASS_LEFT, SettingsTabs.Block.CLASS_RIGHT -> ROW_H + 10f + ROW_H
+        SettingsTabs.Block.CHAT -> ROW_H
+        SettingsTabs.Block.FRAMES -> fgHeight()
+        SettingsTabs.Block.SMART_Y -> sbLines().size.let { n -> n * ROW_H + (n - 1) * 10f } + pbHeight()
+        else -> SettingsTabs.addonOf(b)?.let { a -> val n = addonRows(a); n * ROW_H + (n - 1) * 10f } ?: 0f
     }
 
     /** the Frame generation section's rows now (FrameGen.rows: the DLL row alone until one is set; Restart when it would change something) */
@@ -288,7 +366,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             (gameRunning() && !SetupBridge.restarting && FrameGen.limitNeedsRestart(FrameGen.launchedLimit, FrameGen.fpsLimit)))
 
     private fun fgHeight(): Float {
-        val n = fgRows().size.also { measuredFg = it }
+        val n = fgRows().size                     // no side effect: the draw path asks this too ([measuredFg] is onMeasure's)
         return n * ROW_H + (n - 1) * 10f
     }
 
@@ -409,15 +487,17 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 if (lti >= 0) { Settings.lighterMode = lti == 0; invalidate(); return }
                 val lgx = segLowGfx.indexOfFirst { it.contains(x, y) }
                 if (lgx >= 0) { Settings.lowMemGraphics = lgx == 0; invalidate(); return }
+                val thi = segTheme.indexOfFirst { it.contains(x, y) }
+                if (thi >= 0) { Theme.use(Theme.presets[thi].id); invalidate(); return }
                 val lgi = segLang.indexOfFirst { it.contains(x, y) }
                 if (lgi >= 0) { Tr.setChoice(context, Tr.LANGS[lgi].code); invalidate(); return }
                 if (fi >= 0) { Settings.worldMapFog = if (fi == 0) "all" else "explored"; invalidate(); return }
-                if (di >= 0) { if (Settings.questTracking == "safepath") Settings.avoidDanger = Settings.AVOID_DANGER[di]; invalidate(); return }
+                if (di >= 0) { invalidate(); return }          // SafePath's danger row: never drawn since SafePath left the options
                 if (qi >= 0 && !Settings.ROUTE_MODES_ON && qi != 0) { invalidate(); return }   // held back for 1.0.9
                 if (qi >= 0) {
-                    if (Settings.questTracking != Settings.QUEST_TRACKING[qi]) Settings.questTracking = Settings.QUEST_TRACKING[qi]
-                    // an add-on not installed yet: choosing it installs it (the Add-ons tab's own Install; the app's route meanwhile)
-                    qtAddon(qi)?.let { a -> if (!ThirdPartyAddons.coreInstalled(a)) ThirdPartyAddons.install(a) }
+                    // the user, 2026-11-12: Vanilla / Polestar is the Polestar quest guide's own choice (PolestarGuide): the add-on
+                    // goes in (downloaded first when it is not here) or out at the next start with the game closed
+                    PolestarGuide.set(Settings.QUEST_TRACKING[qi] == "polestar")
                     invalidate()
                 }
                 else if (ci >= 0) { if (Settings.chatDefaultInput != CHAT_INPUTS[ci]) Settings.chatDefaultInput = CHAT_INPUTS[ci] }
@@ -448,21 +528,25 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         drawnScroll = scroll
         c.drawColor(Theme.ink)
         clearBoxes()
-        var y = TOP_PAD - scroll       // everything below is laid out in screen coordinates
-        // on Home, the modules' blocks stand under one heading of their own, below Home's rows (each block then a sub-heading)
-        val modules = tab == SettingsTabs.Tab.HOME && SettingsTabs.viewBlocks(tab).isNotEmpty()
-        if (modules) { c.drawText(Tr.t(SettingsTabs.HOME_MODULES), PAD_X, y + 4f, pSection); y += MODULES_HEAD }
-        for ((i, b) in SettingsTabs.viewBlocks(tab).withIndex()) {
-            if (i > 0) y += SECTION_GAP
-            // the block's heading (its words are the tab data's), then its rows; each draw returns its last row's bottom
-            c.drawText(Tr.t(b.heading), PAD_X, y + 4f, if (modules) pSubHead else pSection)
-            y += 16f
+        var y = topPad() - scroll      // everything below is laid out in screen coordinates
+        for ((i, b) in drawnBlocks().withIndex()) {
+            if (i > 0) y += gap()
+            // the block's heading (its words are the tab data's; in a slice only a sub-headed block's), then its rows; each draw
+            // returns its last row's bottom
+            if (headed(b)) {
+                c.drawText(Tr.t(b.heading), PAD_X, y + headGap() - 12f, if (only == null) pSection else pSubHead)
+                y += headGap()
+            }
             y = when (b) {
                 SettingsTabs.Block.LANGUAGE -> drawLanguage(c, y)
+                SettingsTabs.Block.THEME -> drawTheme(c, y)
                 SettingsTabs.Block.LIGHTER -> drawLighter(c, y)
-                SettingsTabs.Block.GAME -> drawGame(c, y)
+                SettingsTabs.Block.ACCOUNT -> drawAccount(c, y)
+                SettingsTabs.Block.HELP -> drawHelp(c, y)
                 SettingsTabs.Block.STREAMING -> drawStreaming(c, y)
                 SettingsTabs.Block.MAP -> drawMap(c, y)
+                SettingsTabs.Block.QUEST_TRACKING -> { drawQuestTrackingRow(c, y); y + ROW_H }
+                SettingsTabs.Block.POLESTAR_TOP -> drawPsTop(c, y)
                 SettingsTabs.Block.INDOOR -> drawIndoor(c, y)
                 SettingsTabs.Block.CONTROLLER -> drawController(c, y)
                 SettingsTabs.Block.PAUSE_WHEEL -> drawWheel(c, y, "Pause menu", "Press Start to open; it stays until B.",
@@ -481,7 +565,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 else -> SettingsTabs.addonOf(b)?.let { drawAddon(c, y, it) } ?: y
             }
         }
-        y += BOTTOM_PAD
+        y += bottomPad()
 
         val h = Math.round(y + scroll).toFloat()   // back to content coordinates (no float drift)
         if (h != contentH) {
@@ -507,6 +591,66 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         for (t in LAYOUT_LABELS) w = maxOf(w, pBtn.measureText(t) + SEG_PAD)
         pBtn.textSize = 27f
         return w
+    }
+
+    // ---- THEME (System; the user, 2026-11-12: "an oled theme, but different color variations for menus like pink and silver or gold
+    // instead of the classic bronze"): one tile a preset, five across, each drawn in its own colours (its ground, its edge, its name in
+    // its accent) so the tile IS the preview; a tap applies it at once, everywhere (Theme.use). The chosen one is the one lit tile.
+    private val themeCols = 5
+    private val themeTileH = 112f
+    private val themeGap = 12f
+    private fun themeGridH(): Float {
+        val rows = (Theme.presets.size + themeCols - 1) / themeCols
+        return rows * themeTileH + (rows - 1) * themeGap
+    }
+    private val pThemeName = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+    private val pThemeFill = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    private fun drawTheme(c: Canvas, top: Float): Float {
+        val left = 16f; val right = width - 16f
+        val tw = (right - left - (themeCols - 1) * themeGap) / themeCols
+        for ((i, t) in Theme.presets.withIndex()) {
+            val col = i % themeCols; val rw = i / themeCols
+            val r = RectF(left + col * (tw + themeGap), top + rw * (themeTileH + themeGap),
+                left + col * (tw + themeGap) + tw, top + rw * (themeTileH + themeGap) + themeTileH)
+            segTheme[i].set(r)
+            rowHits.add(RectF(r) to "Theme")
+            val chosen = t === Theme.cur
+            // the one in use is the ONE bright tile (review, 2026-11-12: every tile in its full accent hid the chosen one): its focus
+            // light round it, its edge full and heavy, its band in its selected colour, its name in its accent; the others' edges
+            // half-faded and their names in their dim words
+            if (chosen) UiKit.glow(c, RectF(r.left - 10f, r.top - 10f, r.right + 10f, r.bottom + 10f), t.focus, 0.55f)
+            // its ground; the band its rows stand on; its edge
+            pThemeFill.style = Paint.Style.FILL; pThemeFill.color = t.ink
+            c.drawRoundRect(r, 10f, 10f, pThemeFill)
+            pThemeFill.color = if (chosen) t.selected else t.raised
+            c.drawRoundRect(RectF(r.left + 12f, r.bottom - 40f, r.right - 12f, r.bottom - 14f), 6f, 6f, pThemeFill)
+            // three marks: its accent, its edge, its words' colour
+            for ((k, mc) in listOf(t.accent, t.edge, t.text).withIndex()) {
+                pThemeFill.color = mc
+                c.drawCircle(r.left + 30f + k * 24f, r.bottom - 27f, 7f, pThemeFill)
+            }
+            pThemeFill.style = Paint.Style.STROKE
+            if (chosen) {
+                pThemeFill.strokeWidth = 6f; pThemeFill.color = t.focus
+                c.drawRoundRect(RectF(r.left + 3f, r.top + 3f, r.right - 3f, r.bottom - 3f), 10f, 10f, pThemeFill)
+            } else {
+                pThemeFill.strokeWidth = 2f; pThemeFill.color = (t.edge and 0xFFFFFF) or (0x70 shl 24)
+                c.drawRoundRect(RectF(r.left + 1f, r.top + 1f, r.right - 1f, r.bottom - 1f), 10f, 10f, pThemeFill)
+            }
+            pThemeFill.style = Paint.Style.FILL
+            UiKit.asBody(pThemeName)
+            pThemeName.textSize = 25f; pThemeName.color = if (chosen) t.accent else t.textDim
+            c.drawText(Tr.t(fit(pThemeName, t.name, tw - 16f)), r.centerX(), r.top + 44f, pThemeName)
+            if (chosen) {
+                // the game's tick, in the theme's metal (it is the theme in use: UiKit recolours the kit's tick) (the cursor keeps the focus box)
+                val tick = UiKit.tex("check_tick")
+                val tr = RectF(r.right - 46f, r.bottom - 46f, r.right - 10f, r.bottom - 10f)
+                if (tick != null) c.drawBitmap(tick, null, tr, null)
+                else { pThemeFill.color = t.focus; c.drawCircle(tr.centerX(), tr.centerY(), 9f, pThemeFill) }
+            }
+        }
+        return top + themeGridH()
     }
 
     // ---- GAME (System): Reload, the saved login, the problem report
@@ -544,34 +688,25 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         return t2 + ROW_H
     }
 
-    private fun drawGame(c: Canvas, top: Float): Float {
-        var y = top
-        val now = SystemClock.elapsedRealtime()
-        val armed = reloadArmedAt != 0L && now - reloadArmedAt < ARM_MS
-        val sent = reloadSentAt != 0L && now - reloadSentAt < 2500L
-        if (sent) postInvalidateDelayed(300)
-        btnReload = row(c, y, "Reload game UI",
-            if (sent) "Sent -- the game UI should restart now" else "Reloads the game's UI. Tap twice to confirm.",
+    /** General > Account: the saved Battle.net login (the host sets [loginRow]) */
+    private fun drawAccount(c: Canvas, top: Float): Float {
+        if (!loginRow) { btnLogin = RectF(); return top }
+        val saved = loginSaved()
+        btnLogin = row(c, top, "Battle.net login",
+            if (saved) "Saved. The game signs in with it by itself." else "Not saved: save it to sign in by itself.",
             enabled = true) { box ->
             val b = RectF(box.right - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
-            // the game's red button; armed = held down, and it says what the second tap does
-            UiKit.button(c, b, if (armed) "Tap again" else "Reload", if (armed) UiKit.Button.DOWN else UiKit.Button.UP)
+            UiKit.button(c, b, if (saved) "Change" else "Save", UiKit.Button.UP)
             b
         }
-        if (loginRow) {
-            y += ROW_H + 10f
-            val saved = loginSaved()
-            btnLogin = row(c, y, "Battle.net login",
-                if (saved) "Saved. The game signs in with it by itself." else "Not saved: save it to sign in by itself.",
-                enabled = true) { box ->
-                val b = RectF(box.right - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
-                UiKit.button(c, b, if (saved) "Change" else "Save", UiKit.Button.UP)
-                b
-            }
-        } else btnLogin = RectF()
+        return top + ROW_H
+    }
+
+    /** General > Help: the problem report, then Reload game UI (the companion's status under them is GameUiSection's) */
+    private fun drawHelp(c: Canvas, top: Float): Float {
+        var y = top
         // "Send a problem report" (board f-problem-report): "Send report" while Record 5 minutes runs (stop + send), the time left on the
         // row; a report saved by itself shows its note with Open issue / Dismiss until one is pressed
-        y += ROW_H + 10f
         val rec = DiagLog.recording()
         val left = DiagLog.recordLeftMs() / 1000
         val saved = ReportFlow.pending
@@ -594,12 +729,25 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         }
         if (saved != null) { val d = btnReportDismiss; btnReport = RectF(d.right + 16f, d.top, d.right + 16f + 244f, d.bottom) }
         if (rec) postInvalidateDelayed(1000)
+        y += ROW_H + 10f
+        val now = SystemClock.elapsedRealtime()
+        val armed = reloadArmedAt != 0L && now - reloadArmedAt < ARM_MS
+        val sent = reloadSentAt != 0L && now - reloadSentAt < 2500L
+        if (sent) postInvalidateDelayed(300)
+        btnReload = row(c, y, "Reload game UI",
+            if (sent) "Sent -- the game UI should restart now" else "Reloads the game's UI. Tap twice to confirm.",
+            enabled = true) { box ->
+            val b = RectF(box.right - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            // the game's red button; armed = held down, and it says what the second tap does
+            UiKit.button(c, b, if (armed) "Tap again" else "Reload", if (armed) UiKit.Button.DOWN else UiKit.Button.UP)
+            b
+        }
         return y + ROW_H
     }
 
     // ---- MAP (Rooms): the small map's two widths
     private fun drawStreaming(c: Canvas, top: Float): Float {
-        val y = top + 16f
+        val y = top
         val on = SetupBridge.openStreamSettings != null
         val box = row(c, y, "Stream settings", if (on) "Resolution, frame rate, bit rate and sound." else "While streaming.", enabled = on) { b ->
             val r = RectF(b.right - 260f, b.centerY() - 34f, b.right - 16f, b.centerY() + 34f)
@@ -610,8 +758,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         return y + ROW_H
     }
 
-    /** the Quest tracking row at [y] (Settings > Map, and the Polestar block on Add-ons: the user, 2026-11-11, "the quest tracking can
-     *  share a link between these two spots"): one setting, one segmented control (the two are on different tabs, so one set of boxes) */
+    /** the Quest tracking row at [y] (Settings > Map): Vanilla / Polestar, the Polestar quest guide's own choice (the user, 2026-11-12;
+     *  the Add-ons tab's Polestar block switches the same choice with its On / Off) */
     private fun drawQuestTrackingRow(c: Canvas, y: Float) {
         // QUEST TRACKING (the user, 2026-10-17): what the map's line, arrows and pin follow
         pBtn.textSize = SEG_TEXT
@@ -628,15 +776,13 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             }
             return "${a.title} ${a.version}: $state · $what"        // the state first: a long line is cut at its end
         }
+        // the user, 2026-11-12: two choices, Vanilla and Polestar (SafePath and QuestTrail are no longer options)
         val sub = when (Settings.questTracking) {
             "polestar" -> addonWord(ThirdPartyAddons.POLESTAR, "walking routes")
-            "questtrail" -> addonWord(ThirdPartyAddons.QUESTTRAIL, "the line follows its arrow, no game pin")
-            "vanilla" -> if (Settings.ROUTE_MODES_ON) "The game's own way: the line points straight at the quest, no route, the game's pin left alone"
-                         else "The line points straight at the quest. SafePath, QuestTrail and Polestar come in a later update"
-            else -> "DS Forever's route: round mobs and cliffs, by roads, ways and rides, checkpoint flags"
+            else -> "The game's own way: the line points straight at the quest"
         }
         row(c, y, "Quest tracking", sub, enabled = true) { box ->
-            // four choices: never more than two thirds of the row, the label and its line keep the rest
+            // never more than two thirds of the row, the label and its line keep the rest
             val bw = minOf(qtW * QT_LABELS.size, box.width() * 0.66f)
             val b = RectF(box.right - 16f - bw, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
             qtSegmented(c, b, Settings.QUEST_TRACKING.indexOf(Settings.questTracking))
@@ -656,11 +802,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         boxes = stepperRow(c, y, "Minimap zoom indoors", "Width of the small map on Home inside buildings",
                            Settings.minimapIndoorYd, true)
         btnMiniInMinus = boxes.first; btnMiniInPlus = boxes.second
+        // Quest tracking moved to Add-ons > Polestar (the six tabs, 2026-11-12: [SettingsTabs.Block.QUEST_TRACKING])
         y += ROW_H + 10f
-        drawQuestTrackingRow(c, y)
-        // AVOID DANGEROUS AREAS moved to QOL > Navigation (the housekeeping pass; GameUiSection's QOL part, the same Settings.avoidDanger)
-        y += ROW_H + 10f
-        val safe = Settings.questTracking == "safepath"
         // WORLD MAP (b-seamless-map; the user: "Give an option in settings"): the stitched continent, every zone or only the explored
         val all = Settings.worldMapFog == "all"
         row(c, y, "World map", if (all) "The Map room's continents show every zone, revealed" else "The Map room's continents show what you have explored",
@@ -670,12 +813,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             segmented(c, b, listOf("Show all", "Explored only"), if (all) 0 else 1, segFog)
             b
         }
-        // SAFEPATH'S NETWORK (test20: the v1 / v2 switch removed; no control): the shipped network's word for this zone (ShippedNets.line:
-        // "Shipped network" / "may be out of date (exported for build X, game is Y)" / none)
-        y += ROW_H + 10f
-        row(c, y, "SafePath network", if (!safe) "SafePath only: choose SafePath in Quest tracking" else ShippedNets.line, enabled = true) { box ->
-            RectF(box.right - 16f, box.centerY(), box.right - 16f, box.centerY())
-        }
+        // the "SafePath network" row went with SafePath (the user, 2026-11-12: "remove safe path ... from the options"); ShippedNets stays
         return y + ROW_H
     }
 
@@ -722,14 +860,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         }
         // the route's data from the game files (b-route-data-all: terrain and buildings for every zone, made before Play)
         y += 10f
-        // SafePath's network (b-safepath-review): each zone's draft, reviewed and corrected over this room
+        // "Review paths" (SafePath's network review, b-safepath-review) went with SafePath (the user, 2026-11-12); the data's line stays
         row(c, y, "Route data", Terrain.coverageLine(), enabled = true) { box ->
-            val label = "Review paths"
-            val w = UiKit.bodyPaint(26f).measureText(label) + 80f
-            val b = RectF(box.right - 16f - w, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
-            UiKit.button(c, b, label, UiKit.Button.UP)
-            btnRouteReview = b
-            b
+            RectF(box.right - 16f, box.centerY(), box.right - 16f, box.centerY())
         }
         if (Terrain.coverageNow()?.let { it.optInt("zones") < it.optInt("total") } != false) postInvalidateDelayed(3_000L)
         y += ROW_H
@@ -783,46 +916,64 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     }
 
     // ---- SMART Y (Spells' PadMap m62; the user: "logic rows, with the bottom row being an Add button ... on a single row I need to be
-    // able to add an "or""): Food and Water fixed at the top, then the character's buff rows in priority order, then Add. A row is
-    // SELECTED by a press (the select -> ONE action pattern, no per-row buttons): its actions show on the line under it. The add-on keeps
-    // the rows per character; every change is ONE batch of taps (SmartYModel), and the next padmap redraws the section.
+    // able to add an "or""). m127 FACELIFT (the user, 2026-11-11, picks "Buttons on every row" and "less verbose and more visual ... the
+    // Or/takeout/remove buttons shouldnt be hidden after tap, they should be integrated better"): ONE ordered list - Food, Water,
+    // Manners and the buff rows, in the player's order ("it shouldnt hardcode food and water as first and second") - each row its
+    // pictures (an OR row's buffs as chained slots, each slot's x takes that buff out), a short name and tag, then its own Up / Down /
+    // Or (buff rows) / X, always shown (this section's exception to the select -> ONE action rule, by the user's pick); "Add a buff"
+    // last. The add-on keeps the list per character; every change is ONE batch of taps (SmartYModel); its smartyack answers (a refusal
+    // is said on the Add row), and the next padmap redraws the section.
 
     /** the padmap's Smart buffs (the host's: the latest padmap); null = no game yet, or an add-on before m62 */
     var smartDoc: () -> SmartYModel.Doc? = { null }
+        get() = hub?.smartDoc ?: field
+    /** m127: the kind of what Y would do now (the padmap's `smarty` k: food / drink / buff / or / manners); null = nothing */
+    var smartNow: () -> String? = { null }
+        get() = hub?.smartNow ?: field
     /** sends one batch of taps (the host's TapBridge); false = not sent */
     var smartTaps: (List<Pair<String, Int>>) -> Boolean = { false }
+        get() = hub?.smartTaps ?: field
     /** a spell's two taps on the "spells" row by its name (the host's book); null = none known */
     var smartSpellCells: (String) -> List<Pair<String, Int>>? = { null }
+        get() = hub?.smartSpellCells ?: field
+    /** the row an "Or" is choosing for (while [sbChoose] is "addor") */
     private var sbSel: Int? = null
     private var sbChoose: String? = null
     private var sbNote: String? = null
     private val sbHits = ArrayList<Pair<RectF, () -> Unit>>()
 
-    /** the section's lines, in order: "none", "food", "water", a row's index, "act" (the selected row's actions), "add", a Buff, "cancel" */
+    /** m127: the add-on's answer to an edit (smartyack): a refusal is said on the Add row; a done edit clears the note */
+    fun onSmartAck(op: String, ok: Boolean, why: String?) {
+        slices?.forEach { it.onSmartAck(op, ok, why) }
+        if (op == "on" || op == "off") return
+        sbNote = if (ok) null else (why?.takeIf { it.isNotBlank() } ?: "Not taken")
+        invalidate()
+    }
+
+    /** the section's lines, in order: "none", "toggle", a row's index, "add"; while choosing: a Buff or a kind ("k:food"), "cancel" */
     private fun sbLines(): List<Any> {
         val d = smartDoc() ?: return listOf("none")
         // m76: the On / Off row first; the rest only while Smart Y is on (the user: "hide the other settings until it's turned on")
         if (!SmartYModel.rowsShown(d)) return listOf("toggle")
-        val out = ArrayList<Any>(listOf("toggle", "food", "water"))
+        val out = ArrayList<Any>(listOf("toggle"))
+        if (d.fixedFood) { out += "food"; out += "water" }                  // an add-on before m127: Food / Water fixed on top
+        for (r in d.rows.indices) out += r
         val choose = sbChoose
-        for (r in d.rows.indices) { out += r; if (sbSel == r && choose == null) out += "act" }
         if (choose == null) { out += "add"; return out }
         val sel = sbSel
-        val list = when {
-            choose == "add" -> SmartYModel.addChoices(d)
-            sel != null && choose == "addor" -> SmartYModel.orChoices(d, sel)
-            sel != null -> SmartYModel.outChoices(d, sel)
-            else -> emptyList()
+        when {
+            choose == "add" -> { SmartYModel.kindChoices(d).forEach { out += "k:$it" }; out.addAll(SmartYModel.addChoices(d)) }
+            sel != null && choose == "addor" -> out.addAll(SmartYModel.orChoices(d, sel))
         }
-        out.addAll(list); out += "cancel"
+        out += "cancel"
         return out
     }
 
     private fun sbSend(taps: List<Pair<String, Int>>?, done: String) {
         sbNote = when {
-            taps == null -> "That spell has no tap way yet: open the Spellbook once, then try again."
+            taps == null -> "Open the Spellbook once, then again"
             smartTaps(taps) -> done
-            else -> "Nothing was sent: the game is not live."
+            else -> "Game not live"
         }
         sbSel = null; sbChoose = null
     }
@@ -830,6 +981,107 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private fun sbButton(c: Canvas, box: RectF, label: String, act: () -> Unit) {
         UiKit.choice(c, RectF(box.left + 2f, box.top - 6f, box.right - 2f, box.bottom + 6f), label, false, textSize = SEG_TEXT)
         sbHits += RectF(box) to act
+    }
+
+    /** an up / down button: the game's button plate with its gold arrow; greyed with no hit at the list's end */
+    private fun sbArrow(c: Canvas, b: RectF, up: Boolean, enabled: Boolean, act: () -> Unit) {
+        UiKit.choice(c, b, "", false, enabled = enabled)
+        val size = 26f
+        // moveArrowsUpDown draws the up arrow size * 0.62 above its box's middle (the down one below): shifted so it sits in [b]'s middle
+        val shift = if (up) size * 0.62f else -size * 0.62f
+        UiKit.moveArrowsUpDown(c, RectF(b.left, b.top + shift, b.right, b.bottom + shift), up = up, down = !up, x = b.centerX(),
+            size = size, alpha = if (enabled) 255 else 90)
+        if (enabled) sbHits += RectF(b) to act
+    }
+
+    /** a slot with a kind's picture ([icon]; Manners with no picture: its gold M) */
+    private fun sbSlot(c: Canvas, icon: Int, x: Float, y: Float, s: Float, mark: String?) {
+        val bmp = Icons.get(icon)
+        UiKit.slot(c, bmp, x, y, s)
+        if (bmp == null && mark != null) {
+            val p = UiKit.titlePaint(s * 0.5f, Theme.gold).apply { textAlign = Paint.Align.CENTER }
+            c.drawText(mark, x + s / 2f, y + s / 2f - (p.ascent() + p.descent()) / 2f, p)
+        }
+    }
+
+    /** one row of the list: its pictures, its name and tag, its four buttons */
+    private fun drawSbRow(c: Canvas, d: SmartYModel.Doc, r: Int, y: Float) {
+        val box = RectF(16f, y, width - 16f, y + ROW_H)
+        val row = d.rows[r]
+        val label = SmartYModel.label(d, r)
+        rowHits.add(RectF(box) to label)
+        pFill.color = Theme.raised
+        c.drawRoundRect(box, 8f, 8f, pFill)
+        if (sbChoose == "addor" && sbSel == r) UiKit.selectedRow(c, box)
+        // the buttons, right to left: X, Or (buff rows), Down, Up
+        val bs = 72f; val gap = 8f; val cy = box.centerY()
+        var bx = box.right - 14f - bs
+        val sq = { RectF(bx, cy - bs / 2f, bx + bs, cy + bs / 2f) }
+        val canEdit = r < d.max
+        val xr = sq()
+        UiKit.square(c, "exit", xr.centerX(), xr.centerY(), bs, if (canEdit) UiKit.Button.UP else UiKit.Button.DISABLED)
+        if (canEdit) sbHits += RectF(xr) to { sbSend(SmartYModel.rowTaps(d, r, "remove"), "Removed") }
+        bx -= bs + gap
+        if (row.isBuff) {
+            val orr = sq()
+            val canOr = canEdit && row.ids.size < SmartYModel.MAX_OR
+            UiKit.choice(c, orr, "Or", false, enabled = canOr, textSize = SEG_TEXT)
+            if (canOr) sbHits += RectF(orr) to { sbSel = r; sbChoose = "addor"; sbNote = null }
+            bx -= bs + gap
+        }
+        val down = sq()
+        sbArrow(c, down, up = false, enabled = canEdit && r < d.rows.size - 1) { sbSend(SmartYModel.rowTaps(d, r, "down"), "Moved") }
+        bx -= bs + gap
+        val upB = sq()
+        sbArrow(c, upB, up = true, enabled = canEdit && r > 0) { sbSend(SmartYModel.rowTaps(d, r, "up"), "Moved") }
+        val right = upB.left - 16f
+        // the pictures: one slot, or an OR row's chained slots (each with its x: take that buff out)
+        val s = ROW_H - 30f
+        var x = box.left + 14f
+        val sy = box.top + 15f
+        val icons = SmartYModel.icons(d, r)
+        val names = SmartYModel.names(d, r)
+        val or = SmartYModel.isOr(d, r)
+        val maxSlots = ((right - x - 160f) / (s + 18f)).toInt().coerceAtLeast(1)
+        for ((k, icon) in icons.withIndex()) {
+            if (k >= maxSlots) break
+            if (k > 0) {                                                    // the chain between two slots
+                pFill.color = Theme.gold
+                c.drawRect(x - 18f, sy + s / 2f - 2f, x, sy + s / 2f + 2f, pFill)
+            }
+            if (row.isBuff) UiKit.slot(c, Icons.get(icon), x, sy, s, unusable = NoMana.has(row.ids[k]))
+            else sbSlot(c, icon, x, sy, s, if (row.kind == SmartYModel.MANNERS) "M" else null)
+            if (or) {
+                val n = names[k]
+                UiKit.closeX(c, x + s - 4f, sy + 4f, 30f)
+                sbHits += RectF(x, sy, x + s, sy + s) to {
+                    sbSend(SmartYModel.spellTaps(d, r, "out", smartSpellCells(n)), "Taken out")
+                }
+            }
+            x += s + 18f
+        }
+        if (icons.size > maxSlots) {
+            val p = UiKit.numberPaint(24f, Theme.textDim)
+            c.drawText("+${icons.size - maxSlots}", x, cy + 9f, p); x += p.measureText("+${icons.size - maxSlots}") + 12f
+        }
+        // the name (gold: what Y does now) and its tag
+        val tx = x + 6f
+        val now = SmartYModel.nowRow(d, smartNow()) == r
+        pLabel.color = if (now) Theme.gold else Theme.text
+        // a spell's name is the game's text (never through Tr.t: menus only); a kind's name is ours
+        val shown = if (or) names.joinToString(" / ") else if (row.isBuff) label else Tr.t(label)
+        c.drawText(fit(pLabel, shown, right - tx), tx, box.top + 41f, pLabel)
+        val tag = when {
+            !row.isBuff -> SmartYModel.kindTag(row.kind)
+            row.ids.any { NoMana.has(it) } -> "no mana"
+            or -> "any one"
+            d.list.firstOrNull { it.id == row.ids[0] }?.imbue == true -> "weapon"
+            else -> null
+        }
+        if (tag != null) {
+            pSub.color = if (tag == "no mana") Theme.questRed else Theme.textDim
+            c.drawText(Tr.t(tag), tx, box.top + 75f, pSub)
+        }
     }
 
     private fun drawSmartY(c: Canvas, top: Float): Float {
@@ -840,10 +1092,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             if (i > 0) y += ROW_H + 10f
             val box = RectF(16f, y, width - 16f, y + ROW_H)
             when {
-                line == "none" -> row(c, y, "Smart Y", "Needs the game running with the newer Spells add-on.", enabled = false) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
+                line == "none" -> row(c, y, "Smart Y", "Needs the game running", enabled = false) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
                 line == "toggle" && d != null -> {
-                    row(c, y, "Smart Y", if (d.on) "Y uses food, water, your buffs and quest items when it has nothing else to do."
-                        else "Off: Y is the game's own Y (Inspect; its fight spell in a fight).", enabled = true) { b ->
+                    row(c, y, "Smart Y", if (d.on) "Y: your list, top first" else "Off", enabled = true) { b ->
                         val bw = 300f
                         val bb = RectF(b.right - 16f - bw, b.centerY() - 30f, b.right - 16f, b.centerY() + 30f)
                         val hw = bw / 2f
@@ -851,71 +1102,51 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                             val sb = RectF(bb.left + k * hw, bb.top, bb.left + (k + 1) * hw, bb.bottom)
                             UiKit.choice(c, RectF(sb.left + 2f, sb.top - 6f, sb.right - 2f, sb.bottom + 6f), pair.first, d.on == pair.second, textSize = SEG_TEXT)
                             sbHits += RectF(sb) to {
-                                if (d.on != pair.second) sbSend(SmartYModel.toggleTaps(d, pair.second), if (pair.second) "Smart Y is on." else "Smart Y is off.")
+                                if (d.on != pair.second) sbSend(SmartYModel.toggleTaps(d, pair.second), if (pair.second) "On" else "Off")
                             }
                         }
                         bb
                     }
                 }
-                line == "food" -> row(c, y, "1. Food", "Health below 80%: the cheapest food in your bags.", enabled = true) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
-                line == "water" -> row(c, y, "2. Water", "Mana below 80%: the cheapest drink in your bags.", enabled = true) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
-                line is Int && d != null -> {
-                    val r = line
-                    if (sbSel == r) UiKit.selectedRow(c, box)
-                    val or = SmartYModel.isOr(d, r)
-                    row(c, y, "${r + 3}. " + SmartYModel.label(d, r),
-                        when {
-                            d.rows[r].any { NoMana.has(it) } -> "Not enough mana now for " +
-                                SmartYModel.names(d, r).filterIndexed { k, _ -> NoMana.has(d.rows[r][k]) }.joinToString(" or ") + "."
-                            or -> "One of them up is enough. None up: Y opens a wheel to choose."
-                            else -> "Cast on yourself when it is not up."
-                        },
-                        enabled = true) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
-                    sbHits += RectF(box) to { sbSel = if (sbSel == r) null else r; sbChoose = null; sbNote = null }
-                }
-                line == "act" && d != null -> {
-                    val r = sbSel ?: continue
-                    val acts = ArrayList<Pair<String, () -> Unit>>()
-                    if (r > 0) acts += "Up" to { sbSend(SmartYModel.rowTaps(d, r, "up"), "Moved up.") }
-                    if (r < d.rows.size - 1) acts += "Down" to { sbSend(SmartYModel.rowTaps(d, r, "down"), "Moved down.") }
-                    if (d.rows[r].size < SmartYModel.MAX_OR) acts += "Add or" to { sbChoose = "addor" }
-                    if (SmartYModel.isOr(d, r)) acts += "Take out" to { sbChoose = "out" }
-                    acts += "Remove" to { sbSend(SmartYModel.rowTaps(d, r, "remove"), "Removed.") }
-                    pFill.color = Theme.raised; c.drawRoundRect(box, 8f, 8f, pFill)
-                    pLabel.color = Theme.textDim
-                    c.drawText(Tr.t("Row ${r + 3}:"), box.left + 22f, box.centerY() + 10f, pLabel)
-                    val bw = 150f
-                    var x = box.right - 16f - bw * acts.size
-                    for ((label, act) in acts) { sbButton(c, RectF(x, box.centerY() - 30f, x + bw - 6f, box.centerY() + 30f), label, act); x += bw }
-                }
+                // an add-on before m127 only: Food / Water fixed on top
+                line == "food" -> row(c, y, "Food", "< 80%", enabled = true) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
+                line == "water" -> row(c, y, "Water", "< 80%", enabled = true) { RectF(it.right - 16f, it.top, it.right - 16f, it.bottom) }
+                line is Int && d != null -> drawSbRow(c, d, line, y)
                 line == "add" && d != null -> {
-                    val full = d.rows.size >= SmartYModel.MAX_ROWS
-                    row(c, y, "Add a buff", sbNote ?: if (full) "16 rows at most." else "One of your own buffs, cast on yourself.", enabled = !full) { b ->
-                        val bb = RectF(b.right - 16f - 150f, b.centerY() - 30f, b.right - 16f, b.centerY() + 30f)
-                        if (!full) sbButton(c, bb, "Add") { sbChoose = "add"; sbNote = null }
+                    val full = SmartYModel.full(d)
+                    row(c, y, "Add a buff", sbNote ?: if (full) "${d.max} at most" else "", enabled = !full) { b ->
+                        val bb = RectF(b.right - 14f - 72f, b.centerY() - 36f, b.right - 14f, b.centerY() + 36f)
+                        UiKit.square(c, "plus", bb.centerX(), bb.centerY(), 72f, if (full) UiKit.Button.DISABLED else UiKit.Button.UP)
+                        if (!full) sbHits += RectF(box) to { sbChoose = "add"; sbSel = null; sbNote = null }
                         bb
                     }
+                }
+                line is String && line.startsWith("k:") && d != null -> {
+                    val kind = line.removePrefix("k:")
+                    rowHits.add(RectF(box) to SmartYModel.kindName(kind))
+                    pFill.color = Theme.raised; c.drawRoundRect(box, 8f, 8f, pFill)
+                    UiKit.auraRow(c, box, Icons.get(d.icons[kind] ?: 0), SmartYModel.kindName(kind))
+                    sbHits += RectF(box) to { sbSend(SmartYModel.addKindTaps(d, kind), "Added") }
                 }
                 line is SmartYModel.Buff && d != null -> {
                     val b = line
                     val choose = sbChoose
-                    row(c, y, b.name, if (b.imbue) "A weapon imbue: up while your main hand is enchanted." else "", enabled = true) { bx ->
-                        val bb = RectF(bx.right - 16f - 150f, bx.centerY() - 30f, bx.right - 16f, bx.centerY() + 30f)
-                        sbButton(c, bb, if (choose == "out") "Take out" else "Pick") {
-                            val cells = smartSpellCells(b.name)
-                            val sel = sbSel
-                            when {
-                                choose == "add" -> sbSend(SmartYModel.addTaps(d, cells), "Added.")
-                                sel != null && choose == "addor" -> sbSend(SmartYModel.spellTaps(d, sel, "addor", cells), "Added as an \"or\".")
-                                sel != null -> sbSend(SmartYModel.spellTaps(d, sel, "out", cells), "Taken out.")
-                            }
+                    rowHits.add(RectF(box) to b.name)
+                    pFill.color = Theme.raised; c.drawRoundRect(box, 8f, 8f, pFill)
+                    UiKit.auraRow(c, box, Icons.get(b.icon), b.name)
+                    sbHits += RectF(box) to {
+                        val cells = smartSpellCells(b.name)
+                        val sel = sbSel
+                        when {
+                            choose == "add" -> sbSend(SmartYModel.addTaps(d, cells), "Added")
+                            sel != null && choose == "addor" -> sbSend(SmartYModel.spellTaps(d, sel, "addor", cells), "Added")
                         }
-                        bb
                     }
                 }
                 line == "cancel" -> row(c, y, "Cancel", "", enabled = true) { b ->
-                    val bb = RectF(b.right - 16f - 150f, b.centerY() - 30f, b.right - 16f, b.centerY() + 30f)
-                    sbButton(c, bb, "Cancel") { sbChoose = null }
+                    val bb = RectF(b.right - 14f - 72f, b.centerY() - 36f, b.right - 14f, b.centerY() + 36f)
+                    UiKit.closeX(c, bb.centerX(), bb.centerY(), 72f)
+                    sbHits += RectF(box) to { sbChoose = null; sbSel = null }
                     bb
                 }
             }
@@ -932,8 +1163,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private var pbNote: String? = null
 
     /** Party mode's documents changed: the sub-section follows */
-    fun partyChanged() { if (pbShown() || pbSel != null) { requestLayout(); invalidate() } }
+    fun partyChanged() { slices?.forEach { it.partyChanged() }; if (pbShown() || pbSel != null) { requestLayout(); invalidate() } }
     fun onPartyAck(a: PartyModel.Ack) {
+        slices?.forEach { it.onPartyAck(a) }
         if (a.op != "pb") return
         pbNote = if (a.ok) null else if (a.why == "combat") "Not in a fight: try again after it." else "The game did not take it."
         invalidate()
@@ -1127,30 +1359,83 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
      */
     /** the rows an add-on's block shows now: its own row; its modules and options only once it is installed (the user, test40:
      *  "The settings under spoken shouldn't show until after it's installed") */
-    private fun addonRows(a: ThirdPartyAddons.Addon): Int =
+    private fun addonRows(a: ThirdPartyAddons.Addon): Int = if (a.base) guideRows() else
         1 + (if (ThirdPartyAddons.coreInstalled(a)) a.modules.size + a.options.size + (if (a.settings != null) 1 else 0) +
             (if (a.id == ThirdPartyAddons.POLESTAR.id) polestarRows() else 0) else 0)
 
-    /** pq1 / hub31 (the user, 2026-11-11: the Polestar settings "under the polestar addons tab"): Quest tracking (shared with Map), the
-     *  top screen, then the three automation switches (off by default) */
-    private fun polestarRows(): Int = 1 + (if (psTopRow()) 1 else 0) + 3
+    /** pq1 / hub31 (the user, 2026-11-11: the Polestar settings "under the polestar addons tab"): the top screen, then the three
+     *  automation switches (off by default). 2026-11-12: the Quest tracking row is the guide's own On / Off now ([drawGuide]) */
+    private fun polestarRows(): Int = 3          // the top screen's row is under Top screen > Navigation since the six tabs
     private val segPq = Array(3) { Array(2) { RectF() } }
+
+    // ---- THE POLESTAR QUEST GUIDE (the user, 2026-11-12: "If they say no let's add a toggle in settings to turn it on and off")
+    private fun guideOn(): Boolean = Settings.polestarGuide == PolestarGuide.ON
+    /** what waits on the game: a failed move (Try again), or a change that needs the game started again (Restart game); null = none */
+    private fun guidePending(): String? {
+        val a = ThirdPartyAddons.POLESTAR
+        val k = ThirdPartyAddons.status(a, "core").kind
+        return when {
+            ThirdPartyAddons.coreWanted(a) && ThirdPartyAddons.anyFailed(a) -> "retry"
+            gameRunning() && (k == ThirdPartyAddons.Kind.DOWNLOADED || k == ThirdPartyAddons.Kind.REMOVING) -> "restart"
+            else -> null
+        }
+    }
+    /** the guide's rows: its On / Off, the pending row, then (on and installed) Polestar's own settings */
+    private fun guideRows(): Int = 1 + (if (guidePending() != null) 1 else 0) +
+        (if (guideOn() && ThirdPartyAddons.coreInstalled(ThirdPartyAddons.POLESTAR)) polestarRows() else 0)
+
+    private fun drawGuide(c: Canvas, top: Float, a: ThirdPartyAddons.Addon): Float {
+        var y = top
+        if (addonRows(a) != addonDrawnRows[a.id]) { addonDrawnRows[a.id] = addonRows(a); requestLayout() }
+        val st = ThirdPartyAddons.status(a, "core")
+        if (st.kind == ThirdPartyAddons.Kind.DOWNLOADING || st.kind == ThirdPartyAddons.Kind.WAITING_WIFI) postInvalidateDelayed(1000)
+        val on = guideOn()
+        val sub = when {
+            Settings.polestarGuide == null -> "${a.what}. By ${a.by}, ${a.license}."
+            st.kind == ThirdPartyAddons.Kind.INSTALLED -> if (on) "In use. Version ${a.version}. By ${a.by}, ${a.license}." else st.line
+            st.kind == ThirdPartyAddons.Kind.DOWNLOADING && st.pct >= 0 -> "${st.line} (${st.pct}%)"
+            st.kind == ThirdPartyAddons.Kind.NONE -> if (on) "Waiting to download" else "Off. By ${a.by}, ${a.license}."
+            else -> st.line
+        }
+        row(c, y, "Polestar quest guide", sub, enabled = true) { box ->
+            val b = RectF(box.right - 16f - segW() * 2, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, listOf("On", "Off"), if (on) 0 else if (Settings.polestarGuide == PolestarGuide.OFF) 1 else -1, segGuide)
+            b
+        }
+        guidePending()?.let { p ->
+            y += ROW_H + 10f
+            val going = SystemClock.elapsedRealtime() - addonRestartAt < 60_000L
+            val (label, line, btn) = if (p == "retry")
+                Triple("Polestar did not go in", ThirdPartyAddons.failedWhy(a, "core") ?: "", "Try again")
+            else Triple("Restart the game", if (on) "Polestar loads when the game starts again" else "Polestar unloads when the game starts again",
+                if (going) "Restarting..." else "Restart game")
+            btnGuidePending = row(c, y, label, line, enabled = true) { box ->
+                val r = RectF(box.right - 16f - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+                val down = p == "restart" && going
+                UiKit.button(c, r, btn, if (down) UiKit.Button.DOWN else UiKit.Button.UP)
+                if (down) { postInvalidateDelayed(1000); RectF(r.left, r.top, r.left, r.top) } else r
+            }
+        }
+        if (on && ThirdPartyAddons.coreInstalled(a)) y = drawPolestarRows(c, y)
+        return y + ROW_H
+    }
+
+    /** Top screen > Navigation (hub31): Polestar's own frame on the top screen, Show / Hide (it stood under Add-ons > Polestar) */
+    private fun drawPsTop(c: Canvas, top: Float): Float {
+        if (!psTopShown()) return top
+        val hide = GameUi.swWant(GameUi.SW_PS)
+        val sent = GameUi.swNow(GameUi.SW_PS) != hide
+        row(c, top, "Polestar on the top screen", if (sent) "Sent" else if (hide) "Hidden" else "Shown", enabled = true) { box ->
+            val bw = minOf(segW() * 2.6f, box.width() * 0.5f)
+            val b = RectF(box.right - 16f - bw, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, listOf("Show", "Hide"), if (hide) 1 else 0, segPsTop)
+            b
+        }
+        return top + ROW_H
+    }
 
     private fun drawPolestarRows(c: Canvas, top: Float): Float {
         var y = top
-        y += ROW_H + 10f
-        drawQuestTrackingRow(c, y)
-        if (psTopRow()) {
-            y += ROW_H + 10f
-            val hide = GameUi.swWant(GameUi.SW_PS)
-            val sent = GameUi.swNow(GameUi.SW_PS) != hide
-            row(c, y, "Polestar on the top screen", if (sent) "Sent" else if (hide) "Hidden" else "Shown", enabled = true) { box ->
-                val bw = minOf(segW() * 2.6f, box.width() * 0.5f)
-                val b = RectF(box.right - 16f - bw, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
-                segmented(c, b, listOf("Show", "Hide"), if (hide) 1 else 0, segPsTop)
-                b
-            }
-        }
         val who = GameUi.character
         val rows = listOf(
             Triple(PolestarQol.QUEST, "Auto quest", "Polestar accepts and turns in guide quests" to "You accept and turn in quests yourself"),
@@ -1170,9 +1455,11 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
 
     /** an add-on's own settings, on the bottom screen (QuestTrail's): the host leaves Settings and asks the game to open them */
     var onAddonSettings: (ThirdPartyAddons.Addon) -> Unit = {}
+        get() = hub?.onAddonSettings ?: field
     private val addonSettingsBtn = HashMap<String, RectF>()
 
     private fun drawAddon(c: Canvas, top: Float, a: ThirdPartyAddons.Addon): Float {
+        if (a.base) return drawGuide(c, top, a)
         var y = top
         val K = ThirdPartyAddons.Kind.INSTALLED            // (the kinds read below, by name)
         val core = ThirdPartyAddons.status(a, "core")
@@ -1241,7 +1528,6 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             }
             addonOptionSegs["${a.id}.${o.id}"] = segs
         }
-        if (a.id == ThirdPartyAddons.POLESTAR.id) y = drawPolestarRows(c, y)
         // its own settings view (QuestTrail's options pages, mirrored), only with the game up
         a.settings?.let { label ->
             y += ROW_H + 10f
@@ -1276,6 +1562,13 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** a press on an Add-ons control; true = it was one */
     private fun addonTap(x: Float, y: Float): Boolean {
         if (!addonRestart.isEmpty && addonRestart.contains(x, y)) { addonRestartAt = SystemClock.elapsedRealtime(); onRestart(); return true }
+        // 2026-11-12: the Polestar quest guide's On / Off, and its Restart game / Try again
+        segGuide.indexOfFirst { !it.isEmpty && it.contains(x, y) }.takeIf { it >= 0 }?.let { PolestarGuide.set(it == 0); invalidate(); return true }
+        if (!btnGuidePending.isEmpty && btnGuidePending.contains(x, y)) {
+            if (guidePending() == "retry") ThirdPartyAddons.retry(ThirdPartyAddons.POLESTAR)
+            else { addonRestartAt = SystemClock.elapsedRealtime(); onRestart() }
+            invalidate(); return true
+        }
         for (a in ThirdPartyAddons.ALL) {
             if (addonSettingsBtn[a.id]?.let { !it.isEmpty && it.contains(x, y) } == true) { onAddonSettings(a); return true }
             addonCoreBtn[a.id]?.takeIf { !it.isEmpty && it.contains(x, y) }?.let {
@@ -1366,7 +1659,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
 
     /** the add-on behind Quest tracking's segment [i] (QuestTrail, Polestar), or null (Vanilla) */
     private fun qtAddon(i: Int): ThirdPartyAddons.Addon? = when (Settings.QUEST_TRACKING.getOrNull(i)) {
-        "polestar" -> ThirdPartyAddons.POLESTAR; "questtrail" -> ThirdPartyAddons.QUESTTRAIL; else -> null }
+        "polestar" -> ThirdPartyAddons.POLESTAR; else -> null }
 
     /**
      * Quest tracking's three segments (the user: Polestar / QuestTrail installed from Settings > Add-ons; the picker "offers the
@@ -1412,16 +1705,16 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         }
         private val CHAT_INPUTS = listOf("quick", "keys")
         private val CHAT_INPUT_LABELS = listOf("Quick chat", "Keyboard")
-        private val QT_LABELS = listOf("Vanilla", "SafePath", "QuestTrail", "Polestar")
+        private val QT_LABELS = listOf("Vanilla", "Polestar")          // the user, 2026-11-12: SafePath and QuestTrail removed
         private const val SEG_TEXT = 24f
         private const val SEG_PAD = 36f      // text-to-edge room inside a segment, both sides
         private const val SEG_MIN_W = 120f
         // SPACING, measured against the signed-off picture on the emulator (2026-10-06): a row's bottom to the next heading's top
         // is 60 px everywhere; a heading's cap top is ~26 px above its baseline, which is drawn 4 px below the section's y
-        private const val MODULES_HEAD = 58f  // "Home module settings" -> its first block's heading
         private const val SECTION_GAP = 82f  // row bottom -> the next section's y (its heading baseline 86 below: cap top +60)
         private const val TOP_PAD = 48f      // the page's top -> its first heading's y (the tab bar stands above the page)
         private const val PAD_X = 28f
         private const val BOTTOM_PAD = 56f   // REST's end -> Game UI's first heading: 60 (it was 28)
+        private const val SLICE_PAD = 8f     // a slice's top and foot: its group's heading above, the next part below
     }
 }

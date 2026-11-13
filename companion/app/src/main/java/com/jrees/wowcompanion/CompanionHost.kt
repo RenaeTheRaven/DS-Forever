@@ -55,6 +55,11 @@ interface HostShell {
 class CompanionHost(base: Context, private val shell: HostShell) : ContextWrapper(base) {
 
     private lateinit var content: FrameLayout
+    /** THEMES (the user, 2026-11-12): a theme picked in Settings repaints the whole bottom screen at once (ThemeLive) */
+    private var themeRoot: View? = null
+    private val themeChanged: () -> Unit = {
+        ui.post { themeRoot?.let { r -> ThemeLive.repaint((r.parent as? View) ?: r, Theme.prev, Theme.cur) } }
+    }
     private lateinit var strip: Strip
     /** the status text lives in the Settings room now (user, 2026-09-28); every `status.text = ...` is unchanged */
     private val status = StatusLine
@@ -82,8 +87,14 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var questsPad: org.json.JSONObject? = null
     /** capture v9: while a room holds through a fight, every leave the app starts goes through ONE secure leave cell (Home's) */
     private val fightLeave = FightLeave()
-    /** SPEC_COMBAT 9 / 10: a room / window opened in a fight takes the controller through ONE secure tap on Interact's enter cell */
-    private val fightEnter = FightEnter()
+    /** combat_nav Step 3 (the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"):
+     *  in a fight the pad follows what the bottom screen wants - ENTER when something of ours is up and the mode is "game", LEAVE at Home
+     *  when it is "room" (Interact's doc.fightMode); it replaces SPEC_COMBAT 9 / 10's per-room enter tap and show()'s inline leave */
+    private val padOwner = PadOwnerSync()
+    private val padOwnerTick = object : Runnable {
+        override fun run() { padOwnerStep(); if (padOwner.mode != null) ui.postDelayed(this, PAD_OWNER_TICK_MS) }
+    }
+    private lateinit var gameMenuLock: GameMenuLock
     /** the capture ids of the room the app last left by its own show(), and when (uptime ms): HomeBack.isOwnLeave */
     private var leftIds: Set<String> = emptySet()
     private var leftAt = 0L
@@ -161,8 +172,6 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var barSelect: HomeBarSelect
 
     private var tail: LogSource? = null
-    /** the game's combat log (CombatLogTail: party health), beside the game's own log; none while Streaming */
-    private var clogTail: CombatLogTail? = null
     /** WoW Forever as GameLocator found it on this device (the log, the setup's folders); set once at start */
     @Volatile private var game: GameLocator.Found? = null
         set(v) { field = v; if (::setupRunner.isInitialized) setupRunner.wowForever = v }
@@ -404,6 +413,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // THE PRIVATE SHARE'S PICTURES (RuntimeArt): copied out once, BEFORE anything loads a picture - the readers remember a miss
         if (RuntimeArt.needed(this)) { unpacking = true; unpackFirst(); return }
         Settings.init(this)
+        Theme.init(this)                     // the saved theme (Settings > System > Theme), before any view copies a colour
         GameUi.init(this)
         PolestarQol.init(this)
         GameInput.onStatus = { s -> ui.post { status.text = s.take(110) } }
@@ -414,8 +424,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Theme.ink)
+            ThemeLive.bg(this, Tok.INK)
         }
+        themeRoot = root
+        Theme.onChange(themeChanged)
         content = FrameLayout(this)
         root.addView(content, LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -507,6 +519,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // ps3 (the user, 2026-11-11): the Polestar row clears the game's focus for a step with no quest in the log (logged only: a
         // refusal such as "In combat" draws no note), and stops a focus check still retrying the step it moved on from
         mapView.onPushUnfocus = { id -> homeView.unfocusQuest(id) { Log.i("WCMAP", "polestar unfocus $id: $it") } }
+        // pk1 (the user, 2026-11-12: "we need to make a way to skip a polestar objective"): Skip / Previous on Map.lua's "pnav" row
+        mapView.onPolestarSkip = { prev -> polestarSkipTap(prev) }
         mapView.onCancelFocus = { id -> homeView.cancelFocusWant(id) }
         // the Map room's X on its list (map session, the user's quest-list feedback): untrack through Home's one quest-action path
         mapView.onUntrackQuest = { id -> homeView.untrackQuest(id) { mapView.note(it) } }
@@ -560,6 +574,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // themselves) are the player's picks too: the Polestar row lets go (on Remove Focus as well, or the sync would re-focus the
         // step quest), a cleared focus is not pushed back as the default
         worldMapRoom.onFocusPicked = { id, on -> mapView.psRelease(); if (!on) mapView.focusCleared(id) }
+        // pk1: the Map room's Polestar row (its X Skip, Y Previous) shows and presses the Map's own Polestar step
+        worldMapRoom.polestar = { mapView.polestarTitle()?.let { WorldMapRoomView.Ps(it, mapView.polestarWords(), mapView.polestarCanSkip(), mapView.polestarCanPrev()) } }
+        worldMapRoom.onPolestarSkip = { prev -> mapView.polestarSkip(prev) }
         questsView.onFocusPicked = { id, on -> mapView.psRelease(); if (!on) mapView.focusCleared(id) }
         // LATER item 7: Select opens a cursor on the bar; A on a room is what a touch on its picture does
         // the swirl (Home) picked on the bar = the pause wheel, on Home and in rooms (the user 2026-10-09: "if I select the spiral I want
@@ -667,12 +684,17 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // overlay; it takes no touch
         roomCue = RoomCombatCue(this)
         content.addView(roomCue, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // the user's decision 1 (2026-11-11): the game menu open at the pull keeps the game's pad, the bottom screen locked until it closes
+        gameMenuLock = GameMenuLock(this)
+        content.addView(gameMenuLock, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         interactView = InteractView(this)
         interactKb = ChatKeyboard(this, swap = false).apply { visibility = View.GONE }
         interactView.keyboard = interactKb
         interactView.padSource = { questsPad }
         dialogView = DialogView(this)
+        dialogView.appOwnsPad = { padOwner.roomMode() }          // combat_nav: a pop-up / a roll answered with the pad in a fight
+        dialogView.rollsOwnPad = { padOwner.holder == null || padOwner.holder == "app" }   // review 2026-11-11: never with a room's press
         startView = StartView(this)
         // INSIDE THE ONE APP (the native login.txt sign-in; the user: "injecting the keys is not the way to go"): the row never types -
         // its button saves / updates the login, which the game uses by itself at its next start (NativeLogin)
@@ -758,6 +780,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         settingsView.onReport = { openReport() }
         // m62 Smart buffs: the Settings section reads the latest padmap, edits by taps, names a spell by the book's two taps
         settingsView.smartDoc = { lastPadMap?.smartBuffs }
+        settingsView.smartNow = { lastPadMap?.smartY?.kind }                // m127: the row Y would act on now
         settingsView.smartTaps = { cells -> TapBridge.tapsSpaced(this, spellsPad ?: questsPad, cells, 120L) }   // the user 11-11: Pick added nothing - a repeated cell inside 0.25 s was swallowed (as Polestar's digits)
         settingsView.smartSpellCells = { name ->
             lastBook?.let { b -> SpellsModel.tabSpells(b).firstOrNull { it.name == name }?.let { SpellsModel.bindCells(b, it) } }
@@ -896,6 +919,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             }
         }
         pauseView.onPick = { s -> pausePick(s) }
+        pauseView.polestar = { mapView.polestarCanSkip() to mapView.polestarCanPrev() }      // pk1: its Skip / Previous step slices
         // THE TARGET RADIAL: the pause wheel's slide, close and place; a pick runs as the party menu's entries do
         targetRadial = TargetRadialView(this, strip, { questsPad }) { cells -> guestTap(cells) }
         // 1.0.18 (the user: "When holding LB i want the bottom screen to shift around like when opening a radial ... the players bar with
@@ -1067,7 +1091,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
 
     fun onStart() {
         DirectPad.start()
-        if (room == Room.HOME) ui.post { partyAsk(PartyModel.Ask.HOME_SHOWN) }     // back from the background: Party mode's documents
+        if (room == Room.HOME) ui.post { partyAsk(PartyModel.Ask.HOME_SHOWN); homeView.partyHomeOpened() }     // back from the background: Party mode's documents
         TapBridge.watchPad()        // the quiet pad's clock from the start (Quests, step 0): the first tap already knows the last press
         if (unpacking) return
         GameUi.onVisible(true)
@@ -1093,7 +1117,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         MemWatch.room = r.name.lowercase()                                // WCMEM: what is on show
         flushBLeave()
         // PARTY MODE (1.1, 4.2): Home shown again re-asks the add-on's documents; leaving Home turns Party mode off only by the switch
-        if (r == Room.HOME && room != Room.HOME) partyAsk(PartyModel.Ask.HOME_SHOWN)
+        if (r == Room.HOME && room != Room.HOME) { partyAsk(PartyModel.Ask.HOME_SHOWN); homeView.partyHomeOpened() }
         if (r != Room.HOME && room == Room.HOME) partyLeaveHome("room $r")
         if (r == Room.HOME) ui.postDelayed({ newSpellAsk() }, 800L)          // f-new-spell-prompt: back Home, the next one
         // the pause menu never stays over a room change (a whisper's jump, a game window); its own picks run after it has folded
@@ -1107,20 +1131,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         barSelect.closeFor(r, room)
         // and the room's combat cue: a room shown anew is cued only once a document says it holds through the fight
         if (::roomCue.isInitialized && r != room) roomCue.off()
-        // MID-FIGHT (capture v9): a room holding through a fight lets go ONLY through the capture's secure leave cell - one tap, the same
-        // for every room and EVERY route that leaves it (a touch on a room or the Home disc, the bar cursor, a game window's jump, a
-        // whisper, the map pin). The rooms' own release / take taps below are refused in a fight (harmless)
-        val fightLeft = r != room && fightLeave.cell != null
-        if (r != room) fightLeave.leaveNow()?.let { (row, col) ->
-            val sent = TapBridge.tap(this, questsPad, row, col) { }
-            Log.i("WCHOME", "fight leave: $row $col ${if (sent) "sent" else "not sent"} ($room -> $r)")
-            ui.postDelayed({
-                fightLeave.retryNow()?.let { (rr, cc) ->
-                    val again = TapBridge.tap(this, questsPad, rr, cc) { }
-                    Log.i("WCHOME", "fight leave: once more $rr $cc (the room still held) ${if (again) "sent" else "not sent"}")
-                }
-            }, FightLeave.RETRY_MS)
-        }
+        // MID-FIGHT (combat_nav Step 3, 2026-11-11): the router in room mode lets go ONLY through the capture's secure leave cell, and
+        // PadOwnerSync taps it once nothing on the bottom screen wants the pad (Home); room to room is the add-on's in-place swap, so the
+        // new room's take goes out as usual. The old room's own release taps are skipped (refused in a fight anyway)
+        val fightLeft = r != room && padOwner.roomMode()
         // EVERY ROUTE THE SAME (the user 2026-10-01: "it should act the EXACT same for all rooms"; picked "Every room opens the game's own
         // window behind it, as Professions does"): the rooms whose hand-over lived on the touch path only (Settings, Bags, the Spellbook and
         // its Talents, Character) let go HERE, before the new room takes, for every route that leaves them - a touch, the bar cursor, a game
@@ -1223,9 +1237,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         if (calIn) calendarView.onShown()
         // ... and the same rooms take the controller here, for every route that brings them up (each tap guarded on the room not
         // holding already: a room the GAME opened holds before its jump lands here, so nothing is tapped then - the trainer lend too)
-        if (!fightLeft) touchRoomsEnter(was, r)
-        // a room shown in a fight whose take is pending (doc.enter came first) gets its enter tap now
-        fightEnterCheck()
+        touchRoomsEnter(was, r)
+        // in a fight the pad follows the room shown now (PadOwnerSync)
+        padOwnerStep()
         GameUi.onRoom(r)
     }
 
@@ -1251,26 +1265,69 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var socialTry = 0
 
     /**
-     * SPEC_COMBAT 9 / 10: the pending enter (Interact's doc.enter) is tapped ONCE when what waits is actually on screen - its room shown
-     * (HomeBack.roomsOf), or for "npc" Interact's window up (never a hidden or late one: Interact's ruling) - and once more after
-     * RETRY_MS while the same appearance is still pending (a tap lost to the park point; the cell is safe to repeat). Called from every
-     * current interact document and from show().
+     * combat_nav Step 3 (PadOwnerSync): does the bottom screen want the pad now - a room, a Home module (map, chat, an aura list, the
+     * tool), the bar cursor, a radial, the pause or target radial, InteractView or DialogView. Never while the game menu has it.
      */
-    private fun fightEnterCheck() {
-        val w = fightEnter.want ?: return
-        val onScreen = if (w.forId == "npc") ::interactView.isInitialized && interactView.visibility == View.VISIBLE
-            else room.name in HomeBack.roomsOf(w.forId)
-        if (!onScreen) return
-        val id = w.forId
-        fightEnter.enterNow(id)?.let { (row, col) ->
+    private fun bottomWantsPad(): Boolean = bottomWantsPadBesidesDialogs() || dialogWantsPad()
+
+    /** everything but DialogView (Interact i152: a dead player's DEATH pop-up alone never asks for an ENTER) */
+    private fun bottomWantsPadBesidesDialogs(): Boolean =
+        room != Room.HOME || homeView.homeGuestWanted() || tradOpen() || radialView.isOpen || barSelect.open ||
+            (::pauseView.isInitialized && pauseView.isOpen) || spellsOverlay.visibility == View.VISIBLE ||
+            // a loot / NPC window left with B in this fight wants the pad no more (its LEAVE went out; Step 4)
+            (::interactView.isInitialized && interactView.visibility == View.VISIBLE && !padOwner.npcLeft)
+
+    // a pop-up as the box, or the rolls open - never the folded rolls pill (DialogView.wantsPad; the review of 2026-11-11)
+    private fun dialogWantsPad(): Boolean = ::dialogView.isInitialized && dialogView.wantsPad()
+
+    /** one look of the reconciler: from every current interact document, show(), and a tick while a fight lasts */
+    private fun padOwnerStep() {
+        val now = SystemClock.uptimeMillis()
+        // combat_nav Step 4: B at a held window's top level (doc.fightBack stepped): the app's LEAVE, once
+        padOwner.backAsked()?.let { (row, col) ->
+            leftIds = setOfNotNull(padOwner.holder); leftAt = now
             val sent = TapBridge.tap(this, questsPad, row, col) { }
-            Log.i("WCHOME", "fight enter: $row $col for $id ${if (sent) "sent" else "not sent"}")
-            ui.postDelayed({
-                fightEnter.retryNow(id)?.let { (rr, cc) ->
-                    val again = TapBridge.tap(this, questsPad, rr, cc) { }
-                    Log.i("WCHOME", "fight enter: once more $rr $cc for $id (still pending) ${if (again) "sent" else "not sent"}")
-                }
-            }, FightEnter.RETRY_MS)
+            Log.i("WCHOME", "pad owner: B at the window's top level -> LEAVE $row $col ${if (sent) "sent" else "not sent"}")
+            return
+        }
+        // B GOES HOME FROM EVERY ROOM IN A FIGHT (the user, 2026-11-12: "ALL ROOMS SHOULD ALWAYS GO HOME WITH B EVEN IN COMBAT"; 1429: B in
+        // Bags did nothing after the pull): the room's own B at its top level let go through the capture, which in a fight only asks
+        // (Interact i151's doc.fightHome) - Home now, and show() runs this again: nothing wants the pad there, so the LEAVE goes out
+        padOwner.homeAsked()?.let { who ->
+            if (PadOwnerSync.fightHomeGoes(who, room.name)) {
+                Log.i("WCHOME", "pad owner: B in ${room.name} let $who go in the fight -> Home (the LEAVE follows)")
+                show(Room.HOME)
+                return
+            }
+            Log.i("WCHOME", "pad owner: B let $who go in the fight, not the room on screen (${room.name}): stays")
+        }
+        val others = bottomWantsPadBesidesDialogs()
+        val dlg = dialogWantsPad()
+        val deathOnly = !others && dlg && dialogView.wantsPadForDeathOnly()
+        val outOfFight = padOwner.mode == null
+        val st = padOwner.step(others || dlg, now, deathOnly)
+        if (outOfFight && st.act == PadOwnerSync.Act.LEAVE) {
+            // Interact i152 (the user, 2026-11-12: "I died and then my jump input just stopped working"): the router stuck in room mode
+            // out of a fight with nobody holding - every routed press went to the add-on's empty sink; its own LEAVE flips it back
+            st.cell?.let { (row, col) ->
+                val sent = TapBridge.tap(this, questsPad, row, col) { }
+                Log.i("WCHOME", "pad owner: OUT-OF-FIGHT room mode -> LEAVE ${if (sent) "sent" else "not sent"} ($row $col)")
+            }
+            return
+        }
+        when (st.act) {
+            PadOwnerSync.Act.NONE -> {}
+            PadOwnerSync.Act.ENTER, PadOwnerSync.Act.LEAVE -> st.cell?.let { (row, col) ->
+                // the LEAVE's release by "B" is the app's own (it must never pull a room Home): HomeBack.isOwnLeave
+                if (st.act == PadOwnerSync.Act.LEAVE) { leftIds = setOfNotNull(padOwner.holder); leftAt = now }
+                val sent = TapBridge.tap(this, questsPad, row, col) { }
+                Log.i("WCHOME", "pad owner: ${st.act} $row $col ${if (sent) "sent" else "not sent"} (room $room, mode ${padOwner.mode})")
+            }
+            PadOwnerSync.Act.STUCK -> {
+                Log.w("WCLOG", "pad owner: STUCK - ${PadOwnerSync.TRIES} taps and the mode is still ${padOwner.mode ?: "room (out of a fight)"} (room $room, " +
+                    "holder ${padOwner.holder ?: "-"})")
+                if (::roomCue.isInitialized) roomCue.stuck()
+            }
         }
     }
 
@@ -1317,12 +1374,16 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     /** the module's touches and the player menu's outcomes: every tap from `partycfg.pad` (PartyTaps), on the pad the app holds */
     private fun partyWire() {
         val live = PartyModel.live
+        // m129 (party_design.md C, Touch): a plate's tap is its pick cell; the add-on's snippet decides (off = Target; another member
+        // = the pick moves; the picked one = the Touch action). The module draws a pick at once (the partybox corrects it)
         homeView.onPartyCell = { i ->
-            val cells = PartyTaps.touch(live.cfg, i)
+            val cells = PartyTaps.choose(live.cfg, i)
             when {
-                !live.tapsAllowed(SystemClock.uptimeMillis()) -> Log.i("WCHOME", "party: touch on $i refused (the roster just changed)")
-                cells == null -> Log.i("WCHOME", "party: touch on $i: no cell (no partycfg / column)")
-                else -> TapBridge.taps(this, questsPad, cells) { why -> Log.i("WCHOME", "party: touch on $i not sent: $why") }
+                !live.tapsAllowed(SystemClock.uptimeMillis()) -> Log.i("WCHOME", "party: tap on $i refused (the roster just changed)")
+                cells == null -> Log.i("WCHOME", "party: tap on $i: no cell (no partycfg / column)")
+                TapBridge.taps(this, questsPad, cells) { why -> Log.i("WCHOME", "party: tap on $i not sent: $why") } ->
+                    if (live.choose(i) != null) partyRedraw()
+                else -> {}
             }
         }
         homeView.onPartyLong = { i ->
@@ -1331,9 +1392,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 partyWheel(i, byPad = false)
             } else Log.i("WCHOME", "party: hold on $i: the menu was not asked")
         }
-        homeView.onPartyTag = {
-            val sent = PartyTaps.on(live.cfg)?.let { TapBridge.taps(this, questsPad, it) { } } == true
-            Log.i("WCHOME", "party: the (-) tag: on ${if (sent) "tapped" else "not sent"}")
+        // party_design.md E: the Select tab turns Party mode on (off / not bound) or off (on); the look follows the document only
+        homeView.onPartyTag = { wantOn ->
+            val cells = if (wantOn) PartyTaps.on(live.cfg) else PartyTaps.off(live.cfg)
+            val sent = cells?.let { TapBridge.taps(this, questsPad, it) { } } == true
+            Log.i("WCHOME", "party: the Select tab: ${if (wantOn) "on" else "off"} ${if (sent) "tapped" else "not sent"}")
         }
         homeView.partyMenu.onDo = { d, byPad ->
             val menu = homeView.partyMenu
@@ -1401,17 +1464,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         settingsView.partyChanged()
     }
 
-    private var partyHsLast = ""
     private fun partyDoc(p: PartyModel.Party, current: Boolean) {
         // 2026-11-04 (the user: logged in on another character, "it showed my hunter as myself in the party"): a party document from the
         // log's history may be another character's; only a CURRENT one is shown (the add-on sends its own within seconds of a login)
         if (!current) return
-        // m96: the live hit counts feed the combat-log estimate (CombatHealth)
-        val at = System.currentTimeMillis()
-        for (m in p.m) CombatHealth.counts(m.g, m.cw, m.cc, m.ch, at, m.cs)
         val live = PartyModel.live
-        // m79: which reader each member's health came from, logged when it changes (2026-11-04: "staying at full health for everyone")
-        p.m.joinToString(" ") { "${it.u}=${it.hs ?: "?"}" }.let { if (it != partyHsLast) { partyHsLast = it; Log.i("WCPARTY", "health sources: $it") } }
         val wasOn = live.party?.on == true
         if (live.onParty(p, current, SystemClock.uptimeMillis())) partyRedraw()
         if (current && p.on && !wasOn) partyAsk(PartyModel.Ask.PARTY_ON)
@@ -1453,7 +1510,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
      */
     /** the capture's holder (a current interact document): a taker while Party mode is on -> off (PartyModel.State.takerSeen) */
     private fun partyTaker(holder: String) {
-        if (!PartyModel.live.takerSeen(holder, SystemClock.uptimeMillis())) return
+        // m132: in a fight a holder only suspends Party mode (never the off tap: the user, a healer, "usable in combat")
+        if (!PartyModel.live.takerSeen(holder, SystemClock.uptimeMillis(), homeView.fightShown())) return
         if (homeView.partyMenu.isOpen) homeView.partyMenu.close()
         if (partyWheelOpen()) targetRadial.close("Party mode left")
         val sent = PartyTaps.off(PartyModel.live.cfg)?.let { TapBridge.taps(this, questsPad, it) { w -> Log.i("WCHOME", "party: off not sent: $w") } } == true
@@ -1463,7 +1521,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private fun partyLeaveHome(why: String) {
         if (homeView.partyMenu.isOpen) homeView.partyMenu.close()
         if (partyWheelOpen()) targetRadial.close("Party mode left")
-        if (!PartyModel.offOnLeave(PartyModel.live.party)) return
+        if (!PartyModel.offOnLeave(PartyModel.live.party, homeView.fightShown())) return     // m132: never in a fight
         val sent = PartyTaps.off(PartyModel.live.cfg)?.let { TapBridge.taps(this, questsPad, it) { w -> Log.i("WCHOME", "party: off not sent: $w") } } == true
         Log.i("WCHOME", "party: left Home ($why): off ${if (sent) "tapped" else "not sent"}")
     }
@@ -1513,6 +1571,12 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 // the pause wheel's D-pad Left / Right (the user, 2026-10-16): the Track Pad / the Keyboard, the same tool on its tab
                 "trackpad", "typetool" -> { if (room != Room.HOME) show(Room.HOME); homeView.post { homeView.openTypeTool(0) } }
                 "keyboard" -> { if (room != Room.HOME) show(Room.HOME); homeView.post { homeView.openTypeTool(1) } }
+                // pk1: Polestar's Skip step / Previous step, where the player is (no room opens); pk3: a refusal (now, or the add-on's
+                // answer) says why on the wheel's own line, in whatever room the wheel was opened
+                PolestarSkip.KEY_SKIP, PolestarSkip.KEY_PREV -> {
+                    psWheelAt = SystemClock.uptimeMillis()
+                    mapView.polestarPress(prev = s.key == PolestarSkip.KEY_PREV)?.let { pauseView.note(it) }
+                }
             }
             else -> {}
         }
@@ -1588,7 +1652,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         fun synth(id: String, handle: (org.json.JSONObject) -> Unit): (String, Boolean, Boolean) -> Unit = { k, down, _ ->
             if (down) handle(org.json.JSONObject().put("type", "guestpad").put("id", id).put("k", k).put("n", --directN))
         }
-        fun live(id: String): () -> Boolean = { guestShown(id) && capHolder == "pad:$id" }
+        // combat_nav Step 3: in a fight's room mode the shown surface is live too (the in-place swap / the stray ENTER's "app" holder)
+        fun live(id: String): () -> Boolean = { PadOwnerSync.directLive(guestShown(id), capHolder == "pad:$id", padOwner.roomMode()) }
         val lr = setOf(DirectPadKeys.LB, DirectPadKeys.RB)
         DirectPad.register(DirectPad.Reg("quests", DirectPadKeys.EIGHT, repeat = setOf("PADDUP", "PADDDOWN"), active = live("quests")) { k, down, rp ->
             if (down) questsView.onDirect(k, rp) })
@@ -1964,7 +2029,23 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             }
             "pnavroute" -> if (current) { mapView.polestar.onRoute(msg, SystemClock.elapsedRealtime()); mapView.invalidate() }
             "pqol" -> if (current) { PolestarQol.onDoc(msg); if (::settingsView.isInitialized) settingsView.postInvalidate() }     // pq1: Polestar's automation
-            "pstep" -> if (current) mapView.onPolestarStep(msg)          // ps1: Polestar's own objective, the light blue row
+            "pstep" -> if (current) { mapView.onPolestarStep(msg); if (room == Room.MAP) worldMapRoom.postInvalidate() }   // ps1: the light blue row
+            "pskip" -> if (current) {                                   // pk1: a Skip / Previous answered
+                val ok = msg.optBoolean("ok")
+                Log.i("WCMAP", "polestar ${msg.optString("op")}: ${if (ok) "ok, step ${msg.optInt("i")}" else "refused ${msg.optString("why", "")}"}" +
+                    (if (msg.has("u")) ", undo ${msg.optInt("u")}" else ""))
+                // pk3: the undo count at once (Previous right after a Skip); a refusal's line where the press came from
+                val line = PolestarSkip.refusedLine(msg.optString("why", "").takeUnless { ok })
+                val where = PolestarSkip.noteWhere(ok, line, SystemClock.uptimeMillis(), psWheelAt, room == Room.MAP)
+                psWheelAt = 0L                                          // (one answer per press)
+                mapView.onPolestarSkipAnswer(msg, note = where == PolestarSkip.Where.HOME_MAP)
+                when (where) {
+                    PolestarSkip.Where.WHEEL -> if (::pauseView.isInitialized) line?.let { pauseView.note(it) }
+                    PolestarSkip.Where.MAP_ROOM -> line?.let { worldMapRoom.sayLine(it) }
+                    else -> {}
+                }
+                if (room == Room.MAP) worldMapRoom.postInvalidate()
+            }
             "routewp" -> if (current) {
                 routeWp.onAnswer(msg.optString("op"), msg.optBoolean("ok"), SystemClock.elapsedRealtime())
                 Log.i("WCMAP", "route pin: ${msg.optString("op")} ${if (msg.optBoolean("ok")) "ok" else "refused"} ${msg.optString("why", "")}")
@@ -2144,8 +2225,15 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                         }, FightLeave.RETRY_MS)
                     }
                 }, FightLeave.SETTLE_MS)
-                // ... and a room or window wanting the controller in a fight waits for ONE tap on the enter cell (doc.enter)
-                if (current) { fightEnter.note(msg); fightEnterCheck() }
+                // ... and in a fight the pad follows the bottom screen (PadOwnerSync: ENTER / LEAVE on Interact's fightMode), the game menu
+                // open at the pull locking the bottom screen until it closes (the user's decision 1, 2026-11-11)
+                if (current) {
+                    val wasFight = padOwner.mode != null
+                    padOwner.note(msg, current)
+                    if (::gameMenuLock.isInitialized) gameMenuLock.locked = padOwner.gmLock
+                    padOwnerStep()
+                    if (!wasFight && padOwner.mode != null) { ui.removeCallbacks(padOwnerTick); ui.postDelayed(padOwnerTick, PAD_OWNER_TICK_MS) }
+                }
                 // B handed the controller back (interact's shared capture, rel.n / rel.by): Home, as the user ruled
                 // ... and the disc that showed B gets its press (the user: "Pushing B should have the button push effect and do the
                 // yellow flash"), on Home too (a window closed over Home)
@@ -2346,6 +2434,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 lastPadMap = it; if (::settingsView.isInitialized) { settingsView.requestLayout(); settingsView.invalidate() }
                 if (::combatKeep.isInitialized) combatKeep.onMap(it, current)     // the In-combat backup (the user's "Both" ruling)
                 spellbookView.onPadMap(it); controllerView.onPadMap(it); homeView.onPadMap(it); spellsOverlay.onPadMap(it)
+                if (current) mapView.qitemArmed = it.qitem?.id ?: 0          // ps4: the light blue row's Y glyph (PadMap m132)
                 if (current) { newSpellMap = it; it.dpad?.name?.takeIf { n -> n.isNotEmpty() }?.let { n -> newSpellWho = "$n-${it.dpad.realm ?: ""}" } }
                 // the D-pad room bar (Spells' m24): the Settings row's state, and the once-per-character prompt
                 it.dpad?.let { d ->
@@ -2371,6 +2460,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             "facecd" -> if (current) PadMapModel.parseCd(msg)?.let { homeView.onFaceCd(it) }
             // the fight flag also from Spells' facewatch (Tracking after test18): Home's D-pad picture follows the newest word
             "facewatch" -> if (current) homeView.onFightWord(msg.optBoolean("fight", false))
+            // m127: Smart Y's list edits answered (a refusal said on its Add row; the user, 2026-11-11: it was never read)
+            "smartyack" -> if (current && ::settingsView.isInitialized) settingsView.onSmartAck(msg.optString("op"), msg.optBoolean("ok", false), msg.optString("why").ifEmpty { null })
             "padack" -> if (current) PadMapModel.parseAck(msg)?.let {
                 spellbookView.onPadAck(it); controllerView.onPadAck(it)
                 // issue #136 (2026-11-11): the toolbar switch refused by the game (a fight, no character) is logged; DpadChoice re-sends it
@@ -2579,11 +2670,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         tail = PlayModes.pick(PlayModes.current, PlayModes.bridgeLog, onMessage, onStatus) {
             LogTail(follow.first(), onMessage = onMessage, onStatus = onStatus, follow = follow)
         }.also { it.start() }
-        // 2026-11-07: the combat log sits in the same Logs folder as the game's own log
-        clogTail?.stop(); clogTail = null
+        // m129: the combat log is no longer read (no health on the bottom); the files our older add-ons made still go
         if (!streaming) java.io.File(log).parentFile?.let { dir ->
-            CombatHealth.clear()
-            clogTail = CombatLogTail(dir) { ui.post { if (!shell.hostGone()) partyRedraw() } }.also { it.start() }
             // 1.0.19 (the user's pick "Delete ours older than a day"): the combat log files (Party mode's, PadMap m92 / m95-97) piled up in
             // the game's Logs folder (264 MB on the Thor in two days); only WoWCombatLog-*.txt older than 24 h, nothing else there
             Thread {
@@ -2642,6 +2730,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     }
 
     fun onDestroy() {
+        Theme.removeListener(themeChanged)
         ui.removeCallbacks(guardTick); guardReader?.stop(); guardReader = null
         ArtHarvest.offState(iconArtState)
         IndoorSchedulerStep.stop()
@@ -3586,12 +3675,27 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         if (key != pinStateLast || now - pinStateAt >= 5_000L) { pinStateLast = key; pinStateAt = now; Log.i("WCMAP", "route pin: $why") }
     }
 
+    /** pk3: when a Skip / Previous was last picked on the pause wheel (uptime ms, 0 none): its answer's refusal goes on the wheel's line */
+    private var psWheelAt = 0L
+
+    /** pk1: one Skip ([prev] false) or Previous on Map.lua's "pnav" row (38 then 10 / 11; the one tap worker keeps it apart from
+     *  PolestarNav's batches). False = not sent (an older add-on, the game not live) */
+    private fun polestarSkipTap(prev: Boolean): Boolean {
+        val pad = questsPad ?: return false
+        if (pad.optJSONObject("rows")?.has(PolestarNav.ROW) != true) return false
+        val cols = PolestarSkip.cols(prev)
+        Log.i("WCMAP", "polestar ${if (prev) "previous" else "skip"}: tap $cols")
+        return TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why -> Log.i("WCMAP", "polestar skip: tap failed: $why") }
+    }
+
     // POLESTAR AS THE ROUTER (b-route-polestar): PolestarNav decides the taps of Map.lua's row "pnav" (only while the setting is Polestar;
     // switching away cancels its guidance)
     private fun polestarTick() {
         val pad = questsPad ?: return
         if (pad.optJSONObject("rows")?.has(PolestarNav.ROW) != true) return          // an older add-on: no Polestar bridge
-        val cols = mapView.polestar.tick(mapView.polestarGoal(), SystemClock.elapsedRealtime())
+        // pn4 (the user, 2026-11-11): the add-on is told while the light blue Polestar row holds (its compass leads to Polestar's goal);
+        // int/1429: the same word is ps4's "row picked" (PadMap m132's starter item on Y): ONE sender, this tick (PolestarPickTell folded in)
+        val cols = mapView.polestar.tick(mapView.polestarGoal(), SystemClock.elapsedRealtime(), mapView.polestarHolds())
         if (cols.isEmpty()) {
             // pq1: Polestar's automation, when our choice differs from the one the add-on holds (its own batch: never inside a GO's digits)
             val q = PolestarQol.taps(GameUi.character, SystemClock.elapsedRealtime())
@@ -3604,7 +3708,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         Log.i("WCMAP", "polestar: tap $cols")
         // spaced (the user, 2026-11-11: the Polestar path never showed): a cell swallows a second press within 0.25 s, so a target like
         // "1, 34, 1" lost its second digit, the add-on never had all seven and never asked Polestar (RouteWaypoint spaces its digits too)
-        TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why -> Log.i("WCMAP", "polestar: tap failed: $why") }
+        TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why ->
+            mapView.polestar.lost(); Log.i("WCMAP", "polestar: tap failed: $why") }       // (ps4: the row's word said again)
     }
 
     private fun cleanExit(why: String, done: (Boolean) -> Unit) {
@@ -3666,6 +3771,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         @Volatile private var sweepRegistered = false
         /** a holder seen with its room hidden this long is freed (the one rule for every room; see freeHidden) */
         private const val HIDDEN_GRACE = 3_000L
+        /** combat_nav Step 3: PadOwnerSync's look while a fight lasts (a surface opening or closing needs no hook of its own) */
+        private const val PAD_OWNER_TICK_MS = 150L
         /** a room left by the game's own B: its leave taps wait this long for the release (bPressed; the echo lands well within 1 s) */
         private const val B_LEAVE_MS = 1_000L
         private const val SETUP_SHOW_ANYWAY_MS = 120_000L   // b138: a waiting prompt shows by now at the latest (a new character's intro ran ~85 s)

@@ -4,125 +4,133 @@ import com.jrees.wowcompanion.PartyLayout.Box
 import com.jrees.wowcompanion.PartyLayout.Mode
 import com.jrees.wowcompanion.PartyModel.Dir
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** every number of PARTY_BUILD.md 4.2 for n = 1..5 x {rest, fight on, fight off}; the tag's two places; NAV = 3.4 */
+/**
+ * party_design.md C, "ADAPTIVE ROWS" and m134's "PLAYER / PET REVISION" + "SELECT TAB LOOK" (the user, 2026-11-11, after using 1428:
+ * "the player is too small and the pet is too big. I think the pet should be to the right of the player"; the Select tab "attached to
+ * the side of the screen"): the cells right of the Select tab, every shape x {rest, fight on, takeover}
+ */
 class PartyLayoutTest {
     private fun b(l: Int, t: Int, r: Int, bb: Int) = Box(l.toFloat(), t.toFloat(), r.toFloat(), bb.toFloat())
-    // the cells' own geometry, Party mode on (no side tab); theTag checks the tab and the shift it makes
-    private fun mod(mode: Mode, n: Int) = PartyLayout.module(mode, n, tagShown = false)
 
-    @Test fun atRest() {
-        mod(Mode.REST, 1).let { assertEquals(listOf(b(20, 228, 603, 330)), it.cells); assertEquals(b(8, 216, 615, 342), it.well) }
-        mod(Mode.REST, 2).let {
-            assertEquals(listOf(b(20, 228, 603, 330), b(20, 341, 603, 443)), it.cells); assertEquals(b(8, 216, 615, 455), it.well)
-        }
-        mod(Mode.REST, 3).let {
-            assertEquals(listOf(b(20, 228, 603, 356), b(20, 367, 305, 467), b(318, 367, 603, 467)), it.cells)
-            assertEquals(b(8, 216, 615, 479), it.well); assertEquals(487f, it.chatTop)
-        }
-        mod(Mode.REST, 4).let {
-            assertEquals(listOf(b(20, 228, 603, 356), b(20, 367, 205, 467), b(218, 367, 403, 467), b(416, 367, 601, 467)), it.cells)
-            assertEquals(b(8, 216, 615, 479), it.well)
-        }
-        mod(Mode.REST, 5).let {
-            assertEquals(listOf(b(20, 228, 603, 356), b(20, 367, 305, 467), b(318, 367, 603, 467), b(20, 478, 305, 578), b(318, 478, 603, 578)),
-                it.cells)
-            assertEquals(b(8, 216, 615, 590), it.well); assertEquals(598f, it.chatTop)
-        }
+    /** every shape the module holds: no pet n 1..5, the pet n 2..6 */
+    private val shapes = (1..5).map { it to false } + (2..6).map { it to true }
+
+    @Test fun upToThreeFullRows() {
+        val m = PartyLayout.module(Mode.REST, 3)
+        assertEquals(listOf(b(68, 228, 603, 292), b(68, 300, 603, 364), b(68, 372, 603, 436)), m.cells)
+        assertEquals(b(56, 216, 615, 448), m.well); assertEquals(456f, m.chatTop); assertEquals(listOf(0, 1, 2), m.rows)
+        PartyLayout.module(Mode.REST, 1).let { assertEquals(listOf(b(68, 228, 603, 292)), it.cells); assertEquals(b(56, 216, 615, 304), it.well) }
+        // no pet: you full width whatever the size (the user: "WHEN NO PET MAKE THE PLAYER FULL SIZED")
+        for (n in 1..5) assertEquals(b(68, 228, 603, 292), PartyLayout.module(Mode.REST, n).cells[0])
     }
 
-    @Test fun inAFightPartyModeOn() {
-        val wellH = mapOf(1 to 174f, 2 to 335f, 3 to 335f, 4 to 335f, 5 to 496f)
-        for (n in 1..5) {
-            val m = mod(Mode.FIGHT_ON, n)
-            assertEquals("n $n", wellH[n], m.well.h)
-            assertTrue(m.cells.all { it.h == 150f })
-            assertEquals(b(20, 228, 603, 378), m.cells[0])
-            for (k in 1 until m.cells.size) assertEquals(if (k <= 2 || n < 5) 389f else 550f, m.cells[k].t)
+    @Test fun theBottomRowsConsolidate() {
+        // n 4: e1 | e2 | (e3 e4) - halves, 8 px apart
+        PartyLayout.module(Mode.REST, 4).let { m ->
+            assertEquals(listOf(b(68, 228, 603, 292), b(68, 300, 603, 364), Box(68f, 372f, 331.5f, 436f), Box(339.5f, 372f, 603f, 436f)), m.cells)
+            assertEquals(listOf(0, 1, 2, 2), m.rows)
+            assertEquals(m.cells[2].w, m.cells[3].w, 0.01f); assertEquals(8f, m.cells[3].l - m.cells[2].r, 0.01f)
         }
-        mod(Mode.FIGHT_ON, 5).let { assertEquals(b(8, 216, 615, 712), it.well); assertEquals(720f, it.chatTop) }
-        mod(Mode.FIGHT_ON, 3).let { assertEquals(listOf(285f, 285f), it.cells.drop(1).map { c -> c.w }) }
+        // n 5: you | (p1 p2) | (p3 p4); with the pet: (you pet) | p1 | (p2 p3) and (you pet) | (p1 p2) | (p3 p4)
+        assertEquals(listOf(0, 1, 1, 2, 2), PartyLayout.module(Mode.REST, 5).rows)
+        assertEquals(listOf(0, 0, 1, 2, 2), PartyLayout.module(Mode.REST, 5, pet = true).rows)
+        assertEquals(listOf(0, 0, 1, 1, 2, 2), PartyLayout.module(Mode.REST, 6, pet = true).rows)
+        assertEquals(listOf(0, 0, 1, 2), PartyLayout.module(Mode.REST, 4, pet = true).rows)
+        for (n in 3..6) assertEquals(b(56, 216, 615, 448), PartyLayout.module(Mode.REST, n, pet = n == 6).well)
     }
 
-    @Test fun inAFightPartyModeOff() {
-        mod(Mode.FIGHT_OFF, 1).let { assertEquals(listOf(b(20, 410, 603, 512)), it.cells); assertEquals(b(8, 398, 615, 524), it.well) }
-        mod(Mode.FIGHT_OFF, 2).let { assertEquals(listOf(b(20, 410, 603, 510), b(20, 521, 603, 621)), it.cells) }
-        mod(Mode.FIGHT_OFF, 3).let { assertEquals(listOf(285f, 285f), it.cells.drop(1).map { c -> c.w }) }
-        mod(Mode.FIGHT_OFF, 4).let { assertEquals(listOf(b(20, 521, 205, 621), b(218, 521, 403, 621), b(416, 521, 601, 621)), it.cells.drop(1)) }
-        mod(Mode.FIGHT_OFF, 5).let {
-            assertEquals(listOf(b(20, 410, 603, 510), b(20, 521, 156, 621), b(169, 521, 305, 621), b(318, 521, 454, 621), b(467, 521, 603, 621)),
-                it.cells)
-            assertEquals(b(8, 398, 615, 633), it.well); assertEquals(641f, it.chatTop)
+    /** m134: the pet ALWAYS on your right in the first row, you the big cell (about 70 / 30) */
+    @Test fun thePetSitsRightOfYouAndSmaller() {
+        for ((n, pet) in shapes.filter { it.second }) {
+            val m = PartyLayout.module(Mode.REST, n, pet = true)
+            val you = m.cells[0]; val p = m.cells[1]
+            assertEquals("n $n: one row", m.rows[0], m.rows[1]); assertEquals(0, m.rows[1])
+            assertEquals(68f, you.l); assertEquals(603f, p.r); assertEquals(8f, p.l - you.r, 0.01f)
+            assertEquals(PartyLayout.PET_SHARE * (535f - 8f), p.w, 0.01f)
+            assertTrue("the pet clearly secondary (about a third)", p.w < you.w * 0.55f)
+            assertTrue("nobody else on the first row", m.rows.count { it == 0 } == 2)
         }
+        // the party's halves under you + pet stay equal
+        PartyLayout.module(Mode.REST, 6, pet = true).let { m -> assertEquals(m.cells[2].w, m.cells[3].w, 0.01f) }
     }
 
-    @Test fun theTag() {
-        // 2026-11-04: the side tab down the well's left inside edge, the cells after it; Party mode on: no tab, the cells as before
-        val withTab = PartyLayout.module(Mode.REST, 3)
-        assertEquals(b(20, 228, 56, 467), withTab.tag)
-        assertEquals(64f, withTab.cells[0].l); assertEquals(603f, withTab.cells[0].r)
-        assertEquals(b(8, 216, 615, 479), withTab.well)
-        assertNull(mod(Mode.REST, 3).tag)
-        val p = PartyLayout.tagParts(withTab.tag!!)
-        assertEquals(38f, p.glyphCx); assertEquals(32f, p.glyph)
-        assertTrue(PartyLayout.hitTag(withTab, 30f, 300f))
-        assertTrue(!PartyLayout.hitTag(withTab, 300f, 300f))
+    @Test fun rowHeightsPerMode() {
+        for ((n, pet) in shapes) {
+            assertTrue(PartyLayout.module(Mode.REST, n, pet).cells.all { it.h == 64f })
+            assertTrue(PartyLayout.module(Mode.FIGHT_ON, n, pet).cells.all { it.h == 88f })
+            val t = PartyLayout.module(Mode.FIGHT_OFF, n, pet)
+            assertTrue(t.cells.all { it.h == 56f }); assertEquals(398f, t.well.t)
+            assertEquals(n, t.cells.size)
+            assertEquals(PartyModel.rows(n, pet).size, t.rows.distinct().size)
+            assertTrue(t.cells.all { it.l >= 68f && it.r <= 603f })
+        }
+        PartyLayout.module(Mode.FIGHT_ON, 5).let { assertEquals(b(56, 216, 615, 520), it.well); assertEquals(528f, it.chatTop) }
     }
 
-    @Test fun cellParts() {
-        val c = b(20, 228, 603, 330)
-        assertEquals(b(22, 230, 602, 317), PartyLayout.hpBar(c))
-        assertEquals(b(22, 323, 602, 329), PartyLayout.power(c))
-        assertEquals(b(26, 236, 72, 282), PartyLayout.role(c))
-        assertEquals(b(30, 242, 64, 276), PartyLayout.skull(c))
-        val half = PartyLayout.hpFill(c, 50, full = false)
-        assertEquals(312f, half.box!!.r); assertNull(half.fadeFrom)          // a hard line, never a fade
-        assertNull(PartyLayout.hpFill(c, 100, full = true).fadeFrom)
-        assertNull(PartyLayout.hpFill(c, 0, full = false).box)
-        assertEquals(0x0000FF, PartyLayout.powerRgb("MANA")); assertEquals(0x808080, PartyLayout.powerRgb("RUNIC_POWER"))
-        assertEquals("72%", PartyLayout.pctText(72, false)); assertEquals("Offline", PartyLayout.pctText(72, true))
-        assertEquals(2, PartyLayout.hit(mod(Mode.REST, 3), 400f, 400f)); assertEquals(-1, PartyLayout.hit(mod(Mode.REST, 3), 700f, 400f))
+    /**
+     * the user's decision 1 (2026-11-11): the tab STAYS, so nothing moves when Party mode turns on or off; m134 ("sit outside of the
+     * player brand look more like its attached to the side of the screen"): flush on the screen's left edge, the well's full height,
+     * the member band to its right
+     */
+    @Test fun theSelectTabStandsOnTheScreensEdge() {
+        val m = PartyLayout.module(Mode.REST, 3)
+        assertEquals(b(0, 216, 52, 448), m.tag)
+        assertTrue(m.tag.r < m.well.l && m.cells.all { it.l > m.tag.r })
+        assertTrue(PartyLayout.hitTag(m, 10f, 300f)); assertFalse(PartyLayout.hitTag(m, 300f, 300f))
+        assertEquals(1, PartyLayout.hit(m, 300f, 330f)); assertEquals(-1, PartyLayout.hit(m, 30f, 330f)); assertEquals(-1, PartyLayout.hit(m, 700f, 330f))
+        val tall = PartyLayout.tabParts(m.tag)
+        assertEquals(26f, tall.glyphCx); assertEquals(32f, tall.glyph); assertEquals(20f, tall.arrow); assertFalse(tall.bOnArrow)
+        assertTrue(tall.glyphCy < tall.arrowCy && tall.arrowCy < tall.bCy)
+        // one row at rest: the well's margins make the tab 88 high, all three parts fit; the takeover's one row (80): B on the arrow
+        val r1 = PartyLayout.module(Mode.REST, 1).tag
+        assertFalse(PartyLayout.tabParts(r1).bOnArrow)
+        val t1 = PartyLayout.module(Mode.FIGHT_OFF, 1).tag
+        val s = PartyLayout.tabParts(t1)
+        assertTrue("B swaps in for the arrow", s.bOnArrow); assertEquals(s.arrowCy, s.bCy); assertTrue(s.b > 0f)
+        assertTrue("the glyph and the B inside the tab",
+            s.glyphCy - s.glyph / 2f >= t1.t && s.bCy + s.b / 2f <= t1.b && s.glyphCy + s.glyph / 2f <= s.bCy - s.b / 2f)
+        for ((n, pet) in shapes) for (mode in Mode.values()) {
+            val t = PartyLayout.module(mode, n, pet).tag
+            val p = PartyLayout.tabParts(t)
+            assertTrue("$mode $n $pet: inside", p.glyphCy - p.glyph / 2f >= t.t && p.bCy + p.b / 2f <= t.b)
+        }
+        // the notch at the picked cell's row centre (a shared row's two cells: the same notch)
+        assertEquals(332f, PartyLayout.notchY(m, 2)); assertEquals(404f, PartyLayout.notchY(m, 9))
+        val m5 = PartyLayout.module(Mode.REST, 5)
+        assertEquals(PartyLayout.notchY(m5, 2), PartyLayout.notchY(m5, 3)); assertTrue(PartyLayout.notchY(m5, 4) > PartyLayout.notchY(m5, 3))
+        // the tab spans the well (three rows at most)
+        assertEquals(b(0, 216, 52, 448), PartyLayout.module(Mode.REST, 6, pet = true).tag)
     }
 
-    /** a stand-in for the font: 0.5 px per px of size per letter */
-    private val measure: (String, Float) -> Float = { s, size -> s.length * size * 0.5f }
-
-    @Test fun wordsShrinkThenTwoLinesNeverCut() {
-        val row = b(20, 228, 603, 330)
-        PartyLayout.words(row, "Korvash", "~100%", dead = false, big = false, measure = measure).let {
-            assertEquals(listOf("Korvash"), it.lines); assertEquals(30f, it.size); assertEquals(70f, it.x); assertEquals(589f, it.pctRight)
-            assertEquals(259f, it.pctY)
-        }
-        PartyLayout.words(b(20, 228, 603, 356), "Korvash", "~100%", false, big = true, measure = measure).let {
-            assertEquals(34f, it.size); assertEquals(32f, it.pctSize)
-        }
-        // a small cell (185 wide): a long name shrinks first, then takes two lines when it would go under 22 px
-        val small = b(20, 367, 205, 467)
-        PartyLayout.words(small, "Brannoc", "~72%", false, false, measure).let { assertEquals(1, it.lines.size); assertEquals(28f, it.size)
-            assertEquals(32f, it.x); assertEquals(435f, it.pctY); assertEquals(193f, it.pctRight) }
-        PartyLayout.words(small, "Seraphine Duskwhisperer", "~91%", false, false, measure).let {
-            assertEquals(listOf("Seraphine", "Duskwhisperer"), it.lines); assertTrue(it.size <= 26f)
-            assertTrue(measure("Duskwhisperer", it.size) <= 205f - 12f - 32f - 2f)
-            assertEquals(listOf(389f, 415f), it.ys); assertEquals(441f, it.pctY); assertEquals(26f, it.pctSize)
-        }
-        // dead: no %, the name from x 50
-        PartyLayout.words(small, "Tamsin", "~0%", dead = true, big = false, measure = measure).let { assertNull(it.pct); assertEquals(70f, it.x) }
+    @Test fun plateParts() {
+        val p = b(68, 228, 603, 292)
+        assertEquals(b(68, 228, 74, 292), PartyLayout.stripe(p))
+        assertEquals(b(82, 240, 122, 280), PartyLayout.icon(p, Mode.REST))
+        assertEquals(48f, PartyLayout.icon(b(68, 228, 603, 316), Mode.FIGHT_ON).w)
+        assertEquals(134f, PartyLayout.nameX(p, Mode.REST)); assertEquals(24f, PartyLayout.nameSize(Mode.REST)); assertEquals(28f, PartyLayout.nameSize(Mode.FIGHT_ON))
+        // m134: no chips and no LB glyph - the name runs to the plate's end
+        assertEquals(603f - 18f - 134f, PartyLayout.nameRoom(p, Mode.REST))
+        // the pet's cell still leaves its name room
+        val pet = PartyLayout.module(Mode.REST, 3, pet = true).cells[1]
+        assertTrue(PartyLayout.nameRoom(pet, Mode.REST) > 60f)
     }
 
-    @Test fun navIsTheTable() {
-        assertEquals(2, PartyModel.nav(5, 1, Dir.DOWN)); assertEquals(4, PartyModel.nav(5, 2, Dir.DOWN)); assertEquals(3, PartyModel.nav(5, 5, Dir.UP))
-        assertEquals(1, PartyModel.nav(4, 4, Dir.UP)); assertNull(PartyModel.nav(2, 1, Dir.RIGHT)); assertNull(PartyModel.nav(1, 1, Dir.DOWN))
-        // the layout's rows are NAV's rows (rest + fight on): the box walks what is drawn
-        for (n in 1..5) {
-            val cells = mod(Mode.REST, n).cells
-            for ((r, row) in PartyModel.rows(n).withIndex()) for (i in row) {
-                val top = cells[i - 1].t
-                assertTrue(row.all { cells[it - 1].t == top })
-                if (r > 0) assertTrue(cells[PartyModel.rows(n)[r - 1][0] - 1].t < top)
+    /** the drawn cells are the NAV cells: Down goes to a cell drawn lower, Right to one drawn right in the same row */
+    @Test fun navFollowsTheDrawing() {
+        for ((n, pet) in shapes) {
+            val m = PartyLayout.module(Mode.REST, n, pet = pet)
+            for (k in 1..n) {
+                PartyModel.nav(n, k, Dir.DOWN, pet)?.let { assertTrue(m.cells[it - 1].t > m.cells[k - 1].t) }
+                PartyModel.nav(n, k, Dir.UP, pet)?.let { assertTrue(m.cells[it - 1].t < m.cells[k - 1].t) }
+                PartyModel.nav(n, k, Dir.RIGHT, pet)?.let { assertEquals(m.rows[k - 1], m.rows[it - 1]); assertTrue(m.cells[it - 1].l > m.cells[k - 1].l) }
+                PartyModel.nav(n, k, Dir.LEFT, pet)?.let { assertEquals(m.rows[k - 1], m.rows[it - 1]); assertTrue(m.cells[it - 1].l < m.cells[k - 1].l) }
             }
         }
+        assertNull(PartyModel.nav(1, 1, Dir.DOWN))
     }
 }

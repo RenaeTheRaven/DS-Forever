@@ -14,19 +14,20 @@ import sys
 
 from lupa import lua51 as lupa                    # the game's Lua is 5.1
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ADDONS = os.path.join(ROOT, "companion", "app", "src", "main", "assets", "companion", "addons")
-F = {
-    "safety": os.path.join(ADDONS, "WowCompanion", "Safety.lua"),
-    "tappad": os.path.join(ADDONS, "WowCompanion", "TapPad.lua"),
-    "quests": os.path.join(ADDONS, "WowCompanionQuests", "Quests.lua"),
-    "book": os.path.join(ADDONS, "WowCompanionSpells", "Book.lua"),
-    "padmap": os.path.join(ADDONS, "WowCompanionSpells", "PadMap.lua"),
-    "padtabctl": os.path.join(ADDONS, "WowCompanionSpells", "PadTabCtl.lua"),
-}
-SRC = {k: open(p, encoding="utf-8").read() for k, p in F.items()}
+# the stubbed game (GAME), boot / docs / nsent and the file map live in tools/wowstub.py since 2026-11-11 (shared with test_combat_pad.py)
+from wowstub import ROOT, ADDONS, F, SRC, GAME, boot, docs, nsent
+
 fails = 0
 passes = 0
+
+
+# m133: PRE with the chord flip's body (OV.fbSnip("nil")) spliced in at its mark: the router's whole snippet, as the add-on builds it
+def full_pre(src):
+    pre = re.search(r'local PRE = \[=\[(.*?)\]=\]', src, re.S).group(1)
+    body = re.search(r'function OV\.fbSnip\(fbf\)\n    return .*?\[=\[(.*?)\]=\]', src, re.S).group(1)
+    mark = "-- m133 FBSNIP: the chord flip (OV.fbSnip) is put here, below"
+    assert pre.count(mark) == 1
+    return pre.replace(mark, "\n    do\n    local fbf = nil\n" + body)
 
 
 def check(ok, name, got=''):
@@ -36,368 +37,6 @@ def check(ok, name, got=''):
         passes += 1
     else:
         fails += 1
-
-
-# ================================================================ THE STUBBED GAME (shared by every full load)
-GAME = r'''
-local STUBMT = {}
-STUB = setmetatable({}, STUBMT)
-STUBMT.__index = function() return STUB end
-STUBMT.__call = function() return nil end
-STUBMT.__newindex = function() end
-setmetatable(_G, { __index = function(_, k) return STUB end })
-
-NOW = 1000
-COMBAT = false
-function GetTime() return NOW end
-function GetTimePreciseSec() return NOW end
-function debugprofilestop() return NOW * 1000 end
-function GetServerTime() return 1700000000 + NOW end
-function InCombatLockdown() return COMBAT end
-function UnitAffectingCombat() return COMBAT end
-WowCompanionSpellsDB, WowCompanionDB = {}, {}
-WHO, REALM, CLASS = "Korvash", "Realm", "SHAMAN"
-ACT_ON_DOWN = true                 -- the game's ActionButtonUseKeyDown
-
--- the spies: none of these may ever be called (no trace: feedback_wow_no_trace; no Blizzard window code: taint)
-SPY = {}
-for _, n in ipairs({ "SetBinding", "SaveBindings", "CreateMacro", "EditMacro", "SetCVar", "PlaceAction", "PickupAction",
-                     "PickupSpell", "PickupMacro", "ShowUIPanel", "HideUIPanel", "ToggleFrame", "CloseAllBags", "OpenAllBags",
-                     "ToggleSpellBook", "InspectUnit", "TargetFrame_OpenMenu", "UnitPopup_OpenMenu", "ToggleGameMenu",
-                     "ToggleCharacter", "ToggleFriendsFrame", "CastSpellByName", "TargetUnit", "FocusUnit" }) do
-    _G[n] = function(...) SPY[#SPY + 1] = n end
-end
-VIOL = {}                         -- secure work from insecure code during the lockdown
-IN_SECURE = false
-local function blocked(what)
-    if COMBAT and not IN_SECURE then VIOL[#VIOL + 1] = what; error("ADDON_ACTION_BLOCKED " .. what, 2) end
-end
-
--- ---------------------------------------------------------------- timers
-TIMERS, TICKERS = {}, {}
-C_Timer = {
-    After = function(s, fn) TIMERS[#TIMERS + 1] = { at = NOW + s, fn = fn } end,
-    NewTicker = function(s, fn) local t = { s = s, fn = fn, Cancel = function() end }; TICKERS[#TICKERS + 1] = t; return t end,
-}
-function runTimers(upto)
-    local guard = 0
-    local again = true
-    while again and guard < 10000 do
-        again = false
-        guard = guard + 1
-        local best, bi = nil, nil
-        for i, t in ipairs(TIMERS) do if t.at <= upto and (not best or t.at < best.at) then best, bi = t, i end end
-        if best then table.remove(TIMERS, bi); local was = NOW; if best.at > NOW then NOW = best.at end; best.fn(); again = true end
-    end
-    NOW = math.max(NOW, upto)
-end
-function advance(s) runTimers(NOW + s) end
-function tick(s) for _, t in ipairs(TICKERS) do if t.s == s then pcall(t.fn) end end end
-function hooksecurefunc(a, b, c)
-    local t, k, fn = a, b, c
-    if type(a) == "string" then t, k, fn = _G, a, b end
-    local orig = t[k]
-    t[k] = function(...) local r = { orig(...) }; fn(...); return unpack(r) end
-end
-
--- ---------------------------------------------------------------- the screen
-SCREEN = { pw = 1920, ph = 1080, uh = 1080 / (126.6 / 135) }
-function GetPhysicalScreenSize() return SCREEN.pw, SCREEN.ph end
-
--- ---------------------------------------------------------------- frames
-EVT, ALLF = {}, {}
-Frame = {}
-Frame.__index = function(t, k)
-    if Frame[k] then return Frame[k] end
-    if type(k) == "string" and k:match("^[A-Z]") then return function() return nil end end
-    return nil
-end
-function CreateFrame(kind, name, parent, tpl)
-    local f = setmetatable({ _kind = kind, _name = name, _tpl = tpl or "", a = {}, refs = {}, hooks = {}, scripts = {}, wraps = {},
-                             clicks = {} }, Frame)
-    f._secure = (tpl or ""):find("Secure") ~= nil
-    if f._secure then blocked("CreateFrame " .. tostring(name)) end
-    if name then rawset(_G, name, f) end
-    ALLF[#ALLF + 1] = f
-    return f
-end
-function Frame:GetName() return self._name end
-function Frame:SetAttribute(k, v) if self._secure then blocked("SetAttribute " .. tostring(self._name) .. " " .. tostring(k)) end; self.a[k] = v end
-function Frame:GetAttribute(k) return self.a[k] end
-function Frame:GetFrameRef(k) return self.refs[k] end
-function Frame:RegisterEvent(e) EVT[e] = EVT[e] or {}; table.insert(EVT[e], self); return true end
-function Frame:RegisterUnitEvent(e) return self:RegisterEvent(e) end
-function Frame:UnregisterEvent(e) end
-function Frame:SetScript(k, fn) self.scripts[k] = fn end
-function Frame:GetScript(k) return self.scripts[k] end
-function Frame:HookScript(k, fn) self.hooks[k] = self.hooks[k] or {}; table.insert(self.hooks[k], fn) end
-function Frame:RegisterForClicks(...) self.clicks = { ... } end
-function Frame:IsShown() return self._shown ~= false end
-function Frame:IsVisible() return self._shown ~= false end
-function Frame:Show() self._shown = true end
-function Frame:Hide() self._shown = false end
-function Frame:GetID() return self._id or 0 end
-function Frame:IsForbidden() return false end
-function Frame:GetWidth() return SCREEN.pw end
-function Frame:GetHeight() return SCREEN.uh end
-function Frame:CreateTexture() return setmetatable({}, Frame) end
-function Frame:CreateFontString() return setmetatable({}, Frame) end
-function Frame:Click(button, down) doClick(self, button, down) end
-UIParent = setmetatable({ a = {}, refs = {}, hooks = {}, scripts = {}, wraps = {}, clicks = {} }, Frame)
-function UIParent:GetWidth() return SCREEN.pw / (SCREEN.ph / SCREEN.uh) end
-function UIParent:GetHeight() return SCREEN.uh end
-function fire(e, ...)
-    for _, f in ipairs(EVT[e] or {}) do
-        local fn = f.scripts.OnEvent
-        if fn then local ok, err = pcall(fn, f, e, ...); if not ok then ERRS[#ERRS + 1] = e .. ": " .. tostring(err) end end
-    end
-end
-ERRS = {}
-
--- ---------------------------------------------------------------- the restricted environment (only what the snippets may use)
-local function newtable(...) return { ... } end
-RESTRICTED = { newtable = newtable, ipairs = ipairs, pairs = pairs, tonumber = tonumber, type = type,
-               select = select, GetGamePadState = function() return { buttons = PADSTATE } end,
-               SecureCmdOptionParse = function(s) return SecureCmdOptionParse(s) end }
-PADSTATE = {}
-function compileSnippet(body, args)
-    local fn, err = loadstring("local " .. args .. " = ...\n" .. body, "=snippet")
-    if not fn then error("snippet does not compile: " .. tostring(err)) end
-    setfenv(fn, setmetatable({}, { __index = function(_, k)
-        local v = RESTRICTED[k]
-        if v == nil then error("the restricted environment has no '" .. tostring(k) .. "'", 2) end
-        return v
-    end, __newindex = function(_, k) error("snippet global write '" .. tostring(k) .. "'", 2) end }))
-    return fn
-end
-SNIPERR = {}
-function runSecure(fn, ...)
-    local was = IN_SECURE
-    IN_SECURE = true
-    local ok, r = pcall(fn, ...)
-    IN_SECURE = was
-    if not ok then SNIPERR[#SNIPERR + 1] = tostring(r); return nil end
-    return r
-end
-function SecureHandlerWrapScript(frame, script, header, pre, post)
-    blocked("WrapScript")
-    frame.wraps[script] = frame.wraps[script] or {}
-    table.insert(frame.wraps[script], { pre = compileSnippet(pre, "self, button, down"), header = header })
-    return true
-end
-function SecureHandlerSetFrameRef(frame, name, ref) blocked("SetFrameRef"); frame.refs[name] = ref end
-function RegisterStateDriver() end
-function RegisterAttributeDriver() end
-
--- the secure macro conditionals the snippets read: [@unit,exists] [@unit,dead|nodead] [@unit,help] [combat] ...
-UNITS = { player = { alive = true } }
-function SecureCmdOptionParse(s)
-    local cond, rest = s:match("^%[(.-)%]%s*(.*)$")
-    if not cond then return s end
-    local unit = "target"
-    local ok = true
-    for c in cond:gmatch("[^,]+") do
-        c = c:gsub("^%s+", ""):gsub("%s+$", "")
-        if c:sub(1, 1) == "@" then unit = c:sub(2)
-        elseif c == "combat" then ok = ok and COMBAT
-        elseif c == "nocombat" then ok = ok and not COMBAT
-        elseif c == "exists" then ok = ok and UNITS[unit] ~= nil
-        elseif c == "dead" then ok = ok and UNITS[unit] ~= nil and not UNITS[unit].alive
-        elseif c == "nodead" then ok = ok and UNITS[unit] ~= nil and UNITS[unit].alive
-        elseif c == "help" then ok = ok and UNITS[unit] ~= nil and not UNITS[unit].foe
-        elseif c == "harm" then ok = ok and UNITS[unit] ~= nil and UNITS[unit].foe == true
-        else ok = false end
-    end
-    if ok then return rest end
-    return nil
-end
-
--- ---------------------------------------------------------------- clicks and the secure action button
-ACTIONS = {}
-local function runMacro(text)
-    for line in (text or ""):gmatch("[^\n]+") do
-        local name, btn, d = line:match("^/click%s+([%w_]+)%s*(%S*)%s*(%S*)")
-        if name then
-            local t = rawget(_G, name)
-            if type(t) == "table" and t.a then doClick(t, btn ~= "" and btn or "LeftButton", d == "1" or (d == "" and true) or false) end
-        else
-            ACTIONS[#ACTIONS + 1] = { kind = "macroline", line = line }
-        end
-    end
-end
-local function secureAct(f, button, down)
-    local t = f.a["type"]
-    local hold = f.a["pressAndHoldAction"]
-    local onDown = ACT_ON_DOWN or hold
-    local act
-    if (down and onDown) or ((not down) and not onDown) then act = t
-    elseif (not down) and hold and f.a["typerelease"] then act = f.a["typerelease"] end
-    if not act then return end
-    if act == "macro" then runMacro(f.a["macrotext"])
-    elseif act == "click" then local cb = f.a["clickbutton"]; if type(cb) == "table" and cb.a then doClick(cb, button, down) end
-    else ACTIONS[#ACTIONS + 1] = { kind = act, frame = f._name, spell = f.a["spell"], unit = f.a["unit"], item = f.a["item"] } end
-end
-function doClick(f, button, down)
-    local reg = false
-    for _, c in ipairs(f.clicks) do
-        if c == "AnyDown" and down then reg = true end
-        if c == "AnyUp" and not down then reg = true end
-        if c == "LeftButtonUp" and not down and button == "LeftButton" then reg = true end
-    end
-    if #f.clicks == 0 and f._tpl:find("SecureActionButtonTemplate") then reg = not down end
-    if not reg then return end
-    for _, w in ipairs(f.wraps.OnClick or {}) do
-        local r = runSecure(w.pre, f, button, down)
-        if r == false then return end
-    end
-    if f._tpl:find("SecureHandlerClickTemplate") and f.a["_onclick"] then
-        runSecure(compileSnippet(f.a["_onclick"], "self, button, down"), f, button, down)
-    end
-    if f.scripts.OnClick then f.scripts.OnClick(f, button, down) end
-    if f._tpl:find("SecureActionButtonTemplate") then secureAct(f, button, down) end
-    for _, fn in ipairs(f.hooks.OnClick or {}) do fn(f, button, down) end
-    for _, fn in ipairs(f.hooks.PostClick or {}) do fn(f, button, down) end
-end
-
--- ---------------------------------------------------------------- bindings (override only; a spy table)
-BIND, BOWNER = {}, {}
-local function setb(owner, key, action) blocked("SetOverrideBinding " .. tostring(key)); BIND[key] = action; BOWNER[key] = owner end
-function SetOverrideBindingClick(owner, prio, key, name, mb) setb(owner, key, "CLICK " .. name .. ":" .. (mb or "LeftButton")) end
-function SetOverrideBinding(owner, prio, key, action) setb(owner, key, action) end
-function ClearOverrideBindings(owner)
-    blocked("ClearOverrideBindings")
-    for k, o in pairs(BOWNER) do if o == owner then BIND[k] = nil; BOWNER[k] = nil end end
-end
-function GetBindingAction(key) return BIND[key] or "" end
-KEYOF = { GAMEPADACTIONBUTTON1 = "PADDLEFT", GAMEPADACTIONBUTTON2 = "PADDUP", GAMEPADACTIONBUTTON3 = "PADDRIGHT",
-          GAMEPADACTIONBUTTON4 = "PADDDOWN", GAMEPADACTIONBUTTON5 = "PAD3", GAMEPADACTIONBUTTON6 = "PAD4", GAMEPADACTIONBUTTON7 = "PAD2",
-          GAMEPADACTIONBUTTON8 = "PAD1", OPENRADIAL = "PADFORWARD", TOGGLEUIFOCUS = "PADBACK" }
-function GetBindingKey(b) return KEYOF[b] end
-function press(key, down)
-    local a = BIND[key]
-    if type(a) ~= "string" then return false end
-    local name, mb = a:match("^CLICK ([%w_]+):(%S+)$")
-    if not name then return false end
-    doClick(rawget(_G, name), mb, down)
-    return true
-end
-function tapKey(key) local ok = press(key, true); press(key, false); return ok end
-C_GamePad = { ButtonBindingToIndex = function(n) if n == "PADLTRIGGER" then return 10 elseif n == "PADRTRIGGER" then return 11 end end }
-LT_I, RT_I = 11, 12
-
--- ---------------------------------------------------------------- the game's own gamepad bar (four anchors, one bar each)
-local function mkbar(prefix, base)
-    local bar = { _shown = true }
-    function bar:IsShown() return true end
-    function bar:GetParent() return nil end
-    function bar:GetActionButtonByIndex(pos)
-        local b = setmetatable({ a = {}, refs = {}, hooks = {}, scripts = {}, wraps = {}, clicks = {}, _name = prefix .. pos, _id = base + pos }, Frame)
-        return b
-    end
-    return bar
-end
-GamepadMainActionBarFrame = { PageUnit = { TopCenteredAnchor = { Bar = mkbar("GPTop", 0) }, LeftCenteredAnchor = { Bar = mkbar("GPLeft", 12) },
-    RightCenteredAnchor = { Bar = mkbar("GPRight", 24) }, BottomCenteredAnchor = { Bar = mkbar("GPBottom", 36) }, overrideBars = {}, actionBars = {} } }
-
--- ---------------------------------------------------------------- the player, the party, the book
-function UnitName(u) local x = UNITS[u]; if u == "player" then return WHO end; return x and x.name or nil end
-function GetRealmName() return REALM end
-function UnitClass(u) if u == "player" then return CLASS, CLASS end; local x = UNITS[u]; if x then return x.cls, x.cls end end
-function UnitExists(u) return UNITS[u] ~= nil end
-function UnitIsDeadOrGhost(u) local x = UNITS[u]; return x ~= nil and not x.alive end
-function UnitIsConnected(u) local x = UNITS[u]; return x ~= nil and not x.off end
-function UnitGUID(u) local x = UNITS[u]; if not x then return nil end; return x.guid or ("Player-1-" .. (x.name or WHO)) end
-function UnitGroupRolesAssigned(u) local x = UNITS[u]; return x and x.role or "NONE" end
-function UnitPowerType(u) local x = UNITS[u]; local t = x and x.pt or "MANA"; return ({ MANA = 0, RAGE = 1, ENERGY = 3, FOCUS = 2 })[t] or 0, t end
-function UnitHealthMax(u) local x = UNITS[u]; return x and (x.hpMax or 400) or 0 end
-function UnitPowerMax(u) local x = UNITS[u]; return x and (x.pmMax or 300) or 0 end
-function UnitHealth(u) return SECRETV end
-function UnitPower(u) return SECRETV end
-function UnitLevel() return 20 end
-function IsInGroup() local n = 0; for k in pairs(UNITS) do if k:match("^party%d$") then n = n + 1 end end; return n > 0 end
-function IsInRaid() return false end
-function GetNumGroupMembers() local n = 1; for k in pairs(UNITS) do if k:match("^party%d$") then n = n + 1 end end; return n end
-SECRETV = setmetatable({}, { __tostring = function() error("secret") end })
-function issecretvalue(v) return rawequal(v, SECRETV) end
-RAID_CLASS_COLORS = { SHAMAN = { colorStr = "ff0070dd" }, WARRIOR = { colorStr = "ffc69b6d" }, PRIEST = { colorStr = "ffffffff" },
-                      MAGE = { colorStr = "ff3fc7eb" }, DRUID = { colorStr = "ffff7c0a" }, PALADIN = { colorStr = "fff48cba" },
-                      ROGUE = { colorStr = "fffff468" }, HUNTER = { colorStr = "ffaad372" }, WARLOCK = { colorStr = "ff8788ee" } }
-SPELLNAME = { [331] = "Healing Wave", [8004] = "Lesser Healing Wave", [526] = "Cure Poison", [2870] = "Cure Disease",
-              [2008] = "Ancestral Spirit", [131] = "Water Breathing", [546] = "Water Walking", [2050] = "Lesser Heal", [17] = "Power Word: Shield",
-              [527] = "Dispel Magic", [528] = "Cure Disease", [2006] = "Resurrection", [139] = "Renew", [5185] = "Healing Touch",
-              [774] = "Rejuvenation", [8946] = "Cure Poison", [2782] = "Remove Curse", [20484] = "Rebirth", [8936] = "Regrowth",
-              [635] = "Holy Light", [19750] = "Flash of Light", [1152] = "Purify", [4987] = "Cleanse", [7328] = "Redemption",
-              [633] = "Lay on Hands", [475] = "Remove Lesser Curse", [604] = "Dampen Magic", [1008] = "Amplify Magic",
-              [5697] = "Unending Breath", [1243] = "Power Word: Fortitude", [1459] = "Arcane Intellect", [403] = "Lightning Bolt",
-              [324] = "Lightning Shield", [1126] = "Mark of the Wild", [467] = "Thorns", [8017] = "Rockbiter Weapon" }
-HELPFUL = { [331] = true, [8004] = true, [526] = true, [2870] = true, [2008] = true, [131] = true, [546] = true, [324] = true,
-            [2050] = true, [17] = true, [1243] = true, [1459] = true, [8017] = true }
-BOOK = { 403, 331, 324 }                        -- the character's bindable spells, book order (a level 6 Shaman)
-C_Spell = {
-    GetSpellName = function(id) return SPELLNAME[id] end,
-    GetSpellTexture = function(id) return 130000 + (id or 0) end,
-    IsSpellHelpful = function(id) return HELPFUL[id] == true end,
-    IsSpellInRange = function(s, u) return RANGE[u] end,
-    GetSpellPowerCost = function() return {} end,
-    IsSpellUsable = function() return true, false end,
-}
-function GetSpellInfo(id) return SPELLNAME[id] end
-RANGE = {}
-AURAS = {}                                     -- unit -> { names }
-C_UnitAuras = { GetAuraDataByIndex = function(u, i)
-    local l = AURAS[u]; if not l or not l[i] then return nil end
-    if l.secret then return { name = SECRETV } end
-    return { name = l[i] } end }
-function UnitBuff() return nil end
-
--- the add-on core's sink: every line in order; WC.push / pushThrottled counted
-SENT, PUSHES, TPUSHES = {}, 0, 0
-WowCompanion = { push = function() PUSHES = PUSHES + 1 end, pushThrottled = function() TPUSHES = TPUSHES + 1 end,
-                 snapshotSoon = function() end, VERSION = "test" }
-WowCompanion.send = function(s) SENT[#SENT + 1] = s end
-WowCompanion.emit = function(t) SENT[#SENT + 1] = WowCompanion.encode(t) end
-function WowCompanion.snapshot(reason) SNAPS[#SNAPS + 1] = reason end
-SNAPS = {}
-WowCompanion.spellsBindableList = function()
-    local out = {}
-    for i, id in ipairs(BOOK) do out[#out + 1] = { id = id, slot = i } end
-    return out
-end
-WowCompanion.spellsBookSlotOf = function(id) for i, x in ipairs(BOOK) do if x == id then return i end end end
--- the shared capture (Interact): its holder (nil = nobody)
-HOLDER = nil
-WowCompanion.capture = { version = 13, state = function() return { holder = rawget(_G, "HOLDER") } end, onChange = function() return false end }
-UNFOCUSED = 0
-WowCompanion.dialogs = { unfocused = function() return UNFOCUSED end }
-'''
-
-
-def boot(files, pre=''):
-    L = lupa.LuaRuntime(unpack_returned_tuples=True)
-    L.execute(GAME)
-    if pre:
-        L.execute(pre)
-    load = L.eval('function(src, name) local f, e = loadstring(src, name); if not f then error(e) end; return f end')
-    for k in files:
-        load(SRC[k], '@' + os.path.basename(F[k]))(os.path.basename(F[k]))
-    return L
-
-
-def docs(L, start=0, typ=None):
-    out = []
-    for i in range(start + 1, int(L.eval('#SENT')) + 1):
-        s = L.eval('SENT[%d]' % i)
-        try:
-            d = json.loads(s)
-        except Exception:
-            continue
-        if typ is None or (isinstance(d, dict) and d.get('type') == typ):
-            out.append(d)
-    return out
-
-
-def nsent(L):
-    return int(L.eval('#SENT'))
 
 
 # ================================================================ STATIC: every touched file compiles as Lua 5.1, under its limits
@@ -440,7 +79,7 @@ hidden = L10.eval('(function() local r = WowCompanion.pad.rows["r54"]; local s =
 check(hidden is True, "rows 54-55 are hidden at the smallest scale (never inside a dialog)", hidden)
 
 # ================================================================ 1. PRE + Party mode (the router's real snippet, restricted)
-PRE = re.search(r'local PRE = \[=\[(.*?)\]=\]', SRC["padmap"], re.S).group(1)
+PRE = full_pre(SRC["padmap"])
 # m94 (test9, 2026-11-07: every A / X / Y / B / D-pad press dead): the game's secure checker refuses the word "function" ANYWHERE in a
 # snippet, comments included ("The function keyword is not permitted"); no secure snippet of any add-on may hold it
 _snip_bad = []
@@ -560,10 +199,13 @@ import subprocess
 r = subprocess.run([sys.executable, os.path.join(ROOT, 'tools', 'test_smarty.py')], capture_output=True, text=True)
 check(r.returncode == 0 and r.stdout.strip().endswith('ALL PASS'), "tools/test_smarty.py passes UNCHANGED", r.stdout.strip()[-60:])
 # the contract's base b187c3c1 (+ m78 Manners), then m101 (the user's ruling 2026-11-07: a soft-interact target no longer blocks Smart Y):
-# the file is pinned by its content now; change it only on a ruling, and re-pin here
+# the file is pinned by its content now; change it only on a ruling, and re-pin here. Re-pinned for m127 (the user's rulings
+# 2026-11-11: no tracking on Y, Manners its own row for other players only, one ordered list with Food / Water movable) and for m128
+# (the same order rule: the model's eating / drinking rate and the why line from the step Y uses), and for m132 (the user, 2026-11-11:
+# "My current polestar objective does not give any direction on where to go": the picked Polestar step's starting item on Y, "bag")
 import hashlib
 smarty_sha = hashlib.sha256(open(os.path.join(ROOT, 'tools', 'test_smarty.py'), 'rb').read()).hexdigest()
-check(smarty_sha == "d7707cb7c1cac46fa77e722b844d3c812937c5377303e36132114b1981b3b7c2", "tools/test_smarty.py is byte for byte the pinned contract (b187c3c1 + m78 Manners + m101 soft-interact)", smarty_sha[:12])
+check(smarty_sha == "0d1ec55e6e24f915391a1d9583351be49acbb8124fe4e724581eaf9268423758", "tools/test_smarty.py is byte for byte the pinned contract (b187c3c1 + m78 Manners + m101 soft-interact + m127 Smart Y v2 + m128 rate per kind + m132 Polestar starter, nothing targeted)", smarty_sha[:12])
 
 # ================================================================ THE WORLD: the real Spells files (and TapPad) logged in
 ROUTER_NAME = {8: "WowCompanionCombatFace8", 7: "WowCompanionFaceB", 5: "WowCompanionCombatFace5", 6: "WowCompanionCombatFace6",
@@ -666,49 +308,188 @@ flip(W, "WowCompanionPartyOff")
 d = docs(W, 0, 'partybox')
 check(len(d) >= 5 and [x['b']['k'] for x in d[-3:]] == ['off', 'on', 'off'], "every flip sends ONE partybox (k on / off)",
       [x['b']['k'] for x in d])
+# m129 ONE PICK (party_design.md A.2): PARTYFLIP "on" clamps wc-box and sets wc-u from it (the ring never empty or stale after a flip)
+W.execute('UNITS.party1 = { name = "A", alive = true }; UNITS.party2 = { name = "B", alive = true }; '
+          'local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 5; p.a["wc-u"] = "party4"')
+flip(W, "WowCompanionPartyOn")
+check(W.eval('PADA("wc-box")') == 3 and W.eval('PADA("wc-u")') == "party2" and W.eval('PADA("wc-cnt")') == 3,
+      "m129: ON with a stale box 5 / party4 and three members: box 3, wc-u party2, cnt 3", (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")')))
+W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 2; rawget(_G, "WowCompanionPartyPad").a["wc-u"] = nil')
+flip(W, "WowCompanionPartyOn")
+check(W.eval('PADA("wc-box")') == 2 and W.eval('PADA("wc-u")') == "party1", "m129: ON again keeps the box (2) and sets its unit (party1)",
+      (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")')))
+# m129: the roster's state driver (in a fight too): party2 leaves, the pick on it re-clamps to party1 and wc-u follows
+cnt = W.eval('rawget(_G, "WowCompanionPartyCount")')
+check(cnt is not None and cnt.refs['wc-pad'] is not None
+      and W.eval('(function() for _, d in ipairs(DRIVERS) do if d.f == rawget(_G, "WowCompanionPartyCount") and d.st == "cnt" then return d.cond end end end)()')
+      == "[@party4,exists]5;[@party3,exists]4;[@party2,exists]3;[@party1,exists]2;1",
+      "m129: WowCompanionPartyCount: a state driver on the roster (the design's conditions), a ref to the pad", W.eval('#DRIVERS'))
+W.execute('driveStates(); rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 3; rawget(_G, "WowCompanionPartyPad").a["wc-u"] = "party2"')
+W.execute('COMBAT = true; UNITS.party2 = nil; driveStates()')
+check(W.eval('PADA("wc-box")') == 2 and W.eval('PADA("wc-u")') == "party1" and W.eval('PADA("wc-cnt")') == 2 and W.eval('#VIOL') == 0,
+      "m129: party2 leaves IN A FIGHT: the driver re-clamps box 2 / party1 (secure, no lockdown breach)",
+      (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")'), list(W.eval('VIOL').values())[:2]))
+W.execute('COMBAT = false; UNITS.party1 = nil; driveStates(); rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1')
+flip(W, "WowCompanionPartyOff")
+check(W.eval('#SNIPERR') == 0, "PARTYFLIP / the roster's snippet run in the restricted environment without an error", W.eval('SNIPERR[1]'))
 
 # ================================================================ 2. PARTYPAD
-NAV = {  # PARTY_BUILD.md 3.4: (n, from) -> (Up, Down, Left, Right); None = no move
-    (1, 1): (None, None, None, None), (2, 1): (None, 2, None, None), (2, 2): (1, None, None, None),
-    (3, 1): (None, 2, None, None), (3, 2): (1, None, None, 3), (3, 3): (1, None, 2, None),
-    (4, 1): (None, 2, None, None), (4, 2): (1, None, None, 3), (4, 3): (1, None, 2, 4), (4, 4): (1, None, 3, None),
-    (5, 1): (None, 2, None, None), (5, 2): (1, 4, None, 3), (5, 3): (1, 5, 2, None), (5, 4): (2, None, None, 5), (5, 5): (3, None, 4, None),
-}
+# m134 THE PLAYER / PET ROW (party_design.md "PLAYER / PET REVISION"; the user, 2026-11-11, after using 1428: "I think the pet should be
+# to the right of the player"): the first row is you alone, or you + the pet on your right; the party members fill the rows under it by
+# the adaptive rule among themselves (1-2: full rows; 3: a full row then a shared one; 4: 2x2). THE TABLE IS BUILT FROM THE GEOMETRY
+# HERE (an independent statement of the rule, never the add-on's code): every cell has a row and a column span (full = 0..2, left 0..1,
+# right 1..2; you / the pet are the first row's left / right); Left / Right = the cell touching it in its row; Up / Down = the cells of
+# the next row that overlap its span, the leftmost (from a full cell into a shared row: its left). No wrap.
+def nav_rows(n, pet):
+    head = [1, 2] if pet else [1]
+    k = n - len(head)
+    p = list(range(len(head) + 1, n + 1))
+    full = k if k <= 2 else 4 - k
+    body = [[x] for x in p[:full]] + [p[i:i + 2] for i in range(full, k, 2)]
+    return [head] + body
+
+
+def nav_grid(n, pet):
+    out = {}
+    for r, row in enumerate(nav_rows(n, pet)):
+        if len(row) == 1:
+            out[row[0]] = (r, 0, 2)
+        else:
+            out[row[0]] = (r, 0, 1); out[row[1]] = (r, 1, 2)
+    assert sorted(out) == list(range(1, n + 1))
+    return out
+
+
+def nav_geo(n, pet, fr, d):
+    g = nav_grid(n, pet)
+    r, lo, hi = g[fr]
+    if d in ("left", "right"):
+        for k, (r2, lo2, hi2) in g.items():
+            if r2 == r and ((d == "left" and hi2 == lo) or (d == "right" and lo2 == hi)):
+                return k
+        return None
+    tr = r - 1 if d == "up" else r + 1
+    cand = sorted((lo2, k) for k, (r2, lo2, hi2) in g.items() if r2 == tr and lo2 < hi and hi2 > lo)
+    return cand[0][1] if cand else None
+
+
 DIRS = ("up", "down", "left", "right")
 DPOS = {"up": 2, "down": 4, "left": 1, "right": 3}
+# every shape: n 1..5 with no pet (you + 0..4 party), n 2..6 with the pet (you + pet + 0..4 party)
+SHAPES = [(n, pet) for n in range(1, 7) for pet in (False, True) if (n - 1 - (1 if pet else 0)) in range(0, 5)]
+check(len(SHAPES) == 10, "m131: 10 shapes (n 1 no pet .. n 6 with the pet)", SHAPES)
+NAV = {(n, pet, fr): tuple(nav_geo(n, pet, fr, d) for d in DIRS) for n, pet in SHAPES for fr in range(1, n + 1)}
+# the user's own words, spelled out
+check([nav_rows(n, False) for n in range(1, 6)] == [[[1]], [[1], [2]], [[1], [2], [3]], [[1], [2], [3, 4]], [[1], [2, 3], [4, 5]]]
+      and [nav_rows(n, True) for n in range(2, 7)] == [[[1, 2]], [[1, 2], [3]], [[1, 2], [3], [4]], [[1, 2], [3], [4, 5]],
+                                                       [[1, 2], [3, 4], [5, 6]]],
+      "m134: the rows: you (+ the pet on your right) first, the party under it (1-2 full rows, 3: full + shared, 4: 2x2)")
+check(NAV[(4, False, 2)] == (1, 3, None, None) and NAV[(4, False, 4)] == (2, None, 3, None) and NAV[(5, False, 1)] == (None, 2, None, None)
+      and NAV[(5, False, 3)] == (1, 5, 2, None) and NAV[(2, True, 1)] == (None, None, None, 2) and NAV[(3, True, 2)] == (None, 3, 1, None)
+      and NAV[(3, True, 3)] == (1, None, None, None) and NAV[(6, True, 2)] == (None, 4, 1, None) and NAV[(6, True, 4)] == (2, 6, 3, None)
+      and NAV[(5, True, 5)] == (3, None, 4, None),
+      "m134: the table's spot checks (pet: you Right = the pet, the pet Down = party1, party1 Up = you; 2x2 under you + pet: same side)")
 NAVL = lupa.LuaRuntime(unpack_returned_tuples=True)
 NAVL.execute('OV = {}\n' + re.search(r'-- PARTY-NAV-BEGIN[^\n]*\n(.*?)-- PARTY-NAV-END', SRC["padmap"], re.S).group(1))
 nav = NAVL.eval('OV.partyNav')
 bad = []
-for (n, fr), want in NAV.items():
+for (n, pet, fr), want in NAV.items():
     for dname, w in zip(DIRS, want):
-        got = nav(n, fr, dname)
+        got = nav(n, fr, dname, pet)
         if got != (w if w is not None else fr):
-            bad.append((n, fr, dname, got))
-check(not bad, "OV.partyNav = the 3.4 table, all 15 rows x 4 directions", bad[:4])
-nav_lua = re.search(r'-- PARTY-NAV-BEGIN.*?OV\.partyNav = function\(n, box, dir\)\n(.*?)\n\s*return nb\n\s*end\n\s*-- PARTY-NAV-END', SRC_PM := open(F["padmap"], encoding="utf-8").read(), re.S)
+            bad.append((n, pet, fr, dname, got))
+check(not bad, "m134: OV.partyNav = the geometric table, all %d (shape, box) x 4 directions" % len(NAV), bad[:4])
+nav_lua = re.search(r'-- PARTY-NAV-BEGIN.*?OV\.partyNav = function\(n, box, dir, pet\)\n(.*?)\n\s*return nb\n\s*end\n\s*-- PARTY-NAV-END', SRC_PM := open(F["padmap"], encoding="utf-8").read(), re.S)
 nav_snip = re.search(r'-- PARTY-NAV-BODY-BEGIN\n(.*?)\n\s*-- PARTY-NAV-BODY-END', SRC_PM, re.S)
 norm = lambda t: re.sub(r'\s+', ' ', t).strip()
 check(nav_lua is not None and nav_snip is not None and norm(nav_lua.group(1)) == norm(nav_snip.group(1)),
       "the PARTYPAD snippet carries the same NAV body as OV.partyNav")
-# the snippet itself, member counts 1..5, every row and direction, through the router (Party mode on)
+# the app's JVM test reads the same table (PartyModelTest: PartyModel.nav must equal it for every shape): kept with the fixtures
+NAV_FIXTURE = json.dumps({"rows": [{"n": n, "pet": pet, "box": fr, "up": w[0], "down": w[1], "left": w[2], "right": w[3]}
+                                   for (n, pet, fr), w in sorted(NAV.items())]}, separators=(",", ":"), sort_keys=True)
+# the snippet itself through the router (Party mode on), every SHAPE: n = 1..6 with the pet out and without (n 6 has the pet; n 1 none)
 flip(W, "WowCompanionPartyOn")
 MEMBERS = [["Brannoc", "WARRIOR", True, "TANK"], ["Iselle", "MAGE"], ["Doran", "ROGUE", True, "DAMAGER", "ENERGY"], ["Mira", "PRIEST", True, "HEALER", "MANA"]]
+
+
+def shape(L, n, pet):
+    L.eval('party')(L.table_from([L.table_from(m) for m in MEMBERS[:n - 1 - (1 if pet else 0)]]))
+    L.execute('UNITS.pet = %s' % ('{ name = "Wolf", alive = true }' if pet else 'nil'))
+
+
+def units_of(n, pet):
+    return ["player"] + (["pet"] if pet else []) + ["party%d" % i for i in range(1, n - (1 if pet else 0))]
+
+
 bad = []
-for (n, fr), want in NAV.items():
-    W.eval('party')(W.table_from([W.table_from(m) for m in MEMBERS[:n - 1]]))
-    for dname, w in zip(DIRS, want):
-        W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = %d' % fr)
-        a0 = nact(W)
-        W.execute('hit(%d)' % DPOS[dname])
-        got = W.eval('PADA("wc-box")')
-        if got != (w if w is not None else fr) or nact(W) != a0 or W.eval('PADA("wc-k")') != "move":
-            bad.append((n, fr, dname, got, W.eval('PADA("wc-k")')))
-check(not bad, "PARTYPAD's D-pad = the 3.4 table for n = 1..5 (through the router; never a game action)", bad[:4])
+for n, pet in SHAPES:
+    shape(W, n, pet)
+    us = units_of(n, pet)
+    for fr in range(1, n + 1):
+        for dname, w in zip(DIRS, NAV[(n, pet, fr)]):
+            W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = %d' % fr)
+            a0 = nact(W)
+            W.execute('hit(%d)' % DPOS[dname])
+            got = W.eval('PADA("wc-box")')
+            want = w if w is not None else fr
+            # m134 HIGHLIGHTING = TARGETING: a move that moved targets the new entry in the same click; an edge press targets nothing
+            tgt = [("target", None, us[want - 1])] if w is not None else []
+            if got != want or W.eval('PADA("wc-u")') != us[want - 1] or acts(W, a0) != tgt or W.eval('PADA("wc-k")') != "move" \
+                    or W.eval('PADA("wc-cnt")') != n:
+                bad.append((n, pet, fr, dname, got, W.eval('PADA("wc-u")'), W.eval('PADA("wc-k")'), acts(W, a0)))
+check(not bad, "m134: PARTYPAD's D-pad = the table in all 10 shapes (k move, wc-u the entry: you, pet, party1..); a move TARGETS the new "
+      "entry in the same click, an edge press nothing", bad[:4])
+W.execute('UNITS.pet = nil')
+# m129 ONE PICK: every move sets wc-u with wc-box
+W.eval('party')(W.table_from([W.table_from(m) for m in MEMBERS[:3]]))
+W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1; rawget(_G, "WowCompanionPartyPad").a["wc-u"] = nil; hit(4); hit(4)')
+check(W.eval('PADA("wc-box")') == 3 and W.eval('PADA("wc-u")') == "party2", "m131: four entries, Down twice: box 3 (the bottom row's left), wc-u party2",
+      (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")')))
+W.execute('hit(3)')
+check(W.eval('PADA("wc-box")') == 4 and W.eval('PADA("wc-u")') == "party3" and W.eval('PADA("wc-k")') == "move",
+      "m131: Right in the shared row: box 4, party3 (k move)", (W.eval('PADA("wc-box")'), W.eval('PADA("wc-k")')))
+W.execute('hit(3)')
+check(W.eval('PADA("wc-box")') == 4, "m131: Right at the row's right: no wrap", W.eval('PADA("wc-box")'))
 W.execute('party({}); rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 4')
 W.execute('hit(2)')
 check(W.eval('PADA("wc-box")') == 1, "a box past n (someone left) clamps to n", W.eval('PADA("wc-box")'))
 check(W.eval('#SNIPERR') == 0, "PARTYPAD runs in the restricted environment without an error", W.eval('SNIPERR[1]'))
+# m131 THE PET IS A PICK TARGET: A casts on "pet"; Y with nothing to cast on the pet does nothing (no player menu for a pet)
+W.eval('party')(W.table_from([W.table_from(m) for m in MEMBERS[:1]]))
+W.execute('UNITS.pet = { name = "Wolf", alive = true }; local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 2; '
+          'p.a["wc-ps-a"] = "Healing Wave"; p.a["wc-pmenu"] = nil')
+a0 = nact(W)
+W.execute('hit(8)')
+check(acts(W, a0) == [("spell", "Healing Wave", "pet")] and W.eval('PADA("wc-u")') == "pet", "m131: box 2 with the pet out = the pet: A casts on \"pet\"",
+      acts(W, a0))
+a0 = nact(W)
+W.execute('hit(6)')
+check(acts(W, a0) == [] and W.eval('PADA("wc-k")') == "none" and W.eval('PADA("wc-pmenu")') is None,
+      "m131: Y on the pet with no Smart Y pick: nothing (no menu sub-state)", (acts(W, a0), W.eval('PADA("wc-k")')))
+W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-pb-pet"] = "Water Breathing"')
+a0 = nact(W)
+W.execute('hit(6)')
+check(acts(W, a0) == [("spell", "Water Breathing", "pet")], "m131: Y on the pet with Smart Y's pick for it: cast on the pet", acts(W, a0))
+W.execute('local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-pb-pet"] = nil; p.a["wc-ps-a"] = nil')
+# m131: the roster's driver on the pet: the pet goes in a fight - the pick on party1 (box 3) KEEPS party1 (box 2 now); the pet comes back:
+# box 3 again, still party1; the pick ON the pet when it goes: clamped (box 2 = party1)
+cnt = W.eval('rawget(_G, "WowCompanionPartyCount")')
+check(W.eval('(function() for _, d in ipairs(DRIVERS) do if d.f == rawget(_G, "WowCompanionPartyCount") and d.st == "pet" then return d.cond end end end)()')
+      == "[@pet,exists]1;0" and cnt.a['_onstate-pet'] == cnt.a['_onstate-cnt'],
+      "m131: the roster's frame has a second driver on the pet ([@pet,exists]1;0), the same snippet")
+W.execute('driveStates(); local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 3; p.a["wc-u"] = "party1"')
+W.execute('COMBAT = true; UNITS.pet = nil; driveStates()')
+check(W.eval('PADA("wc-box")') == 2 and W.eval('PADA("wc-u")') == "party1" and W.eval('PADA("wc-cnt")') == 2 and W.eval('#VIOL') == 0,
+      "m131: the pet dismissed IN A FIGHT: the pick stays on party1 (box 3 -> 2), no lockdown breach",
+      (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")'), list(W.eval('VIOL').values())[:2]))
+W.execute('UNITS.pet = { name = "Wolf", alive = true }; driveStates()')
+check(W.eval('PADA("wc-box")') == 3 and W.eval('PADA("wc-u")') == "party1" and W.eval('PADA("wc-cnt")') == 3,
+      "m131: the pet back: still party1 (box 3)", (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")')))
+W.execute('local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 2; p.a["wc-u"] = "pet"; UNITS.pet = nil; driveStates()')
+check(W.eval('PADA("wc-box")') == 2 and W.eval('PADA("wc-u")') == "party1", "m131: the picked pet gone: the box clamps (2 = party1 now)",
+      (W.eval('PADA("wc-box")'), W.eval('PADA("wc-u")')))
+W.execute('COMBAT = false; party({}); UNITS.pet = nil; driveStates(); rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1')
+check(W.eval('#SNIPERR') == 0, "the pet's driver runs in the restricted environment without an error", W.eval('SNIPERR[1]'))
 
 
 def setps(L, **kv):
@@ -785,20 +566,28 @@ d = docs(W, 0, 'partybox')[-1]['b']
 check(d['k'] == 'key' and d['key'] == 'PADDUP' and d['pm'] is True and d['box'] == 2, "its partybox: k key, key PADDUP, pm true", d)
 flip(W, "WowCompanionPartyMenuDone")
 check(W.eval('PADA("wc-pmenu")') is None and W.eval('PADA("wc-party")') is True, "MENU DONE clears the sub-state (Party mode stays on)")
-# Y in combat: wc-py on a help,nodead member, else the menu
+# Y in combat: wc-py on a help,nodead member; m132 (the user, a healer: usable in combat): NEVER the player menu in a fight (its
+# sub-state held every press until MENU DONE) - no In combat action: Smart Y's party buff armed for the member before the fight, else Target
 W.execute('COMBAT = true; rawget(_G, "WowCompanionPartyPad").a["wc-py"] = "Healing Wave"; rawget(_G, "WowCompanionPartyPad").a["wc-pb-party1"] = "Water Breathing"')
 a0 = nact(W)
 W.execute('hit(6)')
-check(acts(W, a0) == [("spell", "Healing Wave", "party1")], "Y in combat: its in-combat spell on the member (never Smart Y's buff)", acts(W, a0))
+check(acts(W, a0) == [("spell", "Healing Wave", "party1")], "Y in combat: its in-combat spell on the member (before Smart Y's buff)", acts(W, a0))
 for why, setup in (("dead", 'UNITS.party1.alive = false'), ("not assistable", 'UNITS.party1.foe = true')):
     W.execute('UNITS.party1.alive = true; UNITS.party1.foe = nil; rawget(_G, "WowCompanionPartyPad").a["wc-pmenu"] = nil; ' + setup)
     a0 = nact(W)
     W.execute('hit(6)')
-    check(acts(W, a0) == [] and W.eval('PADA("wc-k")') == "menu", "Y in combat, the member " + why + ": the menu", W.eval('PADA("wc-k")'))
+    check(acts(W, a0) == [("target", None, "party1")] and W.eval('PADA("wc-k")') == "target" and W.eval('PADA("wc-pmenu")') is None,
+          "m132: Y in combat, the member " + why + ": Target it (no menu sub-state)", (acts(W, a0), W.eval('PADA("wc-k")')))
 W.execute('UNITS.party1.alive = true; UNITS.party1.foe = nil; local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-pmenu"] = nil; p.a["wc-py"] = nil')
 a0 = nact(W)
 W.execute('hit(6)')
-check(acts(W, a0) == [] and W.eval('PADA("wc-k")') == "menu", "Y in combat, Inspect chosen (no wc-py): the menu", W.eval('PADA("wc-k")'))
+check(acts(W, a0) == [("spell", "Water Breathing", "party1")] and W.eval('PADA("wc-k")') == "cast",
+      "m132: Y in combat, no In combat action: Smart Y's party buff armed before the fight (wc-pb-party1) on the member", acts(W, a0))
+W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-pb-party1"] = nil')
+a0 = nact(W)
+W.execute('hit(6)')
+check(acts(W, a0) == [("target", None, "party1")] and W.eval('PADA("wc-k")') == "target" and W.eval('PADA("wc-pmenu")') is None,
+      "m132: Y in combat, nothing armed: Target the member, never the menu", (acts(W, a0), W.eval('PADA("wc-k")')))
 W.execute('rawget(_G, "WowCompanionPartyPad").a["wc-pmenu"] = nil')
 # B = Party mode off on all 8 refs, in a fight too
 W.execute('hit(7)')
@@ -843,7 +632,8 @@ setps(W4, a="Healing Wave")
 W4.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1')
 a0 = nact(W4)
 W4.execute('tapKey("PADDDOWN"); tapKey("PAD1")')
-check(acts(W4, a0) == [("spell", "Healing Wave", "party1")], "by keys: Down boxes party1, A heals party1", acts(W4, a0))
+check(acts(W4, a0) == [("target", None, "party1"), ("spell", "Healing Wave", "party1")],
+      "by keys: Down boxes AND targets party1 (m134), A heals party1", acts(W4, a0))
 W4.execute('tapKey("PAD2"); advance(0.3)')
 k = keys(W4)
 check(W4.eval('PADA("wc-party")') is None and k.get("SHIFT-PAD1") == "JUMP" and k.get("PADDLEFT") == "TOGGLEAUTORUN" and "PAD1" not in k
@@ -877,50 +667,79 @@ for holder, win in (("spells", None), ("pad:home", None), ("pad:radial", None), 
     check(W4.eval('PADA("wc-party")') is None and k.get("SHIFT-PAD1") == "JUMP" and "PAD1" not in k
           and k.get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton",
           "%s let go: Party mode is still OFF (today's plan, Select the toggle's)" % what, k)
-# IN A FIGHT (secure attributes locked): the add-on cannot flip it. (a) the APP's tap on party col 11 (a secure click) ends it at once,
-# with no lockdown breach; the 8 keys stay carried to the router buttons for the fight (today's fight carry), which now act as today
+# m132 A PROMPT ONLY SUSPENDS (out of combat): a loot roll, a static popup, a ready check steps the router aside (A answers it) but
+# Party mode stays on and is back, every key ours, when it closes - also when the prompt is one of the controller manager's frames
+for win in ("GroupLootFrame1", "StaticPopup1", "StaticPopup4", "ReadyCheckFrame", "managed:StaticPopup2",
+            "managed:GamepadGroupLootRollFrame", "managed:GroupLootFrame2", "holder:dialogs"):
+    managed = win.startswith("managed:")
+    holder = win.startswith("holder:")
+    name = win.split(":")[-1]
+    W4.execute('if not PADA("wc-party") then tapKey("PADBACK"); advance(0.3) end')
+    if holder:
+        W4.execute('HOLDER = "%s"' % name)
+    else:
+        W4.execute('%s = { IsShown = function() return true end }' % name)
+    if managed:
+        W4.execute('GamepadMode = { FrameControlsManager = { shownFrames = { %s } } }' % name)
+    n0 = nsent(W4)
+    W4.execute('NOW = NOW + 2; tick(0.1); advance(0.6)')
+    pd = docs(W4, n0, 'party')
+    check(W4.eval('PADA("wc-party")') is True and pd and pd[-1]['p']['on'] is True and pd[-1]['p'].get('aside')
+          and not any(v.startswith("CLICK WowCompanion") for v in keys(W4).values()),
+          "m132: %s out of combat: SUSPENDED (router aside, nothing of ours bound) but Party mode stays on" % win,
+          (W4.eval('PADA("wc-party")'), pd and pd[-1]['p'], keys(W4)))
+    W4.execute(('HOLDER = nil' if holder else '%s = nil' % name) + '; GamepadMode = nil; NOW = NOW + 2; tick(0.1); advance(0.6)')
+    check(W4.eval('PADA("wc-party")') is True and keys(W4) == want, "m132: %s closed: Party mode live again, all 8 keys + Select" % win, keys(W4))
+W4.execute('tapKey("PADBACK"); advance(0.3)')
+# IN A FIGHT (m132, the user, a healer: "Party mode needs to be usable in combat for healers. Locking it is retarded"): NOTHING turns it
+# off. (a) party col 11 (a secure click: the bottom tab's off) still ends it at once, with no lockdown breach
 W4.execute('tapKey("PADBACK"); advance(0.3); fire("PLAYER_REGEN_DISABLED"); COMBAT = true; HOLDER = "spells"')
 W4.execute('local c = WowCompanion.pad.rows.party.cells[11]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3')
 k = keys(W4)
 check(party_on_all(W4) == [None] * 9 and W4.eval('#VIOL') == 0 and k.get("PAD1") == "CLICK WowCompanionCombatFace8:LeftButton",
-      "a room takes the controller in a fight, the app taps party col 11: OFF at once (secure, no breach); A stays the fight router's", k.get("PAD1"))
+      "a tap on party col 11 in a fight: OFF at once (secure, no breach); A stays the fight router's", k.get("PAD1"))
 W4.execute('HOLDER = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
 check(W4.eval('PADA("wc-party")') is None and "PAD1" not in keys(W4), "... the fight ends: still off, today's plan", keys(W4).get("PAD1"))
-# (b) the app's tap lost: the add-on notes the taker (its 1 s tick / the capture's onChange) and turns Party mode off at the fight's end,
-# even when the taker let go before it
+# (b) a room holds in the fight (its 1 s tick, the capture's change): Party mode stays set through the fight and after it
 W4.execute('tapKey("PADBACK"); advance(0.3); fire("PLAYER_REGEN_DISABLED"); COMBAT = true; HOLDER = "spells"; tick(1)')
-check(W4.eval('PADA("wc-party")') is True and W4.eval('#VIOL') == 0, "a room takes it in a fight, no tap from the app: still set (no insecure flip)",
+check(W4.eval('PADA("wc-party")') is True and W4.eval('#VIOL') == 0, "m132: a room holds in a fight: Party mode still set (suspended only)",
       list(W4.eval('VIOL').values())[:2])
 W4.execute('HOLDER = nil; tick(1)')
 n0 = nsent(W4)
 W4.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
 pd = docs(W4, n0, 'party')
-check(party_on_all(W4) == [None] * 9 and pd and pd[-1]['p']['on'] is False and "PAD1" not in keys(W4),
-      "... the fight ends (the room already let go): OFF, the party document says so, today's plan", (party_on_all(W4), keys(W4).get("PAD1")))
-# (c) a game window seen in the fight (a loot window): the same at the fight's end
-W4.execute('tapKey("PADBACK"); advance(0.3); fire("PLAYER_REGEN_DISABLED"); COMBAT = true; LootFrame = { IsShown = function() return true end }; tick(1)')
+check(party_on_all(W4) == [True] * 9 and all(x['p']['on'] is True for x in pd) and keys(W4) == want,
+      "m132: ... the fight ends (the room let go): STILL ON, no party document says off, its keys bound", (pd and pd[-1]['p'], keys(W4) == want))
+# (c) a game window seen in the fight (a loot window): still on at the fight's end
+W4.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true; LootFrame = { IsShown = function() return true end }; tick(1)')
 W4.execute('LootFrame = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
-check(W4.eval('PADA("wc-party")') is None, "a loot window in a fight: OFF at the fight's end", W4.eval('PADA("wc-party")'))
+check(W4.eval('PADA("wc-party")') is True, "m132: a loot window in a fight: still ON at the fight's end", W4.eval('PADA("wc-party")'))
+W4.execute('tapKey("PADBACK"); advance(0.3)')
 # (d) nothing took the controller: a fight leaves Party mode on
 W4.execute('tapKey("PADBACK"); advance(0.3); fire("PLAYER_REGEN_DISABLED"); COMBAT = true; tick(1)')
 W4.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
 check(W4.eval('PADA("wc-party")') is True and keys(W4) == want, "a fight with no taker: Party mode stays on, its keys bound", keys(W4))
 W4.execute('tapKey("PADBACK"); advance(0.3)')
-# a fight's start: Select only while grouped or already in Party mode
+# a fight's start: m132 Select ALWAYS while Party mode is allowed (solo too); solo and off, the player's own chords stay (nothing to
+# turn on for), grouped they give way to the party layers
 W4.eval('party')(W4.table_from([]))
 W4.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
 k = keys(W4)
-check("PADBACK" not in k and k.get("PAD2") == "CLICK WowCompanionFaceB:LeftButton", "a fight's start, solo, Party mode off: Select stays the game's (the router carries its keys)", k)
+check(k.get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton" and k.get("PAD2") == "CLICK WowCompanionFaceB:LeftButton"
+      and k.get("SHIFT-PAD1") == "JUMP", "m132: a fight's start, solo, Party mode off: Select carried to the toggle; the router carries its keys; chords kept", k)
 W4.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 W4.eval('party')(W4.table_from([W4.table_from(MEMBERS[0])]))
 W4.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
 k = keys(W4)
-check(k.get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton", "a fight's start, grouped: Select carried to the toggle", k.get("PADBACK"))
+check(k.get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton" and "SHIFT-PAD1" not in k and "PADDLEFT" in k
+      and k["PADDLEFT"].startswith("CLICK WowCompanion"),
+      "a fight's start, grouped: Select carried to the toggle; m132: no m34 chord (SHIFT-PAD1 / PADDLEFT) over the party layers", k)
 W4.execute('tapKey("PADBACK")')
 check(W4.eval('PADA("wc-party")') is True and W4.eval('#VIOL') == 0, "in the fight Select switches Party mode on (secure only)", list(W4.eval('VIOL').values()))
 a0 = nact(W4)
 W4.execute('rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1; tapKey("PADDDOWN"); tapKey("PAD1")')
-check(acts(W4, a0) == [("spell", "Healing Wave", "party1")], "... and its presses reach the party pad mid-fight (carried keys)", acts(W4, a0))
+check(acts(W4, a0) == [("target", None, "party1"), ("spell", "Healing Wave", "party1")],
+      "... and its presses reach the party pad mid-fight (carried keys; the move targets, m134)", acts(W4, a0))
 W4.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 W4.eval('party')(W4.table_from([]))
 W4.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
@@ -928,7 +747,8 @@ check(keys(W4).get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton", "a 
       keys(W4).get("PADBACK"))
 W4.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 W4.execute('UNFOCUSED = 1; fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
-check("PADBACK" not in keys(W4), "a fight's start with an unfocused dialog: Select stays the game's", keys(W4).get("PADBACK"))
+check(keys(W4).get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton", "m132: a fight's start with an unfocused dialog: Select still the toggle's",
+      keys(W4).get("PADBACK"))
 W4.execute('COMBAT = false; UNFOCUSED = 0; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 check(W4.eval('#SPY') == 0 and W4.eval('#VIOL') == 0, "the spy: no SetBinding / SaveBindings / macro / CVar / bar write / Blizzard window call; no lockdown breach",
       (list(W4.eval('SPY').values())[:3], list(W4.eval('VIOL').values())[:3]))
@@ -1004,13 +824,13 @@ check(W6.eval('WowCompanionSpellsDB.partyBy["Korvash-Realm"].v') == 1 and len(W6
 row = W6.eval('WowCompanion.pad.rows.party')
 check(row is not None and row.secure and row.n == 40 and row.onPress is True, "the party row: secure, 40 columns, opts.onPress", row and row.n)
 cell = lambda col: row.cells[col]
-U = ["player", "party1", "party2", "party3", "party4"]
+U = ["player", "party1", "party2", "party3", "party4", "pet"]                  # m131: col 5 = the pet's pick cell
 bad = []
 for col in range(40):
     a = cell(col).a
     t, sp, un, cb = a['type'], a['spell'], a['unit'], a['clickbutton']
-    if col <= 4: want = ("target", None, U[col], None)
-    elif col <= 9: want = ("spell", "Lesser Healing Wave", U[col - 5], None)
+    if col <= 5: want = (None, None, None, None)                                            # m130: the pick cells (wrapped, no action at rest; m131 + 5 the pet's)
+    elif col <= 9: want = (None, None, None, None)                                          # m129: the old touch cells retired
     elif col == 10: want = ("click", None, None, "WowCompanionPartyOn")
     elif col == 11: want = ("click", None, None, "WowCompanionPartyOff")
     elif col <= 16: want = ("focus", None, U[col - 12], None)
@@ -1020,10 +840,125 @@ for col in range(40):
     got = (t, sp, un, cb._name if cb is not None else None)
     if got != want:
         bad.append((col, got, want))
-check(not bad, "every party row cell as 2.2 says (TGT 0-4, TSP 5-9 with Touch = Lesser Healing Wave, ON 10, OFF 11, FOCUS 12-16, MENU DONE 35)", bad[:3])
+check(not bad, "every party row cell (m130: PICK 0-4 = wrapped cells, m131: 5 the pet's, 6-9 spare, ON 10, OFF 11, FOCUS 12-16, MENU DONE 35)", bad[:3])
+pk = lambda i: cell(i)
+check(all(pk(i).a['wc-pu'] == U[i] and pk(i).a['wc-touch'] == "Lesser Healing Wave" and pk(i).refs['wc-pad'] is not None
+          and len(pk(i).wraps['OnClick']) == 1 and len(pk(i).hooks['PostClick']) == 1 for i in range(6)),
+      "m130: each pick CELL (m131: the pet's col 5 too): wrapped once (PARTYPICK) with one PostClick, its unit (wc-pu), the Touch spell, a ref to the pad")
+check(W6.eval('rawget(_G, "WowCompanionPartyPick1")') is None, "m130: no WowCompanionPartyPick buttons (no click relay)")
 W6.eval('WowCompanion.padMap.party.put')("touch", False)
-row = W6.eval('WowCompanion.pad.rows.party')
-check(all(row.cells[c].a['type'] is None for c in range(5, 10)), "Touch = Target: the TSP cells have no action (type nil)")
+check(all(pk(i).a['wc-touch'] is None for i in range(6)), "Touch = Target: no wc-touch on the pick cells")
+W6.execute('local r = WowCompanion.pad.rows.party; r.built = false; WowCompanion.pad.buildSecure()')
+check(all(len(pk(i).wraps['OnClick']) == 1 and len(pk(i).hooks['PostClick']) == 1 for i in range(6)),
+      "m130: a rebuilt row never wraps a pick cell twice")
+# m129 A PLATE'S TAP (party cols 0-4): off = Target; on: another member = the pick moves (nothing cast); the picked one = Touch
+W6.eval('party')(W6.table_from([W6.table_from(m) for m in MEMBERS[:2]]))
+W6.execute('fire("GROUP_ROSTER_UPDATE"); advance(1)')
+
+
+def tap6(col):
+    a0 = nact(W6)
+    n0 = nsent(W6)
+    W6.execute('local c = WowCompanion.pad.rows.party.cells[%d]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3' % col)
+    return acts(W6, a0), docs(W6, n0, 'partybox')
+
+
+got, pb = tap6(2)
+check(got == [("target", None, "party2")] and pb and pb[-1]['b']['k'] == 'target', "m129: Party mode OFF: a plate's tap = Target (party2), partybox k target",
+      (got, pb and pb[-1]['b']['k']))
+W6.execute('local c = WowCompanion.pad.rows.party.cells[10]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); advance(0.3)')
+got, pb = tap6(2)
+check(got == [("target", None, "party2")] and W6.eval('PADA("wc-box")') == 3 and W6.eval('PADA("wc-u")') == "party2" and pb and pb[-1]['b']['k'] == 'pick'
+      and pb[-1]['b']['box'] == 3 and pb[-1]['b']['u'] == 'party2',
+      "m134: ON, a tap on party2's plate: the pick moves (box 3, wc-u party2) and TARGETS party2, nothing cast, k pick",
+      (got, W6.eval('PADA("wc-box")'), pb and pb[-1]['b']))
+got, pb = tap6(2)
+check(got == [("target", None, "party2")] and W6.eval('PADA("wc-box")') == 3 and pb and pb[-1]['b']['k'] == 'touch',
+      "m129: a tap on the PICKED plate: the Touch action (Target party2), partybox k touch", (got, pb and pb[-1]['b']['k']))
+W6.eval('WowCompanion.padMap.party.put')("touch", 8004)
+got, pb = tap6(2)
+check(got == [("spell", "Lesser Healing Wave", "party2")], "m129: Touch = Lesser Healing Wave: the picked plate's tap casts it on party2", got)
+W6.execute('COMBAT = true')
+got, pb = tap6(0)
+check(got == [("target", None, "player")] and W6.eval('PADA("wc-box")') == 1 and W6.eval('PADA("wc-u")') == "player" and W6.eval('#VIOL') == 0,
+      "m134: in a fight a tap still picks and targets (you: box 1, secure only)", (got, W6.eval('PADA("wc-box")'), list(W6.eval('VIOL').values())[:2]))
+got, pb = tap6(4)
+check(got == [] and W6.eval('PADA("wc-box")') == 1 and pb and pb[-1]['b']['k'] == 'none', "m129: a plate with nobody there (party4): nothing, k none",
+      (got, pb and pb[-1]['b']['k']))
+got, pb = tap6(5)
+check(got == [] and W6.eval('PADA("wc-box")') == 1 and pb and pb[-1]['b']['k'] == 'none', "m131: the pet's cell with no pet out: nothing, k none",
+      (got, pb and pb[-1]['b']['k']))
+# m131 THE PET'S CELL (col 5): the pet is entry 2, so party1 / party2 are 3 / 4
+W6.execute('UNITS.pet = { name = "Wolf", alive = true }')
+got, pb = tap6(5)
+check(got == [("target", None, "pet")] and W6.eval('PADA("wc-box")') == 2 and W6.eval('PADA("wc-u")') == "pet" and pb and pb[-1]['b']['k'] == 'pick'
+      and pb[-1]['b']['cnt'] == 4, "m134: in a fight, the pet's plate: the pick moves to it and targets it (box 2, wc-u pet, cnt 4)",
+      (got, W6.eval('PADA("wc-box")'), pb and pb[-1]['b']))
+got, pb = tap6(2)
+check(got == [("target", None, "party2")] and W6.eval('PADA("wc-box")') == 4 and W6.eval('PADA("wc-u")') == "party2",
+      "m131: party2's plate with the pet out: box 4 (targeted, m134)",
+      (got, W6.eval('PADA("wc-box")')))
+got, pb = tap6(5)
+got, pb = tap6(5)
+check(got == [("spell", "Lesser Healing Wave", "pet")] and pb and pb[-1]['b']['k'] == 'touch', "m131: the picked pet's plate: the Touch action (the Touch spell on \"pet\")",
+      (got, pb and pb[-1]['b']['k']))
+W6.execute('UNITS.pet = nil; local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 1; p.a["wc-u"] = "player"')
+W6.execute('COMBAT = false')
+
+
+# m130 (review 2026-11-11): ONE DECISION A PRESS, whatever edges arrive
+def edges(col, seq):
+    a0 = nact(W6)
+    n0 = nsent(W6)
+    W6.execute(' '.join('doClick(WowCompanion.pad.rows.party.cells[%d], "LeftButton", %s);' % (col, 'true' if d else 'false') for d in seq)
+               + ' NOW = NOW + 0.3')
+    return acts(W6, a0), docs(W6, n0, 'partybox')
+
+
+W6.execute('local P = rawget(_G, "WowCompanionPartyPad"); P.a["wc-box"] = 1; P.a["wc-u"] = "player"')
+for ond in (True, False):
+    W6.execute('ACT_ON_DOWN = %s' % ('true' if ond else 'false'))
+    W6.execute('local P = rawget(_G, "WowCompanionPartyPad"); P.a["wc-box"] = 1; P.a["wc-u"] = "player"')
+    got, pb = edges(2, [True, False])
+    check(got == [("target", None, "party2")] and W6.eval('PADA("wc-box")') == 3 and len(pb) == 1 and pb[0]['b']['k'] == 'pick',
+          "m130: down + up on an unpicked plate (action on %s): ONE pick (m134: one Target), nothing cast, one partybox" % ("down" if ond else "up"),
+          (got, W6.eval('PADA("wc-box")'), [d['b']['k'] for d in pb]))
+    # pad5: one tap can arrive as TWO downs and one up; a real mouse tap acts on the up (TapPad's measure), so the two-down case is
+    # the action-on-up one; with the action on the down a cell fires on each down whatever the snippet says (as the old cells did)
+    got, pb = edges(2, [True, True, False] if not ond else [True, False])
+    check(got == [("spell", "Lesser Healing Wave", "party2")] and len(pb) == 1 and pb[0]['b']['k'] == 'touch',
+          "m130: %s on the picked plate: ONE Touch (Lesser Healing Wave), one partybox" % ("two downs + one up" if not ond else "down + up"),
+          (got, [d['b']['k'] for d in pb]))
+    got, pb = edges(0, [False])
+    # m134: the pick's Target fires where the action edge is the up (the cell acts on that edge only, as the Touch below)
+    check(got == ([] if ond else [("target", None, "player")]) and W6.eval('PADA("wc-box")') == 1 and len(pb) == 1 and pb[0]['b']['k'] == 'pick',
+          "m130: an up alone (no down heard): decided on the up, the pick moves (you)", (got, W6.eval('PADA("wc-box")')))
+    got, pb = edges(0, [False])
+    check(got == ([] if ond else [("spell", "Lesser Healing Wave", "player")]) and len(pb) == 1 and pb[0]['b']['k'] == 'touch',
+          "m130: an up alone on the picked plate: Touch (fires only where the action edge is the up)", (got, [d['b']['k'] for d in pb]))
+# a lost up: the next press re-uses that decision once, then the cell is clean again
+W6.execute('ACT_ON_DOWN = true; local P = rawget(_G, "WowCompanionPartyPad"); P.a["wc-box"] = 1; P.a["wc-u"] = "player"')
+got, pb = edges(2, [True])
+check(W6.eval('PADA("wc-box")') == 3 and W6.eval('WowCompanion.pad.rows.party.cells[2].a["wc-pdec"]') == "pick", "m130: a down whose up is lost: the pick, kept")
+got, pb = edges(2, [True, False])
+check(got == [("target", None, "party2")] and pb == [] and W6.eval('WowCompanion.pad.rows.party.cells[2].a["wc-pdec"]') is None,
+      "m130: the next press re-uses it (no Touch, no box; m134: the pick's Target again) and its up clears it", (got, pb))
+got, pb = edges(2, [True, False])
+check(got == [("spell", "Lesser Healing Wave", "party2")] and len(pb) == 1 and pb[0]['b']['k'] == 'touch', "m130: and the press after that is the Touch again",
+      (got, [d['b']['k'] for d in pb]))
+# Party mode off: Target by a plate tap on either action edge
+W6.execute('local c = WowCompanion.pad.rows.party.cells[11]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); advance(0.3)')
+for ond in (True, False):
+    W6.execute('ACT_ON_DOWN = %s' % ('true' if ond else 'false'))
+    got, pb = edges(1, [True, False])
+    check(got == [("target", None, "party1")] and len(pb) == 1 and pb[0]['b']['k'] == 'target',
+          "m130: Party mode OFF, action on %s: a plate's tap = ONE Target (the cell's own action)" % ("down" if ond else "up"),
+          (got, [d['b']['k'] for d in pb]))
+W6.execute('ACT_ON_DOWN = true')
+W6.eval('WowCompanion.padMap.party.put')("touch", False)
+W6.eval('party')(W6.table_from([]))
+W6.execute('fire("GROUP_ROSTER_UPDATE"); advance(1)')
+check(W6.eval('#SNIPERR') == 0 and W6.eval('#SPY') == 0, "the pick snippet: no restricted-environment error, no spied call", W6.eval('SNIPERR[1]'))
 d = W6.eval('WowCompanion.pad.describe()')
 check(d['rows']['party'] is not None and int(d['sizes']['party']) == 40, "describe() publishes the party row (40 columns)", d['rows']['party'])
 # a tap on cell 10 / 11: Party mode on / off by the secure click
@@ -1056,45 +991,33 @@ W5.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 check(W5.eval('PADA("wc-ps-x")') == "Lesser Healing Wave", "... applied at PLAYER_REGEN_ENABLED (x = Lesser Healing Wave)", W5.eval('PADA("wc-ps-x")'))
 check(W5.eval('#VIOL') == 0 and W5.eval('#SPY') == 0, "no lockdown breach, no spied call", (list(W5.eval('VIOL').values())[:2], list(W5.eval('SPY').values())[:2]))
 
-# ================================================================ 8. THE HEALTH ESTIMATE (the pure PARTY-EST block)
-E = lupa.LuaRuntime(unpack_returned_tuples=True)
-E.execute('OV = {}\n' + re.search(r'-- PARTY-EST-BEGIN[^\n]*\n(.*?)-- PARTY-EST-END', SRC["padmap"], re.S).group(1))
-E.execute('m = OV.peNew(400, 0)')
-check(E.eval('OV.pePct(m)') == 100 and E.eval('m.full') is True, "a new member (or a /reload): full, anchored")
-E.execute('OV.peHit(m, "WOUND", 100, 1)')
-check(E.eval('OV.pePct(m)') == 75 and E.eval('m.full') is False, "a plain WOUND of 100 / 400: 75 %, not full", E.eval('OV.pePct(m)'))
-E.execute('OV.peHit(m, "HEAL", 50, 2)')
-check(E.eval('OV.pePct(m)') == 88, "a plain HEAL of 50: 350 / 400 = 88 %", E.eval('OV.pePct(m)'))
-E.execute('OV.peHit(m, "HEAL", 900, 3)')
-check(E.eval('OV.pePct(m)') == 100 and E.eval('m.full') is True, "healed past max: clamped to 100 (full)")
-E.execute('OV.peHit(m, "WOUND", 9000, 4)')
-check(E.eval('OV.pePct(m)') == 0, "wounded past 0: clamped to 0")
-E.execute('m = OV.peNew(400, 0); OV.peHit(m, "WOUND", 200, 10)')
-check(E.eval('OV.peHit(m, "WOUND", nil, 11)') is False and E.eval('OV.pePct(m)') == 50, "a SECRET amount (not plain: nil): no change")
-E.execute('OV.peTick(m, 15.9, false, false)')
-check(E.eval('OV.pePct(m)') == 50, "out of combat, 5.9 s quiet: still the estimate")
-E.execute('OV.peTick(m, 16, true, false)')
-check(E.eval('OV.pePct(m)') == 50, "IN combat, 6 s quiet: no anchor")
-E.execute('OV.pePulse(m, 16); OV.peTick(m, 21.9, false, false)')
-check(E.eval('OV.pePct(m)') == 50, "a UNIT_HEALTH pulse restarts the 6 s")
-E.execute('OV.peTick(m, 22, false, false)')
-check(E.eval('OV.pePct(m)') == 100 and E.eval('m.full') is True, "out of combat, alive, 6 s with no pulse: full (the anchor)")
-E.execute('OV.peTick(m, 30, true, true)')
-check(E.eval('OV.pePct(m)') == 0 and E.eval('m.dead') is True, "dead: 0")
-check(E.eval('OV.peHit(m, "HEAL", 100, 31)') is False and E.eval('OV.pePct(m)') == 0, "dead: a heal does not move it")
-E.execute('OV.peTick(m, 40, false, false)')
-check(E.eval('OV.pePct(m)') == 50 and E.eval('m.full') is False, "alive again after dead: 50 %")
-E.execute('OV.peMax(m, 800)')
-check(E.eval('m.max') == 800, "UNIT_MAXHEALTH: the new max")
+# ================================================================ 8. NO HEALTH FOR THE BOTTOM (m129, party_design.md A.5)
+# the guessed-health chain is gone: no estimate block, no drawn-fill read, no hit / cast counts, no party UNIT_HEALTH / UNIT_COMBAT,
+# no combat log; Smart Y's own model (OV.hmF) stays, and so does the Advanced Combat Logging give-back
+PMSRC = SRC["padmap"]
+check('PARTY-EST-BEGIN' not in PMSRC and 'function PM.readHp' not in PMSRC and 'GetStatusBarTexture' not in PMSRC and 'PM.hits' not in PMSRC
+      and 'OV.peHit' not in PMSRC, "m129: the estimate, the drawn-fill read (m86) and the hit counts are gone", "")
+check('LoggingCombat' not in PMSRC and '"advancedCombatLogging", "1"' not in PMSRC and '"advancedCombatLogging", "0"' in PMSRC
+      and 'aclReset1' in PMSRC and 'OV.hmF' in PMSRC, "m129: the combat log never started; the give-back and Smart Y's OV.hmF kept", "")
+ev = PMSRC[PMSRC.index('    PM.ev = CreateFrame("Frame")'):PMSRC.index('    PM.ev:SetScript("OnEvent"')]
+check('"UNIT_COMBAT"' not in ev and '"UNIT_HEALTH"' not in ev and '"UNIT_SPELLCAST_SUCCEEDED"' not in ev,
+      "m129: Party mode registers no UNIT_HEALTH / UNIT_COMBAT / cast events", "")
+# the give-back: ours (aclOurs), or once for 1.0.17 / 1.0.18 (aclReset1 unset); never a write when it was the player's own
+for db, adv, want in (('{ aclOurs = true, aclReset1 = true }', "1", "0"), ('{}', "1", "0"), ('{ aclReset1 = true }', "1", "1"), ('{ aclOurs = true }', "0", "0")):
+    GB = boot(["safety", "tappad", "book", "padmap"], pre='WowCompanionSpellsDB = %s; CVS = { advancedCombatLogging = "%s" }; '
+              'C_CVar = { GetCVar = function(k) return CVS[k] end, SetCVar = function(k, v) CVS[k] = v end }' % (db, adv))
+    GB.execute('fire("PLAYER_ENTERING_WORLD"); runTimers(NOW + 3)')
+    check(GB.eval('CVS.advancedCombatLogging') == want and GB.eval('WowCompanionSpellsDB.aclReset1') is True and GB.eval('WowCompanionSpellsDB.aclOurs') is None,
+          "m129: the give-back with %s, the option %s: %s afterwards" % (db, adv, want), GB.eval('CVS.advancedCombatLogging'))
 
 # ================================================================ 7. THE DOCUMENTS (key for key with PARTY_BUILD.md section 1)
 W7 = world()
 W7.eval('party')(W7.table_from([W7.table_from(["Brannoc", "WARRIOR", True, "TANK", "RAGE"])]))
 W7.execute('fire("GROUP_ROSTER_UPDATE")')
 P_KEYS = {"on", "aside", "box", "fight", "grp", "sel", "m"}
-M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "hpMax", "pmMax", "hp", "full", "rng", "hs", "g", "cw", "cc", "ch", "cs"}   # m79: hs, the health source; m92: g, the GUID (combat log)
+M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "lv", "rng", "ic"}   # m129: plain facts only (no hp / full / hs / g / hit counts); m134: the pet's ic
 d = docs(W7, 0, 'party')[-1]
-check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm126' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
+check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm142' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
       "party: type v rs p{on aside? box? fight grp sel m}", sorted(d['p']))
 check('box' not in d['p'] and d['p']['on'] is False and d['p']['grp'] is True and d['p']['sel'] == 'bound',
       "Party mode off: no box; grp true; sel bound (Select toggles)", (d['p']['on'], d['p'].get('box'), d['p']['sel']))
@@ -1102,8 +1025,8 @@ m = d['p']['m']
 check(len(m) == 2 and [x['u'] for x in m] == ['player', 'party1'] and [x['i'] for x in m] == [0, 1], "m[]: you first, then party1 (i = the tap offset)",
       [(x['u'], x['i']) for x in m])
 check(all(set(x) <= M_KEYS for x in m) and m[1]['n'] == 'Brannoc' and m[1]['c'] == 'WARRIOR' and m[1]['col'] == 'ffc69b6d'
-      and m[1]['role'] == 'TANK' and m[1]['pt'] == 'RAGE' and m[1]['hpMax'] == 400 and m[1]['hp'] == 100 and m[1]['full'] is True
-      and m[1]['dead'] is False and m[1]['off'] is False, "a member: n c col role dead off pt hpMax pmMax hp full", m[1])
+      and m[1]['role'] == 'TANK' and m[1]['pt'] == 'RAGE' and m[1]['lv'] == 20
+      and m[1]['dead'] is False and m[1]['off'] is False, "a member: n c col role dead off pt lv (m129: no health, no mana)", m[1])
 check(m[0]['n'] == 'Korvash' and m[0]['c'] == 'SHAMAN' and m[0]['pt'] == 'MANA', "your own cell", m[0])
 check(all(not isinstance(v, (dict, list)) or k == 'm' for k, v in d['p'].items()), "no secret value can ride: plain fields only")
 rs0 = d['rs']
@@ -1113,37 +1036,41 @@ W7.execute('fire("GROUP_ROSTER_UPDATE")')
 d = docs(W7, n0, 'party')
 check(len(d) == 1 and d[0]['rs'] == rs0 + 1 and len(d[0]['p']['m']) == 3 and int(W7.eval('PUSHES')) > p0,
       "a roster change: a party document AT ONCE (no timer), rs + 1, flushed", (len(d), d and d[0]['rs'], rs0))
-# health changes are coalesced: ten events, one document at most in 0.5 s
-n0 = nsent(W7)
-for i in range(10):
-    W7.execute('fire("UNIT_COMBAT", "party1", "WOUND", "", 10, 1)')
-d_now = docs(W7, n0, 'party')
-W7.execute('advance(0.6)')
-d_later = docs(W7, n0, 'party')
-check(len(d_now) == 0 and len(d_later) == 1 and d_later[0]['p']['m'][1]['hp'] == 75 and d_later[0]['p']['m'][1]['full'] is False,
-      "ten plain wounds (10 each of 400): no document per event; ONE after 0.5 s, hp 75, not full", (len(d_now), len(d_later)))
-n0 = nsent(W7)
-cw0 = d_later[0]['p']['m'][1].get('cw') if d_later else None
-W7.execute('fire("UNIT_COMBAT", "party1", "WOUND", "", SECRETV, 1); advance(0.6)')
-# m96: a hidden amount moves no health, but the hit is COUNTED (the app's calibrated estimate spends the count)
-d_sec = docs(W7, n0, 'party')
-check(len(d_sec) == 1 and d_sec[0]['p']['m'][1]['hp'] == 75 and cw0 is not None and d_sec[0]['p']['m'][1].get('cw') == cw0 + 1,
-      "a SECRET amount: health stays (75), the wound count goes up by one (m96)", (len(d_sec), cw0, d_sec and d_sec[0]['p']['m'][1].get('cw')))
-# m98: a party member's cast is counted (cs), for the app's mana estimate
-n0 = nsent(W7)
-W7.execute('fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "Cast-1", 403); fire("UNIT_SPELLCAST_SUCCEEDED", "party1", "Cast-2", 403); advance(0.6)')
-d_cs = docs(W7, n0, 'party')
-check(len(d_cs) == 1 and d_cs[0]['p']['m'][1].get('cs') == 2, "two casts by party1: cs = 2 in one document (m98)",
-      (len(d_cs), d_cs and d_cs[0]['p']['m'][1].get('cs')))
-W7.execute('fire("PLAYER_REGEN_ENABLED"); NOW = NOW + 7; tick(1); advance(0.6)')
+# m129 range from ONE place (UnitInRange, checked plainly true): the document's rng and WC.padMap.party.rng answer alike; you never dim
+W7.execute('INR = { party1 = { false, true }, party2 = { true, false } }; '
+           'function UnitInRange(u) local r = INR[u]; if not r then return nil end; return r[1], r[2] end; tick(1); advance(0.6)')
 d = docs(W7, 0, 'party')[-1]
-check(d['p']['m'][1]['hp'] == 100 and d['p']['m'][1]['full'] is True, "out of combat, 6 s quiet: back to full (the anchor)", d['p']['m'][1]['hp'])
-W7.execute('UNITS.party2.alive = false; tick(1); advance(0.6)')
+rr = W7.eval('WowCompanion.padMap.party.rng')
+check(d['p']['m'][1].get('rng') is False and 'rng' not in d['p']['m'][2] and 'rng' not in d['p']['m'][0]
+      and rr("party1") is False and rr("party2") is None and rr("player") is None,
+      "m129: party1 out of range (checked): rng false on both screens; party2 not checked: no answer; you: none", [x.get('rng') for x in d['p']['m']])
+W7.execute('INR = { party1 = { SECRETV, true } }; tick(1); advance(0.6)')
+check('rng' not in docs(W7, 0, 'party')[-1]['p']['m'][1] and rr("party1") is None, "m129: a secret answer: no dim, no error", "")
+W7.execute('INR = {}; UNITS.party2.alive = false; tick(1); advance(0.6)')
 d = docs(W7, 0, 'party')[-1]
-check(d['p']['m'][2]['dead'] is True and d['p']['m'][2]['hp'] == 0, "a dead member: dead, 0 %", d['p']['m'][2])
+check(d['p']['m'][2]['dead'] is True, "a dead member: dead", d['p']['m'][2])
 W7.execute('UNITS.party2.alive = true; tick(1); advance(0.6)')
-d = docs(W7, 0, 'party')[-1]
-check(d['p']['m'][2]['dead'] is False and d['p']['m'][2]['hp'] == 50, "alive again: 50 %", d['p']['m'][2]['hp'])
+# m131 THE PET (the user, 2026-11-11: "WHEN NO PET MAKE THE PLAYER FULL SIZED"): an entry right after you while one plainly exists; a pet
+# coming out is a roster change (UNIT_PET: rs + 1, at once); its member: i 5 (the pet's pick cell), no class / role, never offline or dim
+n0 = nsent(W7)
+W7.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player")')
+d = docs(W7, n0, 'party')
+check(len(d) == 1 and d[0]['rs'] == rs0 + 2 and [x['u'] for x in d[0]['p']['m']] == ['player', 'pet', 'party1', 'party2']
+      and [x['i'] for x in d[0]['p']['m']] == [0, 5, 1, 2],
+      "m131: the pet out: a party document at once (rs + 1), m = you, pet, party1, party2 (i 0 5 1 2)", d and [(x['u'], x['i']) for x in d[0]['p']['m']])
+pm = d[0]['p']['m'][1] if d else {}
+check(set(pm) <= M_KEYS and pm.get('n') == 'Wolf' and 'c' not in pm and 'col' not in pm and pm.get('role') == 'NONE' and pm.get('off') is False
+      and 'rng' not in pm, "m131: the pet's member: its name, no class colour, role NONE, never offline, no range", pm)
+check([x for x in W7.eval('WowCompanion.padMap.party.units()').values()] == ['player', 'pet', 'party1', 'party2']
+      and W7.eval('WowCompanion.padMap.party.rng("pet")') is None and W7.eval('WowCompanion.padMap.party.nav(4, 2, "down")') == 3,
+      "m131: the exports: units() in pick order (you, pet, party1..), rng(pet) none, nav = OV.partyNav", "")
+W7.execute('UNITS.pet = { name = "Wolf", alive = true }')
+W7.execute('UnitExists = function(u) if u == "pet" then return SECRETV end; return UNITS[u] ~= nil end')
+check(W7.eval('WowCompanion.padMap.party.units()')[2] == 'pet', "m131: UnitExists secret: the pet still found by a plain read (its name / HasPetUI)", "")
+W7.execute('UNITS.pet = nil; UnitExists = function(u) return UNITS[u] ~= nil end; fire("UNIT_PET", "player")')
+check([x['u'] for x in docs(W7, 0, 'party')[-1]['p']['m']] == ['player', 'party1', 'party2'], "m131: the pet gone: no entry for it", "")
+check(W7.eval('WowCompanion.padMap.party.selWant()') == "bound" and W7.eval('WowCompanion.padMap.party.grouped()') is True,
+      "m129: the exports Hub reads: selWant bound, grouped", (W7.eval('WowCompanion.padMap.party.selWant()'),))
 # Party mode on: box present (1-based into m)
 flip(W7, "WowCompanionPartyOn")
 d = docs(W7, 0, 'party')[-1]
@@ -1168,7 +1095,7 @@ c = docs(W7, 0, 'partycfg')[-1]
 C_KEYS = {"slots", "yc", "touch", "spells", "sy", "pad"}
 check(set(c) == {"type", "v", "c"} and set(c['c']) <= C_KEYS and {"slots", "spells", "sy", "pad"} <= set(c['c']), "partycfg: c{slots yc? touch? spells sy pad}",
       sorted(c['c']))
-check(c['c']['pad'] == {"row": "party", "tgt": 0, "tsp": 5, "on": 10, "off": 11, "focus": 12, "menu": 17, "resend": 22, "pbsel": 23,
+check(c['c']['pad'] == {"row": "party", "pick": 0, "on": 10, "off": 11, "focus": 12, "menu": 17, "resend": 22, "pbsel": 23,
                         "pbops": {"remove": 31, "up": 32, "down": 33, "add": 34}, "mdone": 35,
                         "ptab": {"row": "padtab", "tab": 26, "slot0": 27, "none": 37}}, "partycfg.pad = the contract's column map", c['c']['pad'])
 check(set(c['c']['sy']) <= {"on", "list", "known", "pick"} and c['c']['sy']['on'] is False and c['c']['sy']['list'] == [],
@@ -1250,15 +1177,41 @@ W9.execute('WowCompanionSpellsDB.partyBy["Korvash-Realm"].buffs = { 131, 546 }')
 W9.execute('AURAS.party1 = { "x", secret = true }; fire("UNIT_AURA", "party1"); advance(1)')
 check(picks(W9)["party1"] is None, "a secret aura read: no pick for that unit", picks(W9))
 W9.execute('AURAS.party1 = nil; fire("UNIT_AURA", "party1"); advance(1)')
-# in a fight: no new picks, sy.pick absent; Y there casts the in-combat spell (group 2)
+# in a fight: no new picks (no attribute write); m132: the picks ARMED before it stay on the pad, partycfg keeps showing them, and Y
+# with no In combat action casts the armed one on the picked member (no menu)
 W9.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true; AURAS.party1 = { "Water Breathing", "Water Walking" }; fire("UNIT_AURA", "party1"); advance(1)')
 check(picks(W9)["party1"] == "Water Breathing" and W9.eval('#VIOL') == 0, "in a fight the picks are not touched (no lockdown breach)", picks(W9))
 n0 = nsent(W9)
-W9.execute('fire("SPELLS_CHANGED"); advance(1)')
+W9.execute('WowCompanion.snapshot("heartbeat"); advance(1)')
 c = docs(W9, n0, 'partycfg')
-check(not c or 'pick' not in c[-1]['c']['sy'], "in a fight partycfg has no sy.pick (an empty object is absent)", c and c[-1]['c']['sy'])
+check(c and c[-1]['c']['sy']['pick']['party1']['id'] == 131 and c[-1]['c']['sy']['pick']['party2']['id'] == 546,
+      "m132: in a fight partycfg still carries sy.pick (the picks armed before it)", c and c[-1]['c']['sy'].get('pick'))
+W9.execute('local c = WowCompanion.pad.rows.party.cells[10]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3')
+W9.execute('local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-py"] = nil; p.a["wc-box"] = 2; p.a["wc-u"] = "party1"; trig(false, false)')
+a0 = nact(W9)
+W9.execute('hit(6)')
+check(acts(W9, a0) == [("spell", "Water Breathing", "party1")] and W9.eval('#VIOL') == 0,
+      "m132: Party mode turned on IN the fight (col 10), Y with no In combat action: Smart Y's armed buff on party1", acts(W9, a0))
+# m133 (review): the pick casts ONCE a fight per member (no aura read in the lockdown): the next Y targets, partycfg drops that pick
+n0 = nsent(W9)
+a0 = nact(W9)
+W9.execute('hit(6)')
+c = docs(W9, 0, 'partycfg')         # (sent at the FIRST Y's press, when its pick was used)
+check(acts(W9, a0) == [("target", None, "party1")] and W9.eval('PADA("wc-pb-party1")') is None and W9.eval('#VIOL') == 0,
+      "m133: a second Y on party1 in the same fight: Target (the buff is not cast again)", (acts(W9, a0), W9.eval('#VIOL')))
+check(c and 'party1' not in (c[-1]['c']['sy'].get('pick') or {}) and (c[-1]['c']['sy'].get('pick') or {}).get('party2', {}).get('id') == 546,
+      "m133: ... partycfg in the fight drops party1's used pick (the strip shows TARGET), party2's stays", c and c[-1]['c']['sy'].get('pick'))
+# a roster change in the fight moves the party tokens: their picks are dropped (secure, the count driver)
+W9.execute('UNITS.party3 = { name = "Doran", cls = "ROGUE", alive = true, role = "DAMAGER", pt = "ENERGY", guid = "Player-1-Doran" }; '
+           'fire("GROUP_ROSTER_UPDATE"); driveStates(); advance(1)')
+c = docs(W9, n0, 'partycfg')
+check(W9.eval('PADA("wc-pb-party2")') is None and W9.eval('#VIOL') == 0 and c and not (c[-1]['c']['sy'].get('pick') or {}).get('party2'),
+      "m133: a member joins in the fight: the party picks are dropped (tokens may have moved), partycfg follows", (W9.eval('PADA("wc-pb-party2")'), c and c[-1]['c']['sy'].get('pick')))
+W9.execute('UNITS.party3 = nil; fire("GROUP_ROSTER_UPDATE"); driveStates()')
+W9.execute('local c = WowCompanion.pad.rows.party.cells[11]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3')
 W9.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
 check(picks(W9)["party1"] is None, "the fight's end: picks again (party1 now has both: none)", picks(W9))
+check(picks(W9)["party2"] == "Water Walking", "m133: the fight's end: party2's dropped pick is armed again", picks(W9))
 # PB select + ops, with the 2 s rule
 W9.execute('WowCompanionSpellsDB.partyBy["Korvash-Realm"].buffs = { 131, 546 }')
 tapcell(W9, 24); tapcell(W9, 32)                   # select row 2, up
@@ -1290,8 +1243,8 @@ check(picks(W9) == {"player": None, "party1": None, "party2": None}, "Smart Y of
 check(W9.eval('#SPY') == 0 and W9.eval('#VIOL') == 0, "no spied call, no lockdown breach")
 
 # ================================================================ THE PARTY TAB (PadTabCtl p33 + Book b47's padtab 26-37)
-check('local CV = "p36"' in SRC["padtabctl"] and 'local BV = "b48"' in SRC["book"] and 'local PV = "m126"' in SRC["padmap"],
-      "the versions: PadMap m107, PadTabCtl p40, Book b49")
+check('local CV = "p44"' in SRC["padtabctl"] and 'local BV = "b49"' in SRC["book"] and 'local PV = "m142"' in SRC["padmap"],
+      "the versions: PadMap m142, PadTabCtl p44, Book b49 (stance-bind, issue #179)")
 W8 = world(pre='BOOK = { 403, 331, 8004, 324, 131, 546 }')
 W8.execute('''
 local ctl = WowCompanion._spellsBook.ctl
@@ -1314,25 +1267,19 @@ def ctlDoc(L):
 
 W8.execute('ptab(26)')
 c = ctlDoc(W8)
-check(c['view'] == 'party' and c['ppos'] == 2 and c['pfocus'] == 'rows', "padtab 26: the 5th tab (Party mode); ppos 2 (A), pfocus rows", c)
-W8.execute('pp("PADDUP")')
-check(ctlDoc(W8)['focus'] == 'tabs', "Up from the first row: the tab row", ctlDoc(W8)['focus'])
-W8.execute('pp("PADDDOWN")')
-c = ctlDoc(W8)
-check(c['focus'] == 'prows' and c['ppos'] == 2, "Down from the tabs: the rows (A)", c)
+check(c['view'] == 'party' and c['ppos'] == 8 and c['pfocus'] == 'tabs' and c['pset'] == 1 and c['ptouch'] == 1,
+      "p37: padtab 26: the Party mode tab (the cursor still on the tabs); its place A (ppos 8 = the router's A), pset 1, ptouch 1", c)
 moves = []
-for k in ("PADDDOWN", "PADDDOWN", "PADDDOWN", "PADDDOWN", "PADDRIGHT", "PADDDOWN", "PADDLEFT", "PADDRIGHT", "PADDUP"):
+for k in ("PADDDOWN", "PADDDOWN", "PADDDOWN", "PADDUP", "PADDUP", "PADDUP", "PADDUP", "PADDDOWN", "PADDDOWN", "PADDDOWN"):
     W8.execute('pp("%s")' % k)
-    moves.append(ctlDoc(W8)['ppos'])
-check(moves == [3, 4, 5, 5, 11, 12, 5, 11, 10], "the left page's D-pad: two columns of six (6 an empty place), across at the same row",
-      moves)
-W8.execute('pp("PADDLEFT"); pp("PADDUP"); pp("PADDUP"); pp("PADDUP")')
-check(ctlDoc(W8)['ppos'] == 1, "the D-pad row (1)", ctlDoc(W8)['ppos'])
+    moves.append((ctlDoc(W8)['pfocus'], ctlDoc(W8)['ppos']))
+check(moves == [("sets", 8), ("touch", 8), ("diam", 8), ("diam", 5), ("touch", 5), ("sets", 5), ("tabs", 5), ("sets", 5), ("touch", 5), ("diam", 5)],
+      "p37: Down from the tabs: the set row, the Touch row, the diamonds (A); Up: X (drawn on top), then back up the same way", moves)
+W8.execute('pp("PADDRIGHT")')
+check(ctlDoc(W8)['ppos'] == 8, "p37: Right from X: A (the diamond as drawn)", ctlDoc(W8)['ppos'])
 W8.execute('pp("PAD1")')
-check(ctlDoc(W8)['note'] == 'locked' and ctlDoc(W8)['pfocus'] == 'rows', "A on the D-pad row: locked (fixed)", ctlDoc(W8)['note'])
-W8.execute('pp("PADDDOWN"); pp("PAD1")')
 c = ctlDoc(W8)
-check(c['pfocus'] == 'right' and c['pright'] == 0, "A on the A row: the right page (pright 0-based: its first row)", c)
+check(c['pfocus'] == 'right' and c['pright'] == 0, "A on A: the right page (pright 0-based: its first row)", c)
 W8.execute('pp("PAD1")')
 c = ctlDoc(W8)
 check(c['chooser'] == {"list": "party", "row": 1, "id": "empty"}, "its red Change: the chooser, list party, the no-spell row first (empty)", c['chooser'])
@@ -1351,10 +1298,10 @@ n0 = nsent(W8)
 W8.execute('pp("PAD1")')
 check(docs(W8, n0, 'partyack')[0]['ok'] is True and cfg(W8)['slots']['a'] is None, "the no-spell row: A = Empty", cfg(W8)['slots']['a'])
 W8.execute('pp("PAD2")')
-check(ctlDoc(W8)['pfocus'] == 'rows', "B on the right page: back to the rows")
+check(ctlDoc(W8)['pfocus'] == 'diam' and ctlDoc(W8)['ppos'] == 8, "B on the right page: back to the diamonds (A)", ctlDoc(W8))
 # Y: Smart Y off -> one row (In combat: Change), the chooser's first row "inspect"
-W8.execute('pp("PADDDOWN"); pp("PADDDOWN"); pp("PAD1"); pp("PAD1")')
-check(ctlDoc(W8)['ppos'] == 4 and ctlDoc(W8)['chooser']['id'] == 'inspect', "Y (Smart Y off): Change = the In combat action, first row inspect",
+W8.execute('pp("PADDLEFT"); pp("PAD1"); pp("PAD1")')
+check(ctlDoc(W8)['ppos'] == 6 and ctlDoc(W8)['chooser']['id'] == 'inspect', "Y (Left from A; Smart Y off): Change = the In combat action, first row inspect",
       ctlDoc(W8).get('chooser'))
 W8.execute('pp("PADDDOWN"); pp("PAD1")')
 check(cfg(W8)['yc'] is not None and int(cfg(W8)['yc']['id']) == 331, "Y's In combat = Healing Wave", cfg(W8)['yc'])
@@ -1377,19 +1324,47 @@ check(buffs(W8) == [546] and docs(W8, n0, 'partyack')[0]['op'] == 'pb', "on the 
 W8.execute('pp("PADDDOWN"); pp("PADDDOWN"); pp("PAD1")')
 check(ctlDoc(W8)['chooser']['list'] == 'party' and ctlDoc(W8)['chooser']['id'] == 'inspect', "the last row: In combat (Change)", ctlDoc(W8)['chooser'])
 W8.execute('pp("PAD2"); pp("PAD2"); WowCompanionSpellsDB.smartOn = {}')
+# p37 THE LOCKED PLACES: the D-pad (p38: all four directions move the pick, the user's adaptive rows 2026-11-11), B, Hold, ZL + ZR
+W8.execute('pp("PADDLEFT"); pp("PAD1")')
+check(ctlDoc(W8)['ppos'] == 3 and ctlDoc(W8)['note'] == 'locked' and ctlDoc(W8)['pfocus'] == 'diam',
+      "p38: the D-pad's Right: locked (it moves the pick, like Up / Down), no page", ctlDoc(W8))
+W8.execute('pp("PADDUP"); pp("PAD1")')
+check(ctlDoc(W8)['ppos'] == 2 and ctlDoc(W8)['note'] == 'locked', "p37: the D-pad's Up: locked (it moves the pick)", ctlDoc(W8))
+W8.execute('pp("PADDDOWN"); pp("PADDRIGHT"); pp("PADDRIGHT"); pp("PADDRIGHT"); pp("PADDDOWN"); pp("PAD1")')
+check(ctlDoc(W8)['ppos'] == 7 and ctlDoc(W8)['note'] == 'locked', "p37: B: locked (the red Back)", ctlDoc(W8))
+W8.execute('pp("PADDUP"); pp("PADDUP")')
+check(ctlDoc(W8)['pfocus'] == 'touch' and ctlDoc(W8)['ptouch'] == 1, "p37: Up off the diamonds' top: the Touch row (Touch)", ctlDoc(W8))
+W8.execute('pp("PADDRIGHT"); pp("PAD1")')
+check(ctlDoc(W8)['ptouch'] == 2 and ctlDoc(W8)['note'] == 'locked', "p37: Hold (the player menu): locked", ctlDoc(W8))
+W8.execute('pp("PADDLEFT"); pp("PAD1"); pp("PAD1")')
+check(ctlDoc(W8)['chooser'] == {"list": "party", "row": 1, "id": "target"}, "p37: Touch: its page's Change, the chooser's first row Target",
+      ctlDoc(W8).get('chooser'))
+W8.execute('pp("PAD2"); pp("PAD2")')
+check(ctlDoc(W8)['pfocus'] == 'touch', "p37: B, B: back on the Touch row", ctlDoc(W8)['pfocus'])
+W8.execute('pp("PADDUP"); pp("PADDRIGHT"); pp("PADDRIGHT"); pp("PAD1")')
+check(ctlDoc(W8)['pfocus'] == 'sets' and ctlDoc(W8)['scur'] == 4 and ctlDoc(W8)['note'] == 'locked' and ctlDoc(W8)['pset'] == 1,
+      "p37: the set row's ZL + ZR: locked (nothing happens with both held)", ctlDoc(W8))
+W8.execute('pp("PADDLEFT"); pp("PAD1")')
+check(ctlDoc(W8)['pset'] == 3, "p37: A on ZR: the ZR layer on show (pset 3)", ctlDoc(W8))
+W8.execute('pp("PADDDOWN"); pp("PADDDOWN"); pp("PAD1"); pp("PAD1"); pp("PADDDOWN"); pp("PAD1")')
+check(ctlDoc(W8)['ppos'] == 5 and W8.eval('PADA("wc-ps-zrx")') == "Healing Wave", "p37: on the ZR layer, X = ZR + X: Healing Wave put there",
+      (ctlDoc(W8)['ppos'], W8.eval('PADA("wc-ps-zrx")')))
+W8.execute('pp("PAD2"); pp("PADDUP"); pp("PADDUP"); pp("PAD1")')
+check(ctlDoc(W8)['pset'] == 1 and ctlDoc(W8)['pfocus'] == 'sets', "p37: A on ZR again: the base layer", ctlDoc(W8))
+W8.execute('pp("PADDDOWN"); pp("PADDDOWN")')
 # TOUCH: padtab 27-36 picks + 37 / Book's two-tap spell
 n0 = nsent(W8)
 W8.execute('ptab(27 + 8); spellTaps(331)')              # slot 9 = zrx, then Healing Wave by the two taps
 ack = docs(W8, n0, 'partyack')
 check(ack and ack[0]['slot'] == 'zrx' and ack[0]['id'] == 331 and ack[0]['ok'] is True and W8.eval('PADA("wc-ps-zrx")') == "Healing Wave",
       "padtab 35 (slot zrx) + Book's two taps for Healing Wave: ZR+X = Healing Wave", ack)
-check(ctlDoc(W8)['ppos'] == 11, "the pick moved the cursor (ppos 11)", ctlDoc(W8)['ppos'])
+check(ctlDoc(W8)['ppos'] == 5 and ctlDoc(W8)['pset'] == 3, "the pick moved the cursor (p37: X on the ZR layer)", ctlDoc(W8))
 W8.execute('ptab(30)')
 W8.execute('spellTaps(8004)')
-check(int(cfg(W8)['touch']['id']) == 8004 and W8.eval('WowCompanion.pad.rows.party.cells[5].a.spell') == "Lesser Healing Wave",
-      "padtab 30 (touch) + a spell: Touch = Lesser Healing Wave (the TSP cells follow)", cfg(W8)['touch'])
+check(int(cfg(W8)['touch']['id']) == 8004 and W8.eval('WowCompanion.pad.rows.party.cells[1].a["wc-touch"]') == "Lesser Healing Wave",
+      "padtab 30 (touch) + a spell: Touch = Lesser Healing Wave (m130: the pick cells follow)", cfg(W8)['touch'])
 W8.execute('ptab(30); ptab(37)')
-check(cfg(W8)['touch'] is None and W8.eval('WowCompanion.pad.rows.party.cells[5].a.type') is None, "padtab 30 + 37: Touch = Target", cfg(W8)['touch'])
+check(cfg(W8)['touch'] is None and W8.eval('WowCompanion.pad.rows.party.cells[1].a["wc-touch"]') is None, "padtab 30 + 37: Touch = Target", cfg(W8)['touch'])
 W8.execute('ptab(28); ptab(37)')
 check(cfg(W8)['slots']['x'] is None and W8.eval('WowCompanionSpellsDB.partyBy["Korvash-Realm"].slots.x') is False, "padtab 28 + 37: X = Empty")
 n0 = nsent(W8)
@@ -1410,6 +1385,14 @@ check(ack and ack[0]['why'] == 'combat' and ack[0]['slot'] == 'yc', "a touch put
 W8.execute('COMBAT = false')
 W8.execute('ptab(0)')
 check(ctlDoc(W8)['view'] == 'normal' and 'ppos' not in ctlDoc(W8), "padtab 0: back to WoW Defaults (no party fields)", ctlDoc(W8)['view'])
+# p37 (party_design.md B): the Party mode tab only while Party mode is allowed (WC.partyOk, Hub's experimental switch)
+W8.execute('WowCompanion.partyOk = false; ptab(26)')
+check(ctlDoc(W8)['view'] == 'normal', "p37: Party mode not allowed: padtab 26 opens WoW Defaults (the tab is hidden)", ctlDoc(W8)['view'])
+W8.execute('pp("PADRSHOULDER"); pp("PADRSHOULDER"); pp("PADRSHOULDER")')
+check(ctlDoc(W8)['view'] == 'radial', "p37: ... and RB stops at the Spell radial (no Party mode tab past it)", ctlDoc(W8)['view'])
+W8.execute('WowCompanion.partyOk = true; pp("PADRSHOULDER")')
+check(ctlDoc(W8)['view'] == 'party', "p37: allowed again: RB from the Spell radial reaches Party mode", ctlDoc(W8)['view'])
+W8.execute('ptab(0)')
 check(W8.eval('#SPY') == 0 and W8.eval('#VIOL') == 0 and list(W8.eval('ERRS').values()) == [], "no spied call, no lockdown breach, no error")
 
 # ================================================================ 11. QUESTS: THE PLAYER MENU FOR A PARTY UNIT (q49)
@@ -1611,12 +1594,32 @@ FX.execute('hit(7); advance(0.6)')
 keep("partybox_off", FX, n0, 'partybox')
 keep("party_three_off", FX, n0, 'party')
 # the answers: RESEND, a spare column (op cell), a stale TSP tap (op touch why target), a setting in a fight (why combat), a slot set
-for name, lua in (("partyack_resend", tap_party(22)), ("partyack_cell", tap_party(37)), ("partyack_touch_target", tap_party(6)),
+for name, lua in (("partyack_resend", tap_party(22)), ("partyack_cell", tap_party(37)),
                   ("partyack_combat", 'COMBAT = true; WowCompanion.padMap.party.put("a", 331); COMBAT = false'),
                   ("partyack_slot_ok", 'WowCompanion.padMap.party.put("a", 331)')):
     n0 = nsent(FX)
     FX.execute(lua + '; NOW = NOW + 0.3')
     keep(name, FX, n0, 'partyack', 0)
+# m129: a plate's taps with Party mode on: another member's = the pick moves (k pick); the picked one's = Touch (k touch)
+flip(FX, "WowCompanionPartyOn")
+for name, col in (("partybox_pick", 2), ("partybox_touch", 2)):
+    n0 = nsent(FX)
+    FX.execute(tap_party(col) + '; NOW = NOW + 0.3')
+    keep(name, FX, n0, 'partybox')
+flip(FX, "WowCompanionPartyOff")
+# m131: the pet out (the shape "you, pet, party1, party2": n 4; m134 rows you pet | party1 | party2): the party document with the pet's
+# entry (m134: its portrait icon ic), and a Right from you onto the pet (m134: you | pet share the first row; partybox box 2, u pet, cnt 4)
+FX.execute('UNITS.pet = { name = "Wolf", alive = true, icon = 132242 }; fire("UNIT_PET", "player"); advance(1); rawget(_G, "WowCompanionPartyPad").a["wc-box"] = 1')
+n0 = nsent(FX)
+flip(FX, "WowCompanionPartyOn")
+keep("party_pet_on", FX, n0, 'party')
+n0 = nsent(FX)
+FX.execute('hit(3); advance(0.6)')
+keep("partybox_pet_move", FX, n0, 'partybox')
+flip(FX, "WowCompanionPartyOff")
+FX.execute('UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+# m131: the geometric NAV table (built above from the rows), for PartyModel.nav
+FIX["party_nav"] = NAV_FIXTURE
 # partycfg with everything set: Smart Y on, a party list with picks, Y's In combat, Touch = a spell, a chosen Empty
 FB = world(pre='BOOK = { 403, 331, 8004, 324, 131, 546 }')
 FB.eval('party')(FB.table_from([FB.table_from(["Brannoc", "WARRIOR"]), FB.table_from(["Iselle", "MAGE"])]))
@@ -1641,15 +1644,16 @@ def pp(k):
     FB.execute('WowCompanion.padTabCtl.press("%s")' % k)
 
 
-pp("PADDUP"); pp("PADDDOWN")                                              # the tab row, then the rows (A)
+# p37: down to the diamonds, the cursor on A (the router's 8)
+pp("PADDDOWN"); pp("PADDDOWN"); pp("PADDDOWN")
 n0 = nsent(FB); pp("PAD1"); keep("padtabctl_party_right", FB, n0, 'padtabctl')
 n0 = nsent(FB); pp("PAD1"); pp("PADDDOWN"); keep("padtabctl_party_chooser", FB, n0, 'padtabctl')
-pp("PAD2"); pp("PAD2"); pp("PADDDOWN"); pp("PADDDOWN")
+pp("PAD2"); pp("PAD2"); pp("PADDLEFT")                                    # back to the diamonds, Left to Y
 n0 = nsent(FB); pp("PAD1"); pp("PADDDOWN"); pp("PADDDOWN"); keep("padtabctl_party_y_add", FB, n0, 'padtabctl')
 n0 = nsent(FB); pp("PAD1"); keep("padtabctl_party_pbuff", FB, n0, 'padtabctl')
 FX2 = json.loads(FIX.get("padtabctl_party_y_add", "{}")).get('c', {})
-check(FX2.get('ppos') == 4 and FX2.get('pfocus') == 'right' and FX2.get('pright') == 2,
-      "the fixture's Y page: ppos 4, pfocus right, pright 2 (0-based: buff, buff, ADD)", {k: FX2.get(k) for k in ('ppos', 'pfocus', 'pright')})
+check(FX2.get('ppos') == 6 and FX2.get('pfocus') == 'right' and FX2.get('pright') == 2,
+      "the fixture's Y page: ppos 6 (p37: the router's Y), pfocus right, pright 2 (0-based: buff, buff, ADD)", {k: FX2.get(k) for k in ('ppos', 'pfocus', 'pright')})
 # the player menu for a party member (Quests q49)
 n0 = nsent(Q)
 Q.eval('WowCompanion.pmenu.read')("party2", "party")
@@ -1677,7 +1681,10 @@ except Exception as e:                                                    # no g
     print('NOTE no git diff: ' + str(e))
 added = [ln[1:] for ln in diff.splitlines() if ln.startswith('+') and not ln.startswith('+++')]
 code = [re.sub(r'--.*$', '', ln) for ln in added]
-BAD = [r'\bSetBinding\s*\(', r'\bSaveBindings\b', r'\bCreateMacro\b', r'\bEditMacro\b', r'\bSetCVar\b', r'\bPlaceAction\b',
+# m132 (the user, 2026-11-11: "Build a fight-only layer"): `self:SetBinding(` inside the header's own secure state snippet is the
+# restricted handle's OVERRIDE binding on that header (never saved, cleared with it), not the game's saved SetBinding; m133: the same
+# header handle reached as `h` (OV.fbSnip: the caller's "wc-hdr" ref, or the header itself)
+BAD = [r'(?<!self:)(?<!h:)\bSetBinding\s*\(', r'\bSaveBindings\b', r'\bCreateMacro\b', r'\bEditMacro\b', r'\bSetCVar\b', r'\bPlaceAction\b',
        r'\bPickupAction\b', r'\bPickupMacro\b', r'\bShowUIPanel\b', r'\bHideUIPanel\b', r'\bToggleFrame\b', r'\bInspectUnit\b',
        r'\bUnitPopup_OpenMenu\b', r'\bTargetFrame_OpenMenu\b', r'\bToggleGameMenu\b', r'\bCloseAllBags\b', r'\bOpenAllBags\b',
        r'\bSetOverrideBinding\s*\(']
@@ -1854,6 +1861,365 @@ for _ in range(3):
 puts = [WT.eval('PUTS[%d]' % (i + 1)) for i in range(int(WT.eval('#PUTS')))]
 check(puts == ['1:1:DSMAP'], "p34: Open Map from the DS tab is put on the bare D-pad Left (PadMap.putCommand)", puts)
 check(WT.eval('#SPY') == 0 and WT.eval('#VIOL') == 0, "p34: no spied call, no lockdown breach")
+
+# ================================================================ p39: the In combat tab's chooser has all five tabs (the user, 2026-11-11,
+# on 1428: "The in combat tab of the controller bindings is missing all 5 pages of options, it only shows the first 3")
+WT.execute('pp("PADRSHOULDER")')
+c = ctlDoc(WT)
+check(c['view'] == 'combat' and c['pos'] == 1 and c['shown'] == 1 and WT.eval('want()') is False, "p39: In combat, the bare D-pad Left, toolbar off", c)
+WT.execute('pp("PAD1")')
+check(ctlDoc(WT).get('chooser') and ctlDoc(WT)['chooser']['list'] == 'spells', "p39: A opens In combat's chooser on Spells", ctlDoc(WT).get('chooser'))
+seen = []
+for _ in range(6):
+    seen.append(ctlDoc(WT)['chooser']['list'])
+    WT.execute('pp("PADDRIGHT")')
+seen = list(dict.fromkeys(seen))
+check(seen == ['spells', 'general', 'professions', 'extra', 'dstool'], "p39: In combat's chooser: all five tabs (Extra and DS too)", seen)
+ds = walk(WT)
+check({'DSCHAT', 'DSMAP'} <= set(ds), "p39: In combat's DS tab lists DS Forever's commands", ds)
+WT.execute('pp("PAD2")')
+# a fight spell on the button first; an In combat DS entry put there replaces it (the button does the command in fights too)
+# (this world has no game bars: the button reads as one with a fight spell over it, PadMap m43's view)
+WT.execute('local pm = WowCompanion.padMap; SLOTAT0 = pm.slotAt; local f = SLOTAT0; pm.slotAt = function(pg, st, ps) '
+           'if st == 1 and ps == 1 then return { kind = "combat", c = { id = 403, n = "Lightning Bolt", i = 1 }, ov = true } end '
+           'return f(pg, st, ps) end')
+WT.execute('PUTS = {}; CLR = {}; FIGHTS = {}; local pm = WowCompanion.padMap; local g = pm.clearCombat; '        # (the p34 putCommand spy stays)
+           'pm.clearCombat = function(pg, st, ps) CLR[#CLR + 1] = st .. ":" .. ps; return g(pg, st, ps) end; '
+           'local h = pm.putFight; pm.putFight = function(pg, st, ps, k, v, fm) FIGHTS[#FIGHTS + 1] = st .. ":" .. ps .. ":" .. k .. ":" .. tostring(v) '
+           '.. (fm and (":" .. fm) or ""); return h(pg, st, ps, k, v, fm) end')
+WT.execute('pp("PAD1"); for i = 1, 4 do pp("PADDRIGHT") end')
+check(ctlDoc(WT)['chooser']['list'] == 'dstool', "p39: In combat on a fight-spell button: the DS tab is there too", ctlDoc(WT)['chooser'])
+WT.execute('WowCompanion.padMap.emit(true)')
+ctl_dump('padmap_combat', WT, 'padmap'); ctl_dump('ctl_combat_dstool', WT, 'padtabctl')
+WT.execute('for i = 1, 80 do pp("PADDUP") end; pp("PADDDOWN")')
+for _ in range(40):
+    if ctlDoc(WT)['chooser']['id'] == 'DSMAP':
+        break
+    WT.execute('pp("PADDDOWN")')
+WT.execute('pp("PAD1")')
+b = ctlDoc(WT).get('box')
+check(b and b['kind'] == 'replace' and b.get('what') == 'DSMAP' and int(WT.eval('#PUTS')) == 0 and int(WT.eval('#FIGHTS')) == 0,
+      "p41: Open Map on In combat's fight-spell button: Replace (the fight layer's spell) asks first, nothing changed yet", b)
+WT.execute('pp("PAD1")')
+puts = [WT.eval('PUTS[%d]' % (i + 1)) for i in range(int(WT.eval('#PUTS')))]
+clr = [WT.eval('CLR[%d]' % (i + 1)) for i in range(int(WT.eval('#CLR')))]
+fights = [WT.eval('FIGHTS[%d]' % (i + 1)) for i in range(int(WT.eval('#FIGHTS')))]
+check(fights == ['1:1:command:DSMAP'] and puts == [] and clr == [] and not ctlDoc(WT).get('box'),
+      "p41: Replace's ONE yes: Open Map goes on the FIGHT LAYER only (putFight; no putCommand on the button, no second box)", (fights, puts, clr))
+# p41: an EMPTY fight layer on the In combat tab: a DS entry goes straight on (the fight layer only: nothing out of combat changes)
+WT.execute('local pm = WowCompanion.padMap; pm.slotAt = function(pg, st, ps) '
+           'if st == 1 and ps == 1 then return { kind = "none" } end return SLOTAT0(pg, st, ps) end')
+WT.execute('PUTS = {}; CLR = {}; FIGHTS = {}; pp("PAD1"); for i = 1, 4 do pp("PADDRIGHT") end')
+WT.execute('for i = 1, 80 do pp("PADDUP") end; pp("PADDDOWN")')
+for _ in range(40):
+    if ctlDoc(WT)['chooser']['id'] == 'DSMAP':
+        break
+    WT.execute('pp("PADDDOWN")')
+WT.execute('pp("PAD1")')
+b = ctlDoc(WT).get('box')
+fights = [WT.eval('FIGHTS[%d]' % (i + 1)) for i in range(int(WT.eval('#FIGHTS')))]
+c = ctlDoc(WT)
+check(b is None and fights == ['1:1:command:DSMAP'] and int(WT.eval('#PUTS')) == 0 and int(WT.eval('#CLR')) == 0
+      and not c.get('chooser'), "p41: Open Map on an empty In combat button: straight onto the fight layer, no box, the chooser closes", (b, fights))
+WT.execute('WowCompanion.padMap.slotAt = SLOTAT0')
+# ================================================================ p43 (the user, 2026-11-12, on 1429: "In combat still does not show all 5
+# tabs", then the pick "All 5 on every button"): EVERY In combat button lists all five tabs - the base X / Y / A, a form's own set, the
+# bare D-pad with and without the DS WoW toolbar, ZL / ZR / ZL + ZR (B stays the game's Back: no chooser)
+def tabs_here(L):
+    L.execute('pp("PAD1")')
+    for _ in range(3):
+        if ctlDoc(L).get('box'):
+            L.execute('pp("PAD2")')
+    seen = []
+    for _ in range(6):
+        ch = ctlDoc(L).get('chooser')
+        if not ch:
+            break
+        seen.append(ch['list'])
+        L.execute('pp("PADDRIGHT")')
+    if ctlDoc(L).get('chooser'):
+        L.execute('pp("PAD2")')
+    return list(dict.fromkeys(seen))
+
+
+def at(L, set_, pos, form=0):
+    L.execute('local t = WowCompanion.padTabCtl.state(); t.set = %d; t.pos = %d; t.form = %d; t.focus = "buttons"; '
+              't.chooser = nil; t.box = nil; t.carry = nil' % (set_, pos, form))
+
+
+FIVE = ['spells', 'general', 'professions', 'extra', 'dstool']
+check(ctlDoc(WT)['view'] == 'combat', "p43: on the In combat tab", ctlDoc(WT)['view'])
+bad = []
+for tb in (False, True):
+    WT.execute('WowCompanion.padMap.dpadBar(%s)' % ('true' if tb else 'false'))
+    for st in (1, 2, 3, 4):
+        for p in (1, 2, 3, 4, 5, 6, 8):
+            at(WT, st, p)
+            got = tabs_here(WT)
+            if got != FIVE:
+                bad.append((tb, st, p, got))
+    for p in (1, 2, 3, 4, 5, 6, 8):                         # a form's own set (Cat Form chosen on the form row)
+        at(WT, 1, p, 768)
+        got = tabs_here(WT)
+        if got != FIVE:
+            bad.append((tb, 'form', p, got))
+WT.execute('WowCompanion.padMap.dpadBar(false)')
+check(bad == [], "p43: In combat, every button (sets 1-4, the D-pad and A / X / Y, a form's set, the toolbar on and off) lists all five tabs", bad)
+# p43: an Extra / DS entry on base A goes on A's FIGHT LAYER (PadMap.putFight on set 1 position 8); WoW Defaults (the game's Jump) stays
+at(WT, 1, 8)
+WT.execute('FIGHTS = {}; PUTS = {}; pp("PAD1"); for i = 1, 4 do pp("PADDRIGHT") end')
+check(ctlDoc(WT)['chooser']['list'] == 'dstool', "p43: base A's chooser on the DS tab", ctlDoc(WT)['chooser'])
+WT.execute('for i = 1, 80 do pp("PADDUP") end; pp("PADDDOWN")')
+for _ in range(40):
+    if ctlDoc(WT)['chooser']['id'] == 'DSMAP':
+        break
+    WT.execute('pp("PADDDOWN")')
+WT.execute('pp("PAD1")')
+if ctlDoc(WT).get('box'):
+    WT.execute('pp("PAD1")')
+fights = [WT.eval('FIGHTS[%d]' % (i + 1)) for i in range(int(WT.eval('#FIGHTS')))]
+fe = WT.eval('(WowCompanionSpellsDB.faceBy or {})[WHO .. "-" .. REALM] and WowCompanionSpellsDB.faceBy[WHO .. "-" .. REALM][8]')
+a8 = WT.eval('WowCompanion.padMap.slotAt(1, 1, 8)')
+check(fights == ['1:8:command:DSMAP'] and int(WT.eval('#PUTS')) == 0 and fe is not None and fe.key == 'DSMAP' and fe.t == 'command',
+      "p43: Open Map from base A's DS tab goes on A's fight layer (putFight, the face store), no putCommand", (fights, dict(fe) if fe else None))
+check(a8.kind == 'fixed' and a8.cf is not None and a8.cf.key == 'DSMAP',
+      "p43: WoW Defaults stays: A is still the game's own button (fixed); Open Map is only its In combat entry", (a8.kind, a8.n))
+WT.execute('WowCompanion.padMap.emit(true)')
+at(WT, 1, 8)
+WT.execute('pp("PAD1"); pp("PAD2"); pp("PAD1"); for i = 1, 4 do pp("PADDRIGHT") end')
+ctl_dump('padmap_combat_a', WT, 'padmap'); ctl_dump('ctl_combat_a', WT, 'padtabctl')
+check(ctlDoc(WT)['chooser']['list'] == 'dstool' and ctlDoc(WT)['pos'] == 8, "p43: base A (with its fight-layer command): the DS tab again",
+      ctlDoc(WT)['chooser'])
+# a binding on base A: the row is there, but refused with the reason (bind-fixed: the game keeps the key)
+WT.execute('pp("PADDLEFT")')
+check(ctlDoc(WT)['chooser']['list'] == 'extra', "p43: base A's Extra tab", ctlDoc(WT)['chooser'])
+for _ in range(60):
+    r = ctlDoc(WT)['chooser']
+    if r['id'] == 'JUMP':
+        break
+    WT.execute('pp("PADDDOWN")')
+if ctlDoc(WT)['chooser']['id'] == 'JUMP':
+    WT.execute('FIGHTS = {}; pp("PAD1")')
+    check(ctlDoc(WT).get('note') == 'bind-fixed' and int(WT.eval('#FIGHTS')) == 0, "p43: Jump on base A: refused, bind-fixed (nothing put)",
+          ctlDoc(WT).get('note'))
+WT.execute('pp("PAD2"); WowCompanion.padMap.clearCombatFace(8)')
+# a form's set: a binding refused (bind-form), an Extra entry goes on the form's fight layer (putFight with the form)
+at(WT, 1, 5, 768)
+WT.execute('FIGHTS = {}; pp("PAD1"); for i = 1, 3 do pp("PADDRIGHT") end')
+for _ in range(60):
+    if ctlDoc(WT)['chooser']['id'] == 'JUMP':
+        break
+    WT.execute('pp("PADDDOWN")')
+WT.execute('pp("PAD1")')
+check(ctlDoc(WT).get('note') == 'bind-form' and int(WT.eval('#FIGHTS')) == 0, "p43: Jump on a form's X: refused, bind-form", ctlDoc(WT).get('note'))
+WT.execute('pp("PAD2")')
+at(WT, 1, 1)
+# WoW Defaults unchanged: five on a plain button
+WT.execute('pp("PADLSHOULDER")')
+for _ in range(12):
+    if ctlDoc(WT)['pos'] == 2:
+        break
+    WT.execute('pp("PADDLEFT")')
+WT.execute('pp("PAD1")')
+for _ in range(3):
+    if ctlDoc(WT).get('box'):
+        WT.execute('pp("PAD2")')
+WT.execute('for i = 1, 6 do pp("PADDRIGHT") end')
+c = ctlDoc(WT)
+check(c['view'] == 'normal' and c.get('chooser') and c['chooser']['list'] == 'dstool', "p39: WoW Defaults keeps its five tabs", (c['view'], c['pos'], c.get('chooser')))
+WT.execute('pp("PAD2")')
+check(WT.eval('#SPY') == 0 and WT.eval('#VIOL') == 0, "p39: no spied call, no lockdown breach")
+
+# ================================================================ m132 PARTY MODE IN A FIGHT, THE FIGHT FIRST (the user, 2026-11-11, a healer:
+# "Party mode needs to be usable in combat for healers. Locking it is retarded"). Every world here ENTERS THE FIGHT FIRST (the lockdown
+# on: any insecure secure-frame / binding / attribute write is a VIOL) and only then turns Party mode on, picks, moves, casts, Touches,
+# changes the roster and the pet - all through the keys bound before the lockdown, the party row's secure cells and the state drivers.
+def cell(L, col):
+    a0 = nact(L)
+    L.execute('local c = WowCompanion.pad.rows.party.cells[%d]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3' % col)
+    return acts(L, a0)
+
+
+def pressk(L, key, lt=False, rt=False):
+    L.execute('trig(%s, %s)' % ('true' if lt else 'false', 'true' if rt else 'false'))
+    a0 = nact(L)
+    L.execute('tapKey("%s"); NOW = NOW + 0.3' % key)
+    L.execute('trig(false, false)')
+    return acts(L, a0)
+
+
+def viol(L):
+    return int(L.eval('#VIOL')), int(L.eval('#SNIPERR')), int(L.eval('#SPY'))
+
+
+WF = world(pre='BOOK = { 403, 331, 324, 8004 }; WowCompanionSpellsDB.binds = { ["Korvash-Realm"] = { ["2:8"] = "JUMP", ["1:1"] = "TOGGLEAUTORUN" } }')
+WF.eval('party')(WF.table_from([WF.table_from(m) for m in MEMBERS[:2]]))
+WF.execute('fire("GROUP_ROSTER_UPDATE"); advance(1)')
+WF.eval('WowCompanion.padMap.party.put')("touch", 8004)
+setps(WF, a="Healing Wave", zla="Cure Poison")
+WF.execute('rawget(_G, "WowCompanionPartyPad").a["wc-py"] = nil; advance(1)')
+FIGHT_KEYS = router_on(WF)
+FIGHT_KEYS["PADBACK"] = "CLICK WowCompanionPartyToggle:LeftButton"
+check(WF.eval('PADA("wc-party")') is None and keys(WF).get("SHIFT-PAD1") == "JUMP", "m132 fight-first: out of combat, grouped, Party mode off, the chords bound",
+      keys(WF))
+WF.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+check(keys(WF) == FIGHT_KEYS, "m132 fight-first: the fight starts (grouped, off): all 8 router keys + Select carried; no m34 chord over the party layers",
+      keys(WF))
+pressk(WF, "PADBACK")
+check(party_on_all(WF) == [True] * 9 and viol(WF) == (0, 0, 0), "m132 fight-first: Select IN the fight turns Party mode on (secure only)",
+      (party_on_all(WF), viol(WF)))
+n0 = nsent(WF)
+pressk(WF, "PADDDOWN")
+pb = docs(WF, n0, 'partybox')
+check(WF.eval('PADA("wc-box")') == 2 and WF.eval('PADA("wc-u")') == "party1" and pb and pb[-1]['b']['k'] == 'move' and pb[-1]['b']['fight'] is True,
+      "m132 fight-first: D-pad Down picks party1 (box 2), partybox k move, fight true", pb and pb[-1]['b'])
+got = pressk(WF, "PAD1")
+check(got == [("spell", "Healing Wave", "party1")], "m132 fight-first: A casts its spell on the picked member", got)
+got = pressk(WF, "PAD1", lt=True)
+check(got == [("spell", "Cure Poison", "party1")], "m132 fight-first: ZL + A casts the ZL layer's spell (no Jump chord in the way)", got)
+got = cell(WF, 1)
+check(got == [("spell", "Lesser Healing Wave", "party1")], "m132 fight-first: a tap on the picked plate = Touch (its spell on party1)", got)
+got = cell(WF, 2)
+check(got == [("target", None, "party2")] and WF.eval('PADA("wc-box")') == 3 and WF.eval('PADA("wc-u")') == "party2",
+      "m132 fight-first: a tap on party2's plate picks it (m134: and targets it)",
+      (got, WF.eval('PADA("wc-box")')))
+got = pressk(WF, "PAD4")
+check(got == [("target", None, "party2")] and WF.eval('PADA("wc-pmenu")') is None, "m132 fight-first: Y with nothing armed = Target party2 (no menu)", got)
+got = pressk(WF, "PADDUP")
+check(WF.eval('PADA("wc-box")') == 2 and WF.eval('PADA("wc-k")') == "move" and got == [("target", None, "party1")],
+      "m132 fight-first: D-pad Up moves back (no menu held the press; m134: party1 targeted)",
+      WF.eval('PADA("wc-box")'))
+# the roster changes in the fight: party3 joins (the driver keeps the pick), the Right in the shared row reaches it, the pet comes out
+WF.execute('UNITS.party3 = { name = "Doran", cls = "ROGUE", alive = true, role = "DAMAGER", pt = "ENERGY", guid = "Player-1-Doran" }; '
+           'fire("GROUP_ROSTER_UPDATE"); driveStates()')
+check(WF.eval('PADA("wc-box")') == 2 and WF.eval('PADA("wc-u")') == "party1" and WF.eval('PADA("wc-cnt")') == 4 and viol(WF) == (0, 0, 0),
+      "m132 fight-first: party3 joins in the fight: the pick stays on party1 (cnt 4)", (WF.eval('PADA("wc-box")'), WF.eval('PADA("wc-u")'), viol(WF)))
+pressk(WF, "PADDDOWN")
+pressk(WF, "PADDRIGHT")
+check(WF.eval('PADA("wc-box")') == 4 and WF.eval('PADA("wc-u")') == "party3", "m132 fight-first: Down then Right (the shared bottom row): party3",
+      (WF.eval('PADA("wc-box")'), WF.eval('PADA("wc-u")')))
+WF.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); driveStates()')
+check(WF.eval('PADA("wc-box")') == 5 and WF.eval('PADA("wc-u")') == "party3" and WF.eval('PADA("wc-cnt")') == 5,
+      "m132 fight-first: the pet comes out in the fight: still party3 (box 5, cnt 5)", (WF.eval('PADA("wc-box")'), WF.eval('PADA("wc-u")')))
+got = pressk(WF, "PAD1")
+check(got == [("spell", "Healing Wave", "party3")], "m132 fight-first: A on party3 after the roster and pet changes", got)
+WF.execute('local p = rawget(_G, "WowCompanionPartyPad"); p.a["wc-box"] = 1; p.a["wc-u"] = "player"')
+got = pressk(WF, "PADDRIGHT")
+check(WF.eval('PADA("wc-u")') == "pet" and got == [("target", None, "pet")], "m134 fight-first: Right from you = the pet (you | pet share the first row), targeted", got)
+got = pressk(WF, "PAD1")
+check(got == [("spell", "Healing Wave", "pet")], "m132 fight-first: A heals the pet", got)
+# documents in the fight: the party document says on, no aside, live (the app draws the pick from it)
+n0 = nsent(WF)
+WF.execute('fire("UNIT_LEVEL", "party1"); advance(1)')
+pd = docs(WF, n0, 'party')
+check(pd and pd[-1]['p']['on'] is True and 'aside' not in pd[-1]['p'] and pd[-1]['p']['fight'] is True and pd[-1]['p']['sel'] == 'bound'
+      and len(pd[-1]['p']['m']) == 5, "m132 fight-first: the party document in the fight: on, no aside, fight, sel bound, 5 entries", pd and pd[-1]['p'])
+# a room / the bar cursor / a game window take the controller in the fight: only suspended, never off (in or after the fight)
+WF.execute('HOLDER = "pad:bar"; tick(1); HOLDER = nil; LootFrame = { IsShown = function() return true end }; tick(1); LootFrame = nil; tick(1)')
+check(party_on_all(WF) == [True] * 9 and viol(WF) == (0, 0, 0), "m132 fight-first: the bar cursor and a loot window in the fight: Party mode stays on",
+      party_on_all(WF))
+# off and on again in the same fight: Select, then the bottom tab's cells (col 11 off, col 10 on), B
+pressk(WF, "PADBACK")
+check(party_on_all(WF) == [None] * 9, "m132 fight-first: Select again: off", party_on_all(WF))
+got = pressk(WF, "PAD1")
+check(all(a[2] is None for a in got), "m132 fight-first: off, A is the fight router's own again (no party cast)", got)
+cell(WF, 10)
+check(party_on_all(WF) == [True] * 9, "m132 fight-first: the tab's ON (col 10) in the fight", party_on_all(WF))
+cell(WF, 11)
+check(party_on_all(WF) == [None] * 9, "m132 fight-first: the tab's OFF (col 11) in the fight", party_on_all(WF))
+pressk(WF, "PADBACK")
+pressk(WF, "PAD2")
+check(party_on_all(WF) == [None] * 9 and WF.eval('PADA("wc-k")') == "off", "m132 fight-first: Select on, B off (the pad's own)", WF.eval('PADA("wc-k")'))
+pressk(WF, "PADBACK")
+# what the game forbids stays refused, and says why
+n0 = nsent(WF)
+WF.eval('WowCompanion.padMap.party.put')("a", 331)
+ack = docs(WF, n0, 'partyack')
+check(ack and ack[-1]['ok'] is False and ack[-1]['why'] == 'combat', "m132 fight-first: a Controller-room edit in the fight: refused, why combat", ack)
+check(viol(WF) == (0, 0, 0), "m132 fight-first: the whole fight: no lockdown breach, no snippet error, no spied call", viol(WF))
+WF.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
+check(party_on_all(WF) == [True] * 9 and keys(WF) == FIGHT_KEYS, "m132 fight-first: the fight ends: Party mode still on, its keys and Select bound",
+      keys(WF))
+pressk(WF, "PADBACK")
+WF.execute('UNITS.pet = nil; UNITS.party3 = nil; fire("GROUP_ROSTER_UPDATE"); driveStates(); advance(1); NOW = NOW + 2; tick(0.1)')
+
+# a GAME WINDOW OPEN AT THE PULL (a loot roll left showing): the router no longer steps aside, Select and the keys are carried
+for win in ("GroupLootFrame1", "LootFrame", "StaticPopup1"):
+    WF.execute('%s = { IsShown = function() return true end }; NOW = NOW + 2; tick(0.1)' % win)
+    check(not any(v.startswith("CLICK WowCompanion") for v in keys(WF).values()), "m132 window-at-pull: %s out of combat: the router steps aside" % win,
+          keys(WF))
+    WF.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+    check(keys(WF) == FIGHT_KEYS, "m132 window-at-pull: the fight starts with %s showing: all 8 keys + Select carried" % win, keys(WF))
+    pressk(WF, "PADBACK")
+    pressk(WF, "PADDDOWN")
+    got = pressk(WF, "PAD1")
+    check(party_on_all(WF) == [True] * 9 and got and got[-1][1] == "Healing Wave" and viol(WF) == (0, 0, 0),
+          "m132 window-at-pull (%s): Select on, Down, A heals the pick" % win, (got, viol(WF)))
+    WF.execute('%s = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)' % win)
+    check(party_on_all(WF) == [True] * 9, "m132 window-at-pull (%s): still on after the fight" % win, party_on_all(WF))
+    pressk(WF, "PADBACK")
+# Party mode ON with a prompt showing (suspended) when the fight starts: never switched off; live for the fight
+pressk(WF, "PADBACK")
+WF.execute('StaticPopup1 = { IsShown = function() return true end }; NOW = NOW + 2; tick(0.1)')
+check(WF.eval('PADA("wc-party")') is True and not any(v.startswith("CLICK WowCompanion") for v in keys(WF).values()),
+      "m132: on, a popup out of combat: suspended (still on)", keys(WF))
+WF.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+got = pressk(WF, "PAD1")
+check(party_on_all(WF) == [True] * 9 and keys(WF) == FIGHT_KEYS and got and got[-1][1] == "Healing Wave",
+      "m132: ... the fight starts with the popup: Party mode on and live (keys carried, A casts)", (keys(WF), got))
+WF.execute('StaticPopup1 = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1); NOW = NOW + 2; tick(0.1)')
+pressk(WF, "PADBACK")
+check(viol(WF) == (0, 0, 0), "m132 window-at-pull: no lockdown breach, no snippet error, no spied call", viol(WF))
+
+# SOLO with a pet: the fight first, Select still the toggle's; the pet picked by the D-pad and healed
+WS = world()
+WS.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); driveStates(); advance(1)')
+setps(WS, a="Healing Wave")
+WS.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+check(keys(WS).get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton", "m132 solo: the fight starts solo (a pet out): Select carried", keys(WS))
+pressk(WS, "PADBACK")
+got = pressk(WS, "PADDDOWN")
+check(got == [] and WS.eval('PADA("wc-u")') == "player", "m134 solo: Down from you with only the pet: no row under you, nothing", got)
+pressk(WS, "PADDRIGHT")
+got = pressk(WS, "PAD1")
+check(WS.eval('PADA("wc-u")') == "pet" and got == [("spell", "Healing Wave", "pet")] and viol(WS) == (0, 0, 0),
+      "m134 solo: Select on, Right = the pet, A heals it (secure only)", (got, viol(WS)))
+WS.execute('UNITS.pet = nil; driveStates()')
+check(WS.eval('PADA("wc-u")') == "player" and WS.eval('PADA("wc-cnt")') == 1, "m132 solo: the pet dies in the fight: the pick clamps to you",
+      WS.eval('PADA("wc-u")'))
+WS.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
+# m133 (review): solo with Party mode off (no pet, ungrouped): a game window at the pull keeps its own navigation (aside, as before m132)
+WO = world()
+WO.execute('GameMenuFrame = { IsShown = function() return true end }; NOW = NOW + 2; tick(0.1); fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+check(not any(v.startswith("CLICK WowCompanion") for v in keys(WO).values()),
+      "m133: solo, no pet, Party mode off: a fight's start with the game menu open stays aside (its controller navigation kept)", keys(WO))
+WO.execute('GameMenuFrame = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
+# m133 (review): solo with a pet, a bare D-pad binding of the player's own: the fight's start carries the D-pad (no chord), so the pick
+# reaches the pet after Party mode is turned on in the fight; a window at the pull is ignored as when grouped
+WP = world(pre='WowCompanionSpellsDB.binds = { ["Korvash-Realm"] = { ["2:8"] = "JUMP", ["1:4"] = "TOGGLEAUTORUN" } }')
+WP.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); driveStates(); advance(1)')
+setps(WP, a="Healing Wave")
+WP.execute('LootFrame = { IsShown = function() return true end }; NOW = NOW + 2; tick(0.1)')
+WP.execute('fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+k = keys(WP)
+check(k.get("PADBACK") == "CLICK WowCompanionPartyToggle:LeftButton" and "SHIFT-PAD1" not in k and k.get("PADDDOWN", "").startswith("CLICK WowCompanion"),
+      "m133 solo + pet: the fight's start (a loot window open): Select and the D-pad carried, no m34 chord (SHIFT-PAD1 / PADDDOWN)", k)
+pressk(WP, "PADBACK")
+pressk(WP, "PADDRIGHT")
+got = pressk(WP, "PAD1")
+check(WP.eval('PADA("wc-u")') == "pet" and got == [("spell", "Healing Wave", "pet")] and viol(WP) == (0, 0, 0),
+      "m133 solo + pet: Party mode on in the fight, Right = the pet (m134), A heals it", (got, viol(WP)))
+WP.execute('LootFrame = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
+# the experimental switch off: today's rules (Select the game's, a window at the pull keeps the router aside)
+WN = world(ok=False)
+WN.execute('LootFrame = { IsShown = function() return true end }; NOW = NOW + 2; tick(0.1); fire("PLAYER_REGEN_DISABLED"); COMBAT = true')
+# m134 (combat_nav_design Step 2; the user's decision 1, 2026-11-11: the game's windows at the pull "should be built on the bottom
+# screen"; only the game menu keeps the game's pad): every key carried, Select still the game's (Party mode not allowed)
+check("PADBACK" not in keys(WN) and keys(WN).get("PADDDOWN", "").startswith("CLICK WowCompanion"),
+      "m134: Party mode NOT allowed: a fight's start with a loot window carries the keys (the bottom screen's), Select the game's", keys(WN))
+WN.execute('LootFrame = nil; COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
+check(('function' not in SRC["padmap"][SRC["padmap"].index('PM.PARTYPAD = [=['):SRC["padmap"].index(']=]', SRC["padmap"].index('PM.PARTYPAD = [=['))]),
+      "m132: the PARTYPAD snippet holds no f-u-n-c-t-i-o-n (the game's secure checker refuses it)")
 
 # ================================================================ m124: the In-combat spells follow the rank that casts
 WR = world()

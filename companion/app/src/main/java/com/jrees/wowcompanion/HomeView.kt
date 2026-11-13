@@ -79,7 +79,7 @@ class HomeView(
     private val auraPane = AuraPane(context)
     private val barsSlot = FrameLayout(context)
     private val chatSlot = FrameLayout(context)
-    /** PARTY MODE's module (PARTY_BUILD.md 4.2): the game's raid-style cells over the left column, never hidden while `party` comes */
+    /** PARTY MODE's module (party_design.md C, m129): one column of plates beside the Select tab, over the left column */
     private val party = PartyModel.live
     private val partyView = PartyModuleView(context, party)
     /** the player menu for a party member (PARTY_BUILD.md 4.6), over the left column; the host drives it */
@@ -119,7 +119,7 @@ class HomeView(
                 castView.swingOn = HomeSettings.swingTimer                                     // p-swing-timer: switched in a fight
             else if (laidGrow != HomeSettings.combatGrow) { laidGrow = HomeSettings.combatGrow; shown?.let { if (it.takeover) apply(it, animate = isShown) } }
         } }
-        setBackgroundColor(Theme.ink)
+        ThemeLive.bg(this, Tok.INK)
         setWillNotDraw(false)
         for ((_, v) in views) { addView(v); v.visibility = View.GONE }
         addView(partyMenu); partyMenu.visibility = View.GONE; partyMenu.translationZ = PARTY_MENU_Z
@@ -127,7 +127,7 @@ class HomeView(
         mapView.onCompactTap = { if (flow.tapMap()) changed() }
         partyView.onCellTap = { i -> onPartyCell?.invoke(i) }
         partyView.onCellLong = { i -> onPartyLong?.invoke(i) }
-        partyView.onTag = { onPartyTag?.invoke() }
+        partyView.onTag = { on -> onPartyTag?.invoke(on) }
         // the card's CONTENT is the map's (its focus, its default focus): a change there re-lays Home when the card comes or goes
         // (p-card-invisible: it only redrew, and a pane laid without a card stayed GONE until a later quests document)
         mapView.onShownFocusChanged = { questPane.invalidate(); cardCheck("focus") }
@@ -260,6 +260,8 @@ class HomeView(
      */
     /** a fight is on (Home's combat takeover): the self-setup never closes the game then */
     fun inFight(): Boolean = flow.takeover
+    /** m132: the game is fighting as Home shows it - the takeover (Party mode off) or the grow (Party mode on, no takeover) */
+    fun fightShown(): Boolean = flow.takeover || grow.fighting(System.currentTimeMillis())
 
     fun bGoesHome(): Boolean = bGlyph.shown(System.currentTimeMillis()) || (flow.full != null && !flow.takeover) ||
         // the buff / debuff list open: B returns Home at any time there (the user, 2026-09-30: "the red with the b button")
@@ -671,7 +673,7 @@ class HomeView(
         val n = msg.optInt("n", -1)
         if (n == homePadN) return
         homePadN = n
-        mapHeld = true
+        if (!mapHeld) mapHeldNow()                                // a press arrived: held (also after a "pending" answer)
         val k = msg.optString("k")
         // b129 (the user's pick "Right goes to buffs"): the buff / debuff list open = its keys; the cursor on an aura = the
         // auras' keys; else Right enters the auras, Left does nothing (no D-pad pan), SELECT = the map's filter (2026-10-09: Start
@@ -707,7 +709,13 @@ class HomeView(
         }
         if (mapWanted) {
             when (msg.optString("op")) {
-                "hold" -> if (msg.optBoolean("ok")) { mapHeld = true; mapBSaid = null; mapView.padHints = true; mapView.hostStart(); syncMapB(); mapFallbackOff() }
+                // combat_nav Step 1 (the user, 2026-11-11): "pending" (a fight's take until the ENTER tap) is NOT held: the guard reads B
+                // meanwhile; the first press that arrives (mapPad) makes it held
+                "hold" -> if (MapExitGuard.ackHeld(msg.optBoolean("ok"), msg.optString("why"))) mapHeldNow()
+                    else if (MapExitGuard.ackPending(msg.optBoolean("ok"), msg.optString("why"))) {
+                        Log.i(TAG, "map module: hold pending (the fight's ENTER)")
+                        mapHeld = false; mapRefused = false; mapFallbackOn(); removeCallbacks(mapWatch); postDelayed(mapWatch, 1000L)
+                    }
                     else {
                         Log.i(TAG, "map module: hold refused (${msg.optString("why")})"); homeGuestTap(GuestPad.cells(pad, GUEST_ID, hold = false))
                         // never a module the player cannot leave: B read by Home closes it (MapExitGuard), the hold asked again after the fight
@@ -719,7 +727,9 @@ class HomeView(
         }
         if (!chatWanted) { auraPane.onGuestAck(msg); return }
         when (msg.optString("op")) {
-            "hold" -> if (msg.optBoolean("ok")) {
+            "hold" -> if (MapExitGuard.ackPending(msg.optBoolean("ok"), msg.optString("why"))) {
+                chatHeld = false                                  // combat_nav Step 1 (2026-11-11): pending is not held; the first press holds
+            } else if (msg.optBoolean("ok")) {
                 chatHeld = true
                 // the Home button's B follows the chat's own chain (the Chat room's wiring, MainActivity's onBackChanged)
                 chatView.post { chatView.onBackChanged(chatView.bLeadsHome()) }
@@ -759,6 +769,8 @@ class HomeView(
         if (MapExitGuard.retry(mapWanted, mapHeld, inFight(), since)) { Log.i("WCLOG", "map module: the hold asked again (out of the fight)"); mapAsk(); return }
         if (!mapHeld) postDelayed(mapWatch, 1000L)
     }
+    /** the map module holds the controller now (a "held" answer, or the first press after "pending"): the guard off */
+    private fun mapHeldNow() { mapHeld = true; mapBSaid = null; mapView.padHints = true; mapView.hostStart(); syncMapB(); mapFallbackOff() }
     private fun mapFallbackOn() {
         if (mapFallbackReader != null) return
         Log.i("WCLOG", "map module: no controller hold (${if (mapRefused) "refused: a fight" else "no answer"}): B closes it")
@@ -1121,9 +1133,9 @@ class HomeView(
 
     /** Party mode on and routing, while Home's rest page shows (a full module = the add-on suspends it; drawn as off) */
     private fun partyOnHere(): Boolean = party.party?.onLive == true
-    /** the bottom screen's party module (off 2026-11-05 - the game hid every health number; ON again 2026-11-07, the user: "bring back
-     *  the party mode built off of it": the health now comes from the game's combat log, CombatHealth) */
-    // 2026-11-07 (the user: "Make the party mode an experimental toggle that is off by default"): QOL > Experimental > Party mode
+    /** the bottom screen's party module (m129, party_design.md C and the user's decisions 2026-11-11: one column of plates beside the
+     *  Select tab, no health or mana: the user "give up on displaying HP/Mana down there") */
+    // QOL > Party > Party mode (an experimental switch from 2026-11-07; on by default since 1.0.26, the user 2026-11-12)
     private val PARTY_MODULE get() = GameUi.partyModeOn()
     /** Party mode holds the D-pad here (its box moves on it): the game's D-pad layout must not also open the bar cursor (2026-11-04,
      *  the user: "pushing down on the Dpad makes the cursor also appear on the bottom bar menu") */
@@ -1139,10 +1151,12 @@ class HomeView(
     }
     private var laidPartyMode = PartyLayout.Mode.REST
     private var laidPartyN = 0
+    /** m131: a pet in place of a party member at the same n changes the cells' widths */
+    private var laidPartyPet = false
     private var laidPartyOn = false
     private var laidPartyModule = false
     init {
-        // QOL > Experimental > Party mode flipped: the module comes or goes at once
+        // QOL > Party > Party mode flipped: the module comes or goes at once
         GameUi.onChange { post { if (PARTY_MODULE != laidPartyModule) partyChanged() } }
     }
 
@@ -1156,7 +1170,7 @@ class HomeView(
         val combat = flow.combat(grow.shown(now) && !partyOnHere())
         if (combat && flow.takeover) grewAt = now
         val placed = flow.full == null || flow.takeover
-        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || partyModeNow(flow.screen) != laidPartyMode
+        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || (p?.pet == true) != laidPartyPet || partyModeNow(flow.screen) != laidPartyMode
                 || PARTY_MODULE != laidPartyModule))) changed()
         partyView.invalidate()
         shown?.let { partyStripSync(it) }
@@ -1175,6 +1189,9 @@ class HomeView(
 
     /** the app's own pad reader: a D-pad press moves the box at once while Party mode is on and Home's rest page holds it */
     private var partyDpadWas = 0
+    private var partySelWas = false
+    /** Home's rest page shown (back from a room / the background): grouped, the Select tab's edge pulses (party_design.md E) */
+    fun partyHomeOpened() { if (PARTY_MODULE) partyView.homeOpened() }
     private fun partyPad(held: Int) {
         val dirs = listOf(PadInput.SLOT_DPAD_UP to PartyModel.Dir.UP, PadInput.SLOT_DPAD_DOWN to PartyModel.Dir.DOWN,
             PadInput.SLOT_DPAD_LEFT to PartyModel.Dir.LEFT, PadInput.SLOT_DPAD_RIGHT to PartyModel.Dir.RIGHT)
@@ -1182,14 +1199,18 @@ class HomeView(
         for ((k, _) in dirs.withIndex()) if (PadInput.isHeld(held, dirs[k].first)) mask = mask or (1 shl k)
         val fresh = mask and partyDpadWas.inv()
         partyDpadWas = mask
+        // party_design.md E: a Select press the reader sees flashes the tab's pressed look (the add-on's document turns it on / off)
+        val sel = PadInput.isHeld(held, PadInput.SLOT_SELECT)
+        if (sel && !partySelWas && PARTY_MODULE && flow.full == null && isShown) partyView.selectPressed()
+        partySelWas = sel
         if (fresh == 0 || !partyOnHere() || flow.full != null || !isShown || typeWanted) return
         for ((k, d) in dirs.withIndex()) if ((fresh and (1 shl k)) != 0 && party.move(d.second) != null) { partyView.invalidate(); castView.partyChanged() }
     }
 
-    /** the module's touches: Home's host taps them (a tap = Target / the touch spell, a hold = the player menu, the tag = on) */
+    /** the module's touches: Home's host taps them (a tap = the plate's pick cell, a hold = the player menu, the tab = on / off) */
     var onPartyCell: ((Int) -> Unit)? = null
     var onPartyLong: ((Int) -> Unit)? = null
-    var onPartyTag: (() -> Unit)? = null
+    var onPartyTag: ((Boolean) -> Unit)? = null
     /** a Home module went full screen (Home's rest page left): the host taps Party mode off (PartyModel.OFF_ON_LEAVE) */
     var onPartyLeaveRest: (() -> Unit)? = null
 
@@ -1202,12 +1223,14 @@ class HomeView(
         val p = party.party ?: return base
         val chat = base[Part.CHAT] ?: return base
         val mode = partyModeNow(s)
-        laidPartyMode = mode; laidPartyN = p.n; laidPartyOn = p.onLive
+        laidPartyMode = mode; laidPartyN = p.n; laidPartyOn = p.onLive; laidPartyPet = p.pet
         val right = w / 2f - 5f
-        val m = PartyLayout.module(mode, p.n, top = chat.top, tagShown = !p.onLive, left = chat.left, right = right)
+        // m134 (the user, 2026-11-11: the Select tab "attached to the side of the screen"): the module's view starts at the screen's
+        // left edge, where the tab stands; the member band (the well) starts right of it
+        val m = PartyLayout.module(mode, p.n, pet = p.pet, top = chat.top, left = PartyLayout.EDGE, right = right)
         partyView.mode = mode
         val out = LinkedHashMap(base)
-        out[Part.PARTY] = RectF(chat.left, chat.top - PartyModuleView.RISE, right, m.well.b)
+        out[Part.PARTY] = RectF(PartyLayout.EDGE, chat.top - PartyModuleView.RISE, right, m.well.b)
         out[Part.CHAT] = RectF(chat.left, minOf(m.chatTop, chat.bottom - 1f), chat.right, chat.bottom)
         return out
     }
@@ -1803,7 +1826,7 @@ class HomeView(
 
         private fun state(q: HomeQuest) = if (q.ready) UiKit.Quest.TURN_IN else UiKit.Quest.PROGRESS
 
-        private val pGround = Paint().apply { color = Theme.panel }
+        private val pGround by themed { Paint().apply { color = Theme.panel } }
 
         /** the map's morph flies this card: it is not drawn here meanwhile (the flight draws it) */
         var cardHidden = false
@@ -2103,7 +2126,7 @@ class HomeView(
         private val rows = ArrayList<Pair<RectF, Int>>()
         private var scroll = 0f; private var rowsTop = 0f; private var rowsBottom = 0f
         private var noteText: String? = null; private var noteUntil = 0L
-        private val tp = TextPaint(UiKit.bodyPaint(23f, Theme.textDim))
+        private val tp by themed { TextPaint(UiKit.bodyPaint(23f, Theme.textDim)) }
 
         fun note(t: String) { noteText = t; noteUntil = System.currentTimeMillis() + NOTE_MS; invalidate() }
         fun close() { if (open != null) { open = null; sel = null; scroll = 0f; invalidate() } }
@@ -2586,7 +2609,7 @@ class HomeView(
         QuestTier.DIFFICULT -> Theme.questYellow
         QuestTier.VERY_DIFFICULT -> Theme.questOrange
         QuestTier.IMPOSSIBLE -> Theme.questRed
-        QuestTier.UNKNOWN -> Theme.gold
+        QuestTier.UNKNOWN -> Theme.gameGold
     }
 
     companion object {

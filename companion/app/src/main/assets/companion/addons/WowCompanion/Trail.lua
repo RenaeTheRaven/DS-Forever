@@ -82,7 +82,19 @@ end
 -- ships), no secure template, nothing of the game's written, no CVar, no binding. Hidden in instances, when the facing is unknown,
 -- while the world map is open, and when the player turned it off (WowCompanionDB.compass == false; the app's Settings > Top screen >
 -- "Compass bar", through Interact's two iact cells, ACT.compass).
-WC.compass = { V = "cp35" }
+-- cp36 THE PATH MARKER (the user, 2026-11-11: "The polestar doted line needs its own kind of marker to point on the compass to keep
+-- players on path so that they don't resort to walking at the final objective"): while Polestar guides for us (Map.lua WC.pnav: the
+-- app's GO; its route read back each second as WC.pnav.legs, the same legs the bottom map draws dotted), a light blue double chevron
+-- on the band points at the route a little AHEAD of the player (C.pathAhead: AHEAD yd along the route past the player's nearest
+-- point on it, passed segments never looked at again; a flight / boat / portal leg: that leg's start, with its distance), and yields
+-- to the objective marker over the last HAND yd of the route. The objective marker is unchanged. Read only: Polestar's own route.
+-- cp37 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where to
+-- go", then: Polestar's own arrow stays hidden, DS Forever's compass leads): while the app's light blue Polestar row holds (Map.lua
+-- pn4 WC.pnav.psOn: the app says so) the compass shows Polestar's waypoint (and the path marker, Polestar's route) whether or not a
+-- quest is focused, in the log, or our GO is the one Polestar follows; cp35's guess from the GO alone stays for an app that never says.
+-- cp39 (int/1429): ps-compass cp36-cp38 (the Polestar path marker, its goal whenever the row holds) on the one "row holds" word
+-- (Map.lua WC.pnav.psOn, shared with ps-noloc-guide's starter item)
+WC.compass = { V = "cp39" }
 do
     local C = WC.compass
     local PI = math.pi
@@ -111,7 +123,7 @@ do
         quest  = { atlas = "questnormal",               size = 32, red = false },
         corpse = { atlas = "Navigation-Tombstone-Icon", size = 26, red = false },
     }
-    C.ORDER = { "corpse", "pin", "quest" }               -- drawn back to front (the quest in front)
+    C.ORDER = { "corpse", "pin", "path", "quest" }       -- drawn back to front (the quest in front; cp36: the path marker under it)
     -- the letters by their angle COUNTER-CLOCKWISE from north (the game's facing convention): W is a quarter turn left of N
     C.NAMES = { [0] = "N", [45] = "NW", [90] = "W", [135] = "SW", [180] = "S", [225] = "SE", [270] = "E", [315] = "NE" }
     C.FONT = "Fonts\\FRIZQT__.TTF"
@@ -235,14 +247,44 @@ do
         -- super-tracked spot: the engine's point (the yaw / pitch reads) is that one, whatever the compass shows.
         t.stq = t.quest
         local PN, PS = WC.pnav, type(WC.pstep) == "table" and WC.pstep.last or nil
-        local psOn = type(PN) == "table" and PN.active and num(PN.m) and num(PN.x) and num(PN.y) and type(PS) == "table"
-            and not PS.none and num(PS.m) and num(PS.x) and num(PS.y)
-        if psOn and PS.m == PN.m and math.abs(PS.x - PN.x) < 0.002 and math.abs(PS.y - PN.y) < 0.002 then C.psAt = GetTime()
-        elseif C.psAt and (not psOn or (num(PN.goAt) and PN.goAt > C.psAt)) then C.psAt = nil end
-        if psOn and C.psAt and GetTime() - C.psAt < 5 then
-            local w = C.world(PS.m, PS.x, PS.y)
-            if w then t.quest, C.qsrc, C.qid = w, "polestar", num(PS.q) end      -- (an accept / go-to step: no quest, C.qid nil)
+        local psLoc = type(PS) == "table" and not PS.none and num(PS.m) and num(PS.x) and num(PS.y) and true or false
+        -- cp37: the app's word first (Map.lua pn4: 38, 8 / 9). cp35's guess only stood while the GO matched Polestar's step within
+        -- 0.002 - a step whose point moved less than the app's own re-send threshold (PolestarNav.MOVE 0.004) lost the goal after
+        -- 5 s for good, and a GO Polestar dropped at a step change (its Nav.lua stepMoved) left nothing to match
+        local told = type(PN) == "table" and type(PN.psOn) == "function" and PN.psSaid == true
+        local psHold = false
+        if told then
+            local okH, h = pcall(PN.psOn)
+            psHold = okH and h == true
+            C.psAt = nil
+        else
+            local psOn = type(PN) == "table" and PN.active and num(PN.m) and num(PN.x) and num(PN.y) and psLoc
+            if psOn and PS.m == PN.m and math.abs(PS.x - PN.x) < C.PS_TOL and math.abs(PS.y - PN.y) < C.PS_TOL then C.psAt = GetTime()
+            elseif C.psAt and (not psOn or (num(PN.goAt) and PN.goAt > C.psAt)) then C.psAt = nil end
+            psHold = psOn and C.psAt and GetTime() - C.psAt < 5 or false
         end
+        C.psHold = psHold and true or false
+        local psW
+        if psHold and psLoc then
+            psW = C.world(PS.m, PS.x, PS.y)
+            if psW then t.quest, C.qsrc, C.qid = psW, "polestar", num(PS.q) end  -- (an accept / go-to step: no quest, C.qid nil)
+        end
+        -- cp38 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where to
+        -- go"; the device's missing goal was not reproduced off-device): what the Polestar goal stood on, for the diag's psd -
+        -- the step read (nil / none / nl / loc, its map and frame), the world spot (w: 1 found, 0 none, - not asked), its continent
+        -- against the player's (c: 1 same, 0 other: dropped below, - unknown), the game super-tracking a user waypoint (st: the
+        -- route list then shows the pin, not the goal), Map's route pin (rw), and the GO (go: its map, and whether it matches the step)
+        local goM = type(PN) == "table" and PN.active and num(PN.m) and num(PN.x) and num(PN.y) and PN.m or nil
+        C.psd = table.concat({
+            PS == nil and "nil" or (type(PS) ~= "table" and "?") or (PS.none and "none") or (PS.nl and "nl") or (psLoc and "loc") or "?",
+            "m" .. tostring(type(PS) == "table" and num(PS.m) or "-"), "f" .. tostring(type(PS) == "table" and PS.fr or "-"),
+            "w" .. ((psHold and psLoc) and (psW and "1" or "0") or "-"),
+            "c" .. ((psW and me and psW.cont ~= nil and me.cont ~= nil) and (psW.cont == me.cont and "1" or "0") or "-"),
+            "st" .. ((okS and onPin == true) and "1" or "0"), "rw" .. (routeQ and "1" or "0"),
+            "go" .. tostring(goM or "-") .. ((goM and psLoc and PS.m == goM and math.abs(PS.x - PN.x) < C.PS_TOL
+                and math.abs(PS.y - PN.y) < C.PS_TOL) and "=" or ""),
+            "me" .. ((me and me.map) and tostring(me.map) or "-"),
+        }, ",")
         -- the corpse, while dead or a ghost
         local okD, dead = pcall(UnitIsDeadOrGhost, "player")
         if okD and dead == true and me and me.map then
@@ -1276,6 +1318,9 @@ do
         C.me_ = C.me()
         C.tg_ = C.targets(C.me_)
         C.rt_ = C.route(C.tg_)
+        local okA, pa = pcall(C.pathTarget, C.me_)                          -- cp36: the path marker's point (nil: none)
+        C.pa_ = okA and pa or nil
+        if not okA then C.paWhy = "err" end
         return true
     end
 
@@ -1343,10 +1388,18 @@ do
             end
         else
             local okP, onPin = pcall(function() return C_SuperTrack.IsSuperTrackingUserWaypoint() end)
-            if okP and onPin == true and tg.pin then
+            -- cp38 (the user, 2026-11-11: "Okay now I actually do have a polestar objective that is not in my bag and not telling me where
+            -- to go", and Polestar's own arrow stays hidden): while Polestar leads (C.qsrc "polestar": its row holds) its goal comes
+            -- FIRST even when the game super-tracks a user waypoint - cp37 showed only that pin then (a pin left from before, or the one
+            -- the game falls back to once "polestar unfocus" clears the quest focus); the pin stays, second
+            local psLead = C.qsrc == "polestar" and tg.quest ~= nil
+            if okP and onPin == true and tg.pin and not psLead then
                 items[1] = { id = "cp:" .. rtAt(tg.pin), w = tg.pin, kind = "pin", pin = true, why = "ownpin" }   -- (the same id as in a route)
             elseif tg.quest then
-                items[1] = { id = C.goalId(), w = tg.quest, kind = "goal", why = "noroute" }
+                items[1] = { id = C.goalId(), w = tg.quest, kind = "goal", why = psLead and "polestar" or "noroute" }
+                if psLead and okP and onPin == true and tg.pin and not dup(tg.pin, RT.GOAL_NEAR) then
+                    items[2] = { id = "cp:" .. rtAt(tg.pin), w = tg.pin, kind = "pin", pin = true, why = "ownpin2" }
+                end
             end
         end
         return items
@@ -1406,7 +1459,189 @@ do
         local listed = false
         for _, it in ipairs(C.rt_ or {}) do if it.pin then listed = true end end
         if tg.pin and not listed then t.pin = tg.pin end
+        t.path = C.pa_                                                      -- cp36
         return t
+    end
+
+    -- ---------------------------------------------------------------- cp36: THE PATH MARKER (the user, 2026-11-11)
+    -- Polestar's route (Map.lua WC.pnav.legs: { k, c, p = { wx, wy, ... } }, world yards as C.world's, the current leg first) ->
+    -- where the path marker points. Modelled on Polestar's own arrow (Nav/Walk.lua Walk.Aim: the nearest segment from the current
+    -- one to a few ahead, the index only ever moving on):
+    --   * the first leg a walk: the walk legs in a row from it are ONE line; the player's nearest point on it, searched from the
+    --     segment reached so far (st.idx) over WIN segments (all further ones when that is over STRAY yd off) - the segments behind
+    --     are passed and never looked at again; the point AHEAD yd further along the line from there (clamped at its end). That end
+    --     is the next leg's start (a flight master, a dock, a portal: the marker then shows its distance) or the route's end: within
+    --     HAND yd of the end ALONG the route, the marker yields to the objective (the route's length, never the straight line: a
+    --     goal close by over a cliff keeps the path marker).
+    --   * the first leg a flight / boat / zeppelin / tram / portal / hearth / lift: that leg's start, with its distance; gone within
+    --     REACH yd of it, and for the rest of that leg (aboard: the start is behind; on a taxi), until Polestar moves the route on.
+    --   * a new route (its signature, Map's legSig) starts again at its first segment.
+    -- cp37: cp35's GO match (an app that never says pn4's 38, 8): the GO's own rounding (1/2590) and the app's re-send threshold
+    -- (PolestarNav.MOVE 0.004) inside it
+    C.PS_TOL = 0.006
+    C.PA = { AHEAD = 30, HAND = 35, REACH = 8, WIN = 12, STRAY = 25, STALE_S = 3, RGB = { 120 / 255, 200 / 255, 1 }, st = {} }
+    function C.pathAhead(me, legs, st, sig)
+        local PA = C.PA
+        st = st or {}
+        if not me or type(legs) ~= "table" or #legs == 0 then return nil, "none" end
+        if st.sig ~= sig then st.sig, st.idx, st.boarded = sig, 1, nil end
+        local function sameCont(leg) return not (num(leg.c) and num(me.cont) and leg.c ~= me.cont) end
+        local function dist(ax, ay, bx, by) return math.sqrt((bx - ax) ^ 2 + (by - ay) ^ 2) end
+        local L1 = legs[1]
+        if type(L1) ~= "table" or type(L1.p) ~= "table" or not sameCont(L1) then return nil, "cont" end
+        if L1.k ~= "walk" then
+            local sx, sy = num(L1.p[1]), num(L1.p[2])
+            if not (sx and sy) then return nil, "none" end
+            local okT, taxi = pcall(UnitOnTaxi, "player")
+            local d = dist(me.x, me.y, sx, sy)
+            local key = tostring(L1.k) .. ":" .. math.floor(sx + 0.5) .. ":" .. math.floor(sy + 0.5)
+            if d <= PA.REACH then st.boarded = key end
+            if okT and taxi == true then return nil, "taxi" end
+            if st.boarded == key then return nil, (d <= PA.REACH) and "at" or "aboard" end
+            return { x = sx, y = sy, cont = me.cont, kind = L1.k, d = d }, "leg"
+        end
+        -- the walk legs in a row from the first: one line
+        local xs, ys, nextK, last = {}, {}, nil, 0
+        for i, leg in ipairs(legs) do
+            if type(leg) ~= "table" or type(leg.p) ~= "table" then break end
+            if leg.k ~= "walk" or not sameCont(leg) then nextK = leg.k or "walk"; break end
+            local p = leg.p
+            for j = 1, #p - 1, 2 do
+                local x, y = num(p[j]), num(p[j + 1])
+                if x and y and not (#xs > 0 and math.abs(x - xs[#xs]) < 0.05 and math.abs(y - ys[#ys]) < 0.05) then
+                    xs[#xs + 1], ys[#ys + 1] = x, y
+                end
+            end
+            last = i
+        end
+        local n = #xs
+        if n == 0 then return nil, "none" end
+        local isLast = last == #legs
+        local qx, qy, a
+        if n == 1 then
+            qx, qy, a = xs[1], ys[1], 1
+        else
+            local i0 = math.max(1, math.min(st.idx or 1, n - 1))
+            local function scan(a0, a1)
+                local off, ba, bx, by = math.huge, a0, xs[a0], ys[a0]
+                for k = a0, a1 do
+                    local ax, ay, ex, ey = xs[k], ys[k], xs[k + 1], ys[k + 1]
+                    local dx, dy = ex - ax, ey - ay
+                    local ll = dx * dx + dy * dy
+                    local t = (ll > 0) and (((me.x - ax) * dx + (me.y - ay) * dy) / ll) or 0
+                    t = math.max(0, math.min(1, t))
+                    local px, py = ax + dx * t, ay + dy * t
+                    local o = dist(me.x, me.y, px, py)
+                    if o < off then off, ba, bx, by = o, k, px, py end
+                end
+                return off, ba, bx, by
+            end
+            local off, ba, bx, by = scan(i0, math.min(n - 1, i0 + PA.WIN))
+            if off > PA.STRAY and i0 + PA.WIN < n - 1 then
+                local o2, a2, x2, y2 = scan(i0, n - 1)
+                if o2 < off then off, ba, bx, by = o2, a2, x2, y2 end
+            end
+            st.idx, a, qx, qy = ba, ba, bx, by
+            st.off = off
+        end
+        -- the yards left along the line from there, and the point AHEAD yd on
+        local left = (a < n) and dist(qx, qy, xs[a + 1], ys[a + 1]) or 0
+        for k = a + 1, n - 1 do left = left + dist(xs[k], ys[k], xs[k + 1], ys[k + 1]) end
+        st.left = left
+        if isLast and left <= PA.HAND then return nil, "hand" end
+        local rem, cx, cy, k = PA.AHEAD, qx, qy, a
+        local tx, ty, atEnd
+        while true do
+            if k >= n then tx, ty, atEnd = xs[n], ys[n], true; break end
+            local ex, ey = xs[k + 1], ys[k + 1]
+            local sl = dist(cx, cy, ex, ey)
+            if sl >= rem and sl > 0 then tx, ty = cx + (ex - cx) * rem / sl, cy + (ey - cy) * rem / sl; break end
+            rem, cx, cy, k = rem - sl, ex, ey, k + 1
+        end
+        if atEnd and not isLast then
+            local d = dist(me.x, me.y, tx, ty)
+            if d <= PA.REACH then return nil, "at" end
+            return { x = tx, y = ty, cont = me.cont, kind = nextK, d = d }, "end"
+        end
+        return { x = tx, y = ty, cont = me.cont, kind = "walk" }, "walk"
+    end
+    -- the path marker's point now: only while Polestar guides for us (the app's GO) with a fresh route read
+    function C.pathTarget(me)
+        local PN, PA = WC.pnav, C.PA
+        local now = (type(GetTime) == "function" and GetTime()) or 0
+        if type(PN) ~= "table" or not (PN.active or C.psHold) or type(PN.legs) ~= "table" or not num(PN.legsAt) or now - PN.legsAt > PA.STALE_S then
+            PA.st, C.paWhy = {}, "off"
+            return nil
+        end
+        local w, why = C.pathAhead(me, PN.legs, PA.st, PN.legSig)
+        C.paWhy = why
+        return w
+    end
+    -- its look: a light blue DOUBLE CHEVRON pointing up (go on this way), a dark rim under each stroke; smaller than the objective's
+    -- disc and nothing like it. Lines (as Polestar's own route lines), on our frame, made once.
+    C.PA.ARMS = { { 0, 7, -8, 0 }, { 0, 7, 8, 0 }, { 0, -1, -8, -8 }, { 0, -1, 8, -8 } }   -- spec px from the marker's centre, y up
+    C.PA.W, C.PA.RIM, C.PA.SIZE = 3.5, 6, 18
+    function C.paBuild()
+        if C.pa then return C.pa end
+        local f = C.frame
+        local o = { rim = {}, ln = {} }
+        local R = C.PA.RGB
+        for i = 1, #C.PA.ARMS do
+            o.rim[i] = f:CreateLine(nil, "ARTWORK", nil, 0); o.rim[i]:SetColorTexture(0, 0, 0, 0.85)
+            o.ln[i] = f:CreateLine(nil, "ARTWORK", nil, 2); o.ln[i]:SetColorTexture(R[1], R[2], R[3], 1)
+        end
+        o.d = f:CreateFontString(nil, "OVERLAY")
+        o.d:SetFont(C.FONT, C.u(C.SPEC.dist), "OUTLINE")
+        o.d:SetTextColor(R[1], R[2], R[3], 1)
+        o.a = f:CreateTexture(nil, "ARTWORK", nil, 3)
+        pcall(function() o.a:SetAtlas("Navigation-Tracked-Arrow") end)
+        o.a:SetVertexColor(R[1], R[2], R[3])
+        o.a:SetSize(C.u(14), C.u(14))
+        C.pa = o
+        return o
+    end
+    function C.paVis(o, on)                                          -- (no new locals: show / hide come later)
+        if on then if not o:IsShown() then o:Show() end elseif o:IsShown() then o:Hide() end
+    end
+    function C.paDraw(m, w)
+        local f, u, S, PA = C.frame, C.u, C.SPEC, C.PA
+        local o = C.paBuild()
+        local cx, cy = m.x, -S.line
+        for i, arm in ipairs(PA.ARMS) do
+            local x1, y1, x2, y2 = arm[1], arm[2], arm[3], arm[4]
+            local dx, dy = x2 - x1, y2 - y1
+            local l = math.sqrt(dx * dx + dy * dy)
+            local ex, ey = dx / l, dy / l                                  -- (the rim a pixel longer at both ends)
+            local al = (i > 2) and 0.7 or 1                                -- (the rear chevron a little dimmer)
+            local r, ln = o.rim[i], o.ln[i]
+            r:SetThickness(u(PA.RIM)); r:SetAlpha(al)
+            r:SetStartPoint("TOP", f, u(cx + x1 - ex), u(cy + y1 - ey)); r:SetEndPoint("TOP", f, u(cx + x2 + ex), u(cy + y2 + ey))
+            ln:SetThickness(u(PA.W)); ln:SetAlpha(al)
+            ln:SetStartPoint("TOP", f, u(cx + x1), u(cy + y1)); ln:SetEndPoint("TOP", f, u(cx + x2), u(cy + y2))
+            C.paVis(r, true); C.paVis(ln, true)
+        end
+        -- terse: a distance only for a leg's start (where the walk ends: a flight master, a dock, a portal)
+        local txt = (type(w) == "table" and w.kind ~= "walk" and num(w.d)) and C.distText(w.d) or nil
+        if txt then
+            if o.text ~= txt then o.d:SetText(txt); o.text = txt end
+            o.d:SetPoint("TOP", f, "TOP", u(m.x), -u(S.line + PA.SIZE / 2 + 3)); C.paVis(o.d, true)
+        else
+            C.paVis(o.d, false)
+        end
+        if m.off then
+            if o.side ~= m.side then pcall(function() o.a:SetRotation(m.side > 0 and -PI / 2 or PI / 2) end); o.side = m.side end
+            o.a:SetPoint("CENTER", f, "TOP", u(m.x + m.side * (PA.SIZE / 2 + 10)), -u(S.line)); C.paVis(o.a, true)
+        else
+            C.paVis(o.a, false)
+        end
+        o.shown = true
+    end
+    function C.paHide()
+        local o = C.pa
+        if not o or not o.shown then return end
+        for i = 1, #o.ln do C.paVis(o.rim[i], false); C.paVis(o.ln[i], false) end
+        C.paVis(o.d, false); C.paVis(o.a, false)
+        o.shown = false
     end
 
     local function hide(o) if o:IsShown() then o:Hide() end end
@@ -1458,6 +1693,9 @@ do
           if m.key == "rt" then
             C.rkDraw(m)
             rdrawn[m.id] = true
+          elseif m.key == "path" then
+            C.paDraw(m, C.pa_)                                              -- cp36: the path marker, its own look
+            drawn.path = true
           else
             local o, spec = C.mk[m.key], C.MARK[m.key]
             drawn[m.key] = true
@@ -1488,6 +1726,7 @@ do
             end
           end
         end
+        if not drawn.path then C.paHide() end
         for key, o in pairs(C.mk) do
             if not drawn[key] then hide(o.sh); hide(o.tx); hide(o.d); hide(o.a); if o.num then hide(o.num) end end
         end
@@ -1633,6 +1872,10 @@ do
             uwp = (okH and has == true) and true or false, st = (okS and onPin == true) and true or false, route = route,
             pin = tg.pin and true or false, qid = C.qid, qsrc = C.qsrc, quest = tg.quest and true or false,
             corpse = tg.corpse and true or false, n = #L.marks,
+            ps = C.psHold,                                                                          -- cp37: the Polestar row holds
+            psd = C.psd,                                                         -- cp38: what Polestar's goal stood on (C.targets)
+            rt1 = (C.rt_ and C.rt_[1]) and (tostring(C.rt_[1].id) .. ":" .. tostring(C.rt_[1].why)) or nil,     -- cp38: the list's first
+            pa = C.paWhy, pai = C.PA.st.idx, pal = C.PA.st.left and math.floor(C.PA.st.left + 0.5) or nil,     -- cp36
             rt = (function()
                 local p = {}
                 for _, it in ipairs(C.RT.pair or {}) do
@@ -1650,7 +1893,7 @@ do
             pdz = C.wm and C.wm.pinDz or nil,
             more = type(WC.routeWp) == "table" and type(WC.routeWp.more) == "table" and #WC.routeWp.more or 0,
             prd = (type(WC.prd) == "table" and WC.prd.f) and { a = math.floor((WC.prd.alpha or 0) * 100 + 0.5), why = WC.prd.why,
-                src = WC.prd.src, y = WC.prd.y, nb = WC.prd.nb, nd = WC.prd.nd, pt = WC.prd.ptok, cbad = WC.prd.curveBad, ab = WC.prd.ab, ex = WC.prd.ex, w = WC.prd.wd, s = WC.prd.sc, sel = WC.prd.sel, prest = WC.prd.prest } or nil, tol = C.cam.tol and math.floor(math.deg(C.cam.tol) + 0.5) or nil,
+                src = WC.prd.src, y = WC.prd.y, nb = WC.prd.nb, nd = WC.prd.nd, pt = WC.prd.ptok, cbad = WC.prd.curveBad, ab = WC.prd.ab, ex = WC.prd.ex, w = WC.prd.wd, s = WC.prd.sc, sel = WC.prd.sel, prest = WC.prd.prest, pet = WC.prd.pex } or nil, tol = C.cam.tol and math.floor(math.deg(C.cam.tol) + 0.5) or nil,
             lx = C.cam.lx and math.floor(C.cam.lx * 100 + 0.5) / 100 or nil, ly = C.cam.ly and math.floor(C.cam.ly * 100 + 0.5) / 100 or nil,
             ferr = C.cam.ferr and math.floor(math.deg(C.cam.ferr) + 0.5) or nil,
             gp = C.cam.gp, from = C.cam.from, rx = C.cam.rx and math.floor(C.cam.rx * 100 + 0.5) / 100 or nil,
@@ -2891,7 +3134,57 @@ end
 -- prd10 (issue #120, a Rogue: "I can't see the combo points that are accumulated during combat"; 2026-11-11): a Rogue's (and a cat's)
 -- combo points as a thin pip strip right under the power bar (CPH high, CP_GAP below it, inside the aura rows' ROW_GAP), the read fed
 -- straight to the bar like every value here; on the player's power events (UNIT_POWER_FREQUENT too) at the next frame
-WC.prd = { V = "prd10", CPH = 5, CP_GAP = 4, TRAVEL = 14, OUT_S = 0.45, vis = 0, dy = 0, ENERGY_S = 10, RAGE_S = 30, SEL_S = 4, W_DEF = 280, W_MIN = 180, W_MAX = 400, W_STEP = 20,
+-- prd11 PET HEALTH IN THE HUD (the user, 2026-11-11: "find a way to include Pet HP in the HUD, and better distinguish the player HUD vs
+-- Pet HUD"; their pick, mock-up A "Sub-strip under"): under the player's bars (and under the combo pips when they show) a thinner,
+-- shorter strip, PET_W of the bar's width: a round portrait at its left (GetPetIcon's plain fileDataID, else the game's own portrait
+-- setter), the pet's health in GOLD (never the player's green) PET_HH high and its power PET_PH high (FOCUS for a hunter's pet, MANA for a
+-- demon: P.POWER by the pet's own token), the pet's name in small text, the happiness face only while C_PetInfo.GetPetHappiness is plain.
+--   The strip is its own LAYER (P.petL), a child of P.f beside the player's P.g: the player's curve never hides it. Out of combat on the
+--   curve route its alpha is UnitHealthPercent("pet") through the same step curve, with its OWN bad flag (P.petCurveBad: a refused pet
+--   call never turns the player's curve off); without the curve it fades with the HUD (no pet model exists to say "hurt").
+--   Each bar in the PRD frame cut as the player's (P.frameFor with the strip as its host and its own lip) at the player's texel scale:
+--   the rims one thickness on every bar. Fed as the player's: the game's values straight to the setters, nothing read back, no lag chunk.
+--   Presence from plain reads only (UnitExists, else a plain UnitName, else HasPetUI); a plainly dead pet greyed. The pet's health and
+--   power events are heard with the player's; its casts never are (the cost and the spend are the player's). Its own switch (Hub's
+--   "uisw" 32 / 33: WC.npWant.pet, on unless turned off); the game's pet frame stays with the game's player frame (Hub hub33).
+--   Review fixes (2026-11-11, before any device run): the pet's curve asked only while a pet plainly exists (a dismissal never latches
+--   P.petCurveBad; UNIT_PET hides the strip at once); a refusal with a pet out: the strip on the PLAYER's curve (fades with the HUD);
+--   PET_BAR_GAP / PET_GAP = the shared scale's 8-texel bottom lip (15) + 1, so no lip lies over a pet bar's opening (P.petRow).
+-- prd12 THE PET'S STRIP REWORKED (the user on the device, 2026-11-11: "The pet hp should be green. It needs to be moved down a bit and
+-- the gap between the bars should be minimal as possible. The portrait of the pet is way too small as well as the happiness. The name
+-- on the right should be removed"; their pick "Same green as mine"): the pet's health in the player's own HEALTH_RGB; the health and
+-- the power ONE framed unit (o.unit: one PRD frame round both, no lip between them, the power PET_BAR_GAP = 1 under the health); the
+-- round portrait PET_ICON = 36 (the unit's height and a little), a thin dark rim, left of the unit and centred on its bars; the
+-- happiness face PET_HAPPY = 20 past the unit's right rim (never on the portrait); no name; portrait + unit centred under the player's
+-- bars; the strip PET_GAP = 15 under the power bar (its top at the player's lip: the bars 10.5 spec px lower than prd11's; P.petGeo).
+-- prd13 THE PET'S GREEN MATCHES THE PLAYER'S (the user's pick "Same green as mine", 2026-11-11): P.frameFor's inner shade covered 45 %
+-- of its OPENING, and the pet's opening is the whole 13 px unit, so 5.85 of the 8 px health bar lay under it (the player's: 6.75 of 15)
+-- and the pet's green read darker; now frameFor takes an optional shade height and the pet's unit passes 0.45 * PET_HH (the player's
+-- and the target's bars unchanged). Review nits: the portrait 2 spec px clear of the player's power-bar lip (PET_GAP 17); the
+-- happiness face counted in the centring width while it can show (P.petHappyOn), the pet bars narrowed to fit at W_MIN = 180.
+-- prd14 PARTY MODE'S PICK ON YOU / YOUR PET (the user, 2026-11-11: "When selecting myself or my pet it just highlights my HUD bar"; the
+-- adaptive rows, PadMap m131): while Party mode is on and its pick (WC.padMap.party.box().u, our own attribute: plain) is "player", a
+-- gold box (Hub's ring gold 1 / 0.82 / 0, PICK_PAD spec px outside the frame) stands round the player's two bars; on "pet", round the
+-- pet's strip (portrait to bars). Hidden whenever Party mode is off. While one of them is the pick the HUD stays shown at full alpha
+-- (why "party": the box never frames nothing); the box lives on P.f itself, never on the curve's layer. Read every PICK_S, nothing written.
+-- prd15 [ME][PET] IN PARTY MODE (the user, 2026-11-12: "In Party mode the PET strip moves from under the HUD bar to the RIGHT of the
+-- player's HP bar"; the members "fade back in UNDER the player's HUD bar"): while Party mode is on (PadMap's on, plain; never in a raid)
+-- the pet strip fades out (PET_FADE_S 0.2), moves beside the HP bar (PET_SIDE_GAP past its right rim, centred on the two bars; P.petSide
+-- "beside", its portrait from the strip's own left) and fades in; the reverse when it goes off. The pick box rides the strip (it waits
+-- for the fade). Hub's party grid hangs under the bars (P.partyGeo: the HP bar's left, the room's top PET_GAP + PARTY_GAP under the
+-- power bar, from the HUD's own height / width / scale, never the slide) and says its height (P.partyRoom): that room is P.petDrop then
+-- (the shadow stays under the bars). Party mode holds the HUD up (why "party"): it is the block's [me] row (the user, 2026-11-12: "HUD
+-- bar ALWAYS shown in Party mode"). The user's answers the same day: in Party mode the player's buff / debuff row moves ABOVE the HUD
+-- bars (P.auraUp: its timers AURA_UP clear of the health bar's top rim, a second row above the first), out of it it stays under them;
+-- it fades out, moves and fades in with the pet strip (one fade: P.petMoveStep). THE ON-SCREEN GUARD (the user, the same day: "KEEP IT
+-- ON SCREEN"): in Party mode, when the block (the bars, the combo pips, Hub's rows and their rings) would end closer than LIFT_MARGIN to
+-- the screen's bottom, the HUD (and with it the pet strip, the auras and Hub's rows: P.partyGeo carries it) is lifted by just enough
+-- (P.liftFor -> P.lift, added in P.place); re-read every frame (the roster's rows, the scale, the combo pips), applied only at the fade's
+-- bottom (the bars fade too while it changes: P.hudFade), never a visible jump; out of Party mode no lift. Our own plain frames and alpha
+-- only (allowed in a fight).
+WC.prd = { V = "prd15", PET_FADE_S = 0.2, PET_SIDE_GAP = 12, PARTY_GAP = 8, AURA_UP = 22, LIFT_MARGIN = 8, lift = 0, petSide = "under", auraUp = false, partyRoomPx = 0, PICK_S = 0.1, PICK_PAD = 4, PICK_PX = 2, PICK_GOLD = { 1, 0.82, 0 }, PET_W = 0.6, PET_HH = 8, PET_PH = 4, PET_BAR_GAP = 1, PET_GAP = 17, PET_ICON = 36, PET_IGAP = 10, PET_HAPPY = 20,
+           PET_DEAD_RGB = { 0.5, 0.5, 0.5 }, PET_HAPPY_TEX = "Interface\\PetPaperDollFrame\\UI-PetHappiness",
+           PET_HAPPY_U = { { 0.375, 0.5625 }, { 0.1875, 0.375 }, { 0, 0.1875 } }, PET_HAPPY_V = 0.359375, petDrop = 0, CPH = 5, CP_GAP = 4, TRAVEL = 14, OUT_S = 0.45, vis = 0, dy = 0, ENERGY_S = 10, RAGE_S = 30, SEL_S = 4, W_DEF = 280, W_MIN = 180, W_MAX = 400, W_STEP = 20,
            S_DEF = 100, S_MIN = 70, S_MAX = 160, S_STEP = 10, sel = "y", FILL_ATLAS = { "UI-HUD-CoolDownManager-Bar-c60", "UI-HUD-CoolDownManager-Bar" }, HEALTH_RGB = { 0.12, 0.86, 0.12 }, LAG_S = 0.3, HEAL_RGB = { 0.47, 1, 0.47, 0.55 }, LAG_RGB = { 1, 0.86, 0.76 }, Y_DEF = -350, Y_MIN = -470, Y_MAX = -170, STEP = 10, W = 280, HH = 15, PH = 9, BAR_GAP = 8, ICON = 26, IGAP = 4,
            ROW_GAP = 20, BG_W = 132, BG_H = 19, Y_SHIFT = -50, BG = { "UI-HUD-CoolDownManager-Bar-BG-c60", "UI-HUD-CoolDownManager-Bar-BG" }, REST = 0.92, BUFF_MAX = 6, DEBUFF_MAX = 4, BUFF_DUR = 300, HOLD_S = 2, FADE_S = 1.5, IN_S = 0.25, FULL = 0.99, POLL_S = 0.1, AURA_S = 0.5,
            alpha = 0, shown = false, why = "off" }
@@ -3029,8 +3322,12 @@ do
     -- prd4: the PRD's own bar BG round a bar, on the layer UNDER every bar (so the lag chunk shows above it): the template's margins
     -- (TOPLEFT -2,3 / BOTTOMRIGHT 6,-7 round its 10 px bar) at the health bar's scale for both, so the edge is one width
     -- prd5: the PRD frame as a channel round the bar b (b's rect is the opening); returns its pieces
-    function P.frameFor(b)
-        local k = u(P.HH / 8)                                   -- UI units per texel (one scale for both bars)
+    -- prd11: the host layer, its lip frame and the texel scale given (the pet's strip: its own layer and lip, the player's scale);
+    -- left out: the player's layer P.g, its lip P.lip, the health opening's 8 texels = HH
+    -- prd13 (the user's "Same green as mine", 2026-11-11): shadeH, the inner shade's height in UI units (left out: 45 % of b's height)
+    function P.frameFor(b, host, lip, k, shadeH)
+        host = host or P.g
+        k = k or u(P.HH / 8)                                    -- UI units per texel (one scale for every bar)
         local info, atlas
         for _, a in ipairs(P.BG) do
             local ok, i = pcall(function() return C_Texture.GetAtlasInfo(a) end)
@@ -3039,7 +3336,7 @@ do
         local pieces = { atlas = atlas }
         if not info then
             -- no atlas coordinates: the whole piece behind the bar (prd4's way), by its measured margins
-            local t = P.g:CreateTexture(nil, "BACKGROUND", nil, -4)
+            local t = host:CreateTexture(nil, "BACKGROUND", nil, -4)
             local ok = false
             for _, a in ipairs(P.BG) do if pcall(function() t:SetAtlas(a) end) then ok = true; pieces.atlas = a; break end end
             if not ok then t:SetColorTexture(0, 0, 0, 0.59) end
@@ -3055,26 +3352,29 @@ do
             t:SetTexCoord(L + (R - L) * c0 / P.BG_W, L + (R - L) * c1 / P.BG_W, Tt + (B - Tt) * r0 / P.BG_H, Tt + (B - Tt) * r1 / P.BG_H)
             return t
         end
-        if not P.lip then
-            P.lip = CreateFrame("Frame", nil, P.g)
-            P.lip:SetAllPoints(P.g)
-            P.lip:EnableMouse(false)
+        if not lip then
+            if not P.lip then
+                P.lip = CreateFrame("Frame", nil, P.g)
+                P.lip:SetAllPoints(P.g)
+                P.lip:EnableMouse(false)
+            end
+            lip = P.lip
         end
         -- the track: the art's dark middle (rows 3..11) under the bar, the full width
-        local tr = sub(P.g, "BACKGROUND", -4, 0, 3, P.BG_W, 11)
+        local tr = sub(host, "BACKGROUND", -4, 0, 3, P.BG_W, 11)
         tr:SetPoint("TOPLEFT", b, "TOPLEFT", -3 * k, 0)
         tr:SetPoint("BOTTOMRIGHT", b, "BOTTOMRIGHT", 7 * k, 0)
         -- the lip over the bar: the top rows and the bottom rows IN THREE - the art's end caps (columns 0..11, 118..132) and a
         -- middle stretched from a MARK-FREE span (31..50: the art's notches at 57 / 52 / 116 would sit at the same spot on both bars:
         -- prd6, the user: "The markings on the borders being in the same spots makes them seem a bit lazy") - then the sides
         local function rim(r0, r1, h, edge, sideL, sideR)
-            local l = sub(P.lip, "ARTWORK", 1, 0, r0, 11, r1)
+            local l = sub(lip, "ARTWORK", 1, 0, r0, 11, r1)
             l:SetPoint(edge == "top" and "BOTTOMLEFT" or "TOPLEFT", b, sideL, -3 * k, 0)
             l:SetSize(11 * k, h)
-            local r = sub(P.lip, "ARTWORK", 1, 118, r0, P.BG_W, r1)
+            local r = sub(lip, "ARTWORK", 1, 118, r0, P.BG_W, r1)
             r:SetPoint(edge == "top" and "BOTTOMRIGHT" or "TOPRIGHT", b, sideR, 7 * k, 0)
             r:SetSize(14 * k, h)
-            local m = sub(P.lip, "ARTWORK", 1, 31, r0, 50, r1)
+            local m = sub(lip, "ARTWORK", 1, 31, r0, 50, r1)
             m:SetPoint(edge == "top" and "BOTTOMLEFT" or "TOPLEFT", l, edge == "top" and "BOTTOMRIGHT" or "TOPRIGHT", 0, 0)
             m:SetPoint(edge == "top" and "BOTTOMRIGHT" or "TOPRIGHT", r, edge == "top" and "BOTTOMLEFT" or "TOPLEFT", 0, 0)
             m:SetHeight(h)
@@ -3082,20 +3382,20 @@ do
         end
         local top = rim(0, 3, 3 * k, "top", "TOPLEFT", "TOPRIGHT")
         local bot = rim(11, P.BG_H, 8 * k, "bottom", "BOTTOMLEFT", "BOTTOMRIGHT")
-        local lf = sub(P.lip, "ARTWORK", 1, 0, 3, 3, 11)
+        local lf = sub(lip, "ARTWORK", 1, 0, 3, 3, 11)
         lf:SetPoint("TOPRIGHT", b, "TOPLEFT", 0, 0)
         lf:SetPoint("BOTTOMRIGHT", b, "BOTTOMLEFT", 0, 0)
         lf:SetWidth(3 * k)
-        local rt = sub(P.lip, "ARTWORK", 1, 125, 3, P.BG_W, 11)
+        local rt = sub(lip, "ARTWORK", 1, 125, 3, P.BG_W, 11)
         rt:SetPoint("TOPLEFT", b, "TOPRIGHT", 0, 0)
         rt:SetPoint("BOTTOMLEFT", b, "BOTTOMRIGHT", 0, 0)
         rt:SetWidth(7 * k)
         -- the inner shadow: the lip's shade over the opening's top
-        local sh = P.lip:CreateTexture(nil, "ARTWORK", nil, 0)
+        local sh = lip:CreateTexture(nil, "ARTWORK", nil, 0)
         sh:SetColorTexture(0, 0, 0, 1)
         sh:SetPoint("TOPLEFT", b, "TOPLEFT", 0, 0)
         sh:SetPoint("TOPRIGHT", b, "TOPRIGHT", 0, 0)
-        sh:SetHeight(b:GetHeight() * 0.45)
+        sh:SetHeight(shadeH or (b:GetHeight() * 0.45))
         if not pcall(function() sh:SetGradient("VERTICAL", CreateColor(0, 0, 0, 0), CreateColor(0, 0, 0, 0.47)) end) then sh:SetAlpha(0.2) end
         pieces.track, pieces.top, pieces.bot, pieces.left, pieces.right, pieces.shade = tr, top, bot, lf, rt, sh
         return pieces
@@ -3162,7 +3462,7 @@ do
         local sh = f:CreateTexture(nil, "BACKGROUND", nil, -8)
         sh:SetTexture("Interface\\AddOns\\WowCompanion\\Media\\compass_band")
         sh:SetPoint("TOPLEFT", f, "TOPLEFT", -u(16), u(10))
-        sh:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", u(16), -u(P.HH + P.BAR_GAP + P.PH + 16))
+        sh:SetPoint("BOTTOMRIGHT", f, "TOPRIGHT", u(16), -u(P.HH + P.BAR_GAP + P.PH + 16 + (P.petDrop or 0)))
         sh:SetAlpha(0.9)
         P.shadow = sh
         P.hp = bar(f, P.HH)
@@ -3185,6 +3485,10 @@ do
         P.buffs, P.debuffs = {}, {}
         for i = 1, P.BUFF_MAX do P.buffs[i] = icon(f, i) end
         for i = 1, P.DEBUFF_MAX do P.debuffs[i] = icon(f, i) end
+        P.petL, P.pet = nil, nil
+        P.petBuild()                                                   -- prd11: the pet's strip (its own layer on P.f)
+        P.pick = nil
+        P.pickBuild()                                                  -- prd14: Party mode's pick boxes (you / your pet), with these bars
         P.place()
         return f
     end
@@ -3193,9 +3497,10 @@ do
         if not P.wd then P.loadSize() end
         P.W = P.wd
         if not P.f then return end
-        P.f:SetSize(u(P.W), u(P.HH + P.BAR_GAP + P.PH))
+        P.f:SetSize(u(P.W), u(P.HH + P.BAR_GAP + P.PH + (P.petDrop or 0)))
         pcall(function() P.f:SetScale(P.sc / 100) end)
         for _, b in ipairs({ P.hp, P.pw, P.lag, P.cp }) do if b then b:SetWidth(u(P.W)) end end
+        P.petLayout(P.petDrop or 0, true)                                -- prd11: the pet's strip at the new width
         if P.cp then P.cp.max = nil end                                  -- prd10: the pips' gaps laid out again at the new width
         for _, b in ipairs({ P.heal, P.shield }) do if b then b:SetWidth(u(P.W)) end end
         if P.lag then P.lag:SetAllPoints(P.hp) end
@@ -3204,7 +3509,7 @@ do
     function P.place()
         if not P.f then return end
         P.f:ClearAllPoints()
-        P.f:SetPoint("TOP", UIParent, "CENTER", 0, u((P.y or P.loadY()) + (P.dy or 0)))
+        P.f:SetPoint("TOP", UIParent, "CENTER", 0, u((P.y or P.loadY()) + (P.dy or 0) + (num(P.lift) or 0)))   -- prd15: the guard's lift
     end
 
     -- ---------------------------------------------------------------- the values (fed, never read)
@@ -3343,6 +3648,7 @@ do
         pcall(function() P.pw:SetMinMaxValues(0, UnitPowerMax("player", pt)) end)
         pcall(function() P.pw:SetValue(UnitPower("player", pt)) end)
         pcall(P.combo, pt)
+        pcall(P.petValues)                                               -- prd11: the pet's strip
     end
     -- prd10 (issue #120): a Rogue's / a cat's combo points into the pip strip; nothing read back (a secret goes straight to the setter)
     function P.combo(pt)
@@ -3437,10 +3743,16 @@ do
         end
         P.nb, P.nd = #b, #d
         local step = u(P.ICON + P.IGAP)
-        local top = -u(P.HH + P.BAR_GAP + P.PH + P.ROW_GAP)
+        local top = -u(P.HH + P.BAR_GAP + P.PH + P.ROW_GAP + (P.petDrop or 0))    -- prd11: under the pet's strip
         -- one row when both fit across the bar, else the debuffs on a second row (right aligned)
         local fits = (#b + #d) * (P.ICON + P.IGAP) - P.IGAP <= P.W
         local dTop = fits and top or top - u(P.ICON + 18)
+        if P.auraUp then
+            -- prd15 (the user, 2026-11-12: in Party mode the buffs / debuffs "move ABOVE the HUD bars"): the row's timers AURA_UP clear
+            -- of the health bar's top rim; a second row (the debuffs) above the first
+            top = u(P.AURA_UP + P.ICON)
+            dTop = fits and top or top + u(P.ICON + 18)
+        end
         local t = now()
         local function put(list, objs, fromRight, y)
             for i, o in ipairs(objs) do
@@ -3495,6 +3807,428 @@ do
         end
         put(b, P.buffs, false, top)
         put(d, P.debuffs, true, dTop)
+    end
+
+    -- ---------------------------------------------------------------- prd11: the pet's strip
+    -- (the user, 2026-11-11: "find a way to include Pet HP in the HUD, and better distinguish the player HUD vs Pet HUD"; mock-up A)
+    -- its switch: Hub's "uisw" 32 / 33 (WC.npWant.pet), on unless turned off, and only while the resource bar's own switch is on
+    function P.petOn()
+        local npw = type(WC.npWant) == "table" and WC.npWant or {}
+        if npw.pet == false then return false end
+        local on = npw.prd
+        if on == nil then on = npw.hud == true end
+        return on == true
+    end
+    function P.wantedPet() return P.petOn() and (P.wanted()) == true end
+    -- a pet out, from PLAIN reads only (UnitExists can be secret: then a plain name, then HasPetUI); how it was known
+    function P.petHas()
+        local okE, e = pcall(UnitExists, "pet")
+        if okE and not secret(e) then return e == true or e == 1, "exists" end
+        local okN, n = pcall(UnitName, "pet")
+        if okN and type(n) == "string" and not secret(n) and n ~= "" then return true, "name" end
+        local okP, h = pcall(HasPetUI)
+        if okP and not secret(h) then return h == true or h == 1, "petui" end
+        return false, "none"
+    end
+    -- the power type's token by its number, when the client gives no plain token
+    P.PTOK = { [0] = "MANA", [1] = "RAGE", [2] = "FOCUS", [3] = "ENERGY" }
+    -- the strip's row: the portrait or the two bars with their gap, the taller
+    -- (review of prd11, 2026-11-11: the user's "Sub-strip under" at the player's texel scale draws an 8-texel bottom lip, HH = 15 spec
+    -- px, under every bar; PET_BAR_GAP and PET_GAP are that lip + 1, so no rim piece of the health bar (or of the player's power bar
+    -- above) lies over the pet's power / health opening; the rims may overlap each other, the openings stay clear)
+    -- prd12: the strip's geometry in spec px (the player's texel scale k = HH / 8: a 3-texel top rim, an 8-texel bottom lip, a 7-texel
+    -- right rim): the bars' unit (health, PET_BAR_GAP, power) its centre level with the portrait's; mid = that centre from the strip's top;
+    -- the row = the portrait or the unit with its rims, the taller; x0 = the portrait's left, so portrait + unit are centred on the bar
+    function P.petGeo()
+        local k = P.HH / 8
+        local unit = P.PET_HH + P.PET_BAR_GAP + P.PET_PH
+        local mid = math.max(P.PET_ICON / 2, 3 * k + unit / 2)
+        local g = { k = k, unit = unit, unitTop = mid - unit / 2, iconTop = mid - P.PET_ICON / 2 }
+        g.row = math.max(g.iconTop + P.PET_ICON, g.unitTop + unit + 8 * k)
+        -- prd13 (review, 2026-11-11): the happiness face (2 + PET_HAPPY past the right rim) counted while it can show; the bars narrowed
+        -- when the whole group would not fit (W_MIN = 180), so the face stays inside the HUD frame
+        local fixed = P.PET_ICON + P.PET_IGAP + 7 * k + (P.petHappyOn and (2 + P.PET_HAPPY) or 0)
+        g.barW = math.max(0, math.min(P.W * P.PET_W, P.W - fixed))
+        g.x0 = math.max(0, (P.W - (fixed + g.barW)) / 2)
+        if P.petSide == "beside" then g.x0 = 0 end                   -- prd15: beside the HP bar, from its own left
+        return g
+    end
+    function P.petRow() return P.petGeo().row end
+    -- built with the bars, hidden until a pet is out: the round portrait, the green health, the power (one frame), the happiness face
+    function P.petBuild()
+        if P.petL or not P.f then return P.petL end
+        local L = CreateFrame("Frame", nil, P.f)                    -- beside P.g, never under it (the player's curve would hide it)
+        L:EnableMouse(false)
+        L:SetSize(u(P.W), u(P.petRow()))
+        L:Hide()
+        P.petL = L
+        local o = {}
+        P.pet = o
+        -- the portrait: a dark ring under it, both through the game's round portrait mask
+        o.ring = L:CreateTexture(nil, "ARTWORK", nil, 1)
+        o.ring:SetColorTexture(0, 0, 0, 0.85)
+        o.ring:SetSize(u(P.PET_ICON), u(P.PET_ICON))                 -- (placed by P.petLayout: centred on the bars' unit)
+        o.face = L:CreateTexture(nil, "ARTWORK", nil, 2)
+        o.face:SetPoint("CENTER", o.ring, "CENTER", 0, 0)
+        o.face:SetSize(u(P.PET_ICON - 4), u(P.PET_ICON - 4))         -- prd12: a thin rim (2 spec px)
+        for _, t in ipairs({ o.ring, o.face }) do
+            pcall(function()
+                local m = L:CreateMaskTexture()
+                m:SetTexture("Interface\\CharacterFrame\\TempPortraitAlphaMask", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+                m:SetAllPoints(t)
+                t:AddMaskTexture(m)
+            end)
+        end
+        -- the bars, past the portrait (PET_IGAP clears the frame's left rim), PET_W of the player's width (P.petLayout); prd12: the
+        -- player's own green, the power PET_BAR_GAP under the health
+        o.hp = bar(L, P.PET_HH)
+        P.paint(o.hp, P.HEALTH_RGB[1], P.HEALTH_RGB[2], P.HEALTH_RGB[3])
+        o.pw = bar(L, P.PET_PH)
+        o.pw:SetPoint("TOPLEFT", o.hp, "BOTTOMLEFT", 0, -u(P.PET_BAR_GAP))
+        -- prd12: ONE PRD frame round the pair (the unit: the health's top to the power's bottom, a mouse-less frame), its own lip over
+        -- both, the PLAYER's texel scale: the rim one thickness with the player's bars, no lip between the pet's two
+        o.unit = CreateFrame("Frame", nil, L)
+        o.unit:EnableMouse(false)
+        o.unit:SetPoint("TOPLEFT", o.hp, "TOPLEFT", 0, 0)
+        o.unit:SetSize(u(P.W * P.PET_W), u(P.PET_HH + P.PET_BAR_GAP + P.PET_PH))
+        o.lip = CreateFrame("Frame", nil, L)
+        o.lip:SetAllPoints(L)
+        o.lip:EnableMouse(false)
+        o.k = u(P.HH / 8)
+        -- prd13: the shade over the pet's HEALTH as the player's over theirs (45 % of the health bar, not of the whole unit)
+        o.frame = P.frameFor(o.unit, L, o.lip, o.k, u(P.PET_HH) * 0.45)
+        pcall(function() o.lip:SetFrameLevel(o.hp:GetFrameLevel() + 20) end)
+        -- a hunter's pet's happiness: the game's own faces (PetFrame's texture), PET_HAPPY big, past the unit's right rim (7 texels),
+        -- level with the bars (prd12: never over the portrait)
+        o.happy = o.lip:CreateTexture(nil, "OVERLAY", nil, 3)
+        o.happy:SetTexture(P.PET_HAPPY_TEX)
+        o.happy:SetSize(u(P.PET_HAPPY), u(P.PET_HAPPY))
+        o.happy:SetPoint("LEFT", o.unit, "RIGHT", 7 * o.k + u(2), 0)
+        o.happy:Hide()
+        P.petLayout(0, true)
+        return L
+    end
+    -- the strip's place (under the power bar, under the pips when they show) and P.petDrop, the room it takes: P.f's height, the
+    -- shadow and the aura row move down by it; 0 with no pet
+    -- prd15 (the user, 2026-11-12): beside the HP bar in Party mode (P.petSide "beside": no room under the bars), and Hub's party grid
+    -- under the bars takes the room instead (P.partyRoomPx): P.dropFor says what the room is in those two cases
+    function P.dropFor()
+        local cpx = (P.cp and P.cp:IsShown()) and (P.CP_GAP + P.CPH) or 0
+        local room = num(P.partyRoomPx) or 0
+        if room > 0 then return cpx + P.PET_GAP + P.PARTY_GAP + room end
+        if P.petSide ~= "beside" and P.petL and P.petL:IsShown() then return cpx + P.PET_GAP + P.petGeo().row end
+        return 0
+    end
+    function P.petLayout(drop, force)
+        if (num(P.partyRoomPx) or 0) > 0 or P.petSide == "beside" then drop = P.dropFor() end
+        if drop == P.petDrop and not force then return end
+        P.petDrop = drop
+        local base = P.HH + P.BAR_GAP + P.PH
+        if P.f then pcall(function() P.f:SetHeight(u(base + drop)) end) end
+        -- (prd15: the shadow stays under the bars alone while the room is Hub's grid or the pet stands beside)
+        local sdrop = ((num(P.partyRoomPx) or 0) > 0 or P.petSide == "beside") and 0 or drop
+        if P.shadow and P.g then P.shadow:SetPoint("BOTTOMRIGHT", P.g, "TOPRIGHT", u(16), -u(base + 16 + sdrop)) end
+        P.cache = nil
+        local L, o = P.petL, P.pet
+        if not (L and o) then return end
+        local cpx = (P.cp and P.cp:IsShown()) and (P.CP_GAP + P.CPH) or 0
+        local g = P.petGeo()
+        L:ClearAllPoints()
+        if P.petSide == "beside" and P.hp then
+            -- prd15: [me][pet] - right of the HP bar's right rim (7 texels) by PET_SIDE_GAP, the row centred on the player's two bars
+            L:SetPoint("TOPLEFT", P.hp, "TOPRIGHT", u(7 * P.HH / 8 + P.PET_SIDE_GAP), u((g.row - base) / 2))
+        else
+            L:SetPoint("TOPLEFT", P.f, "TOPLEFT", 0, -u(base + cpx + P.PET_GAP))
+        end
+        L:SetSize(u(P.W), u(g.row))
+        -- prd12: portrait + unit centred under the player's bars, the portrait level with the bars' unit
+        o.ring:ClearAllPoints()
+        o.ring:SetPoint("TOPLEFT", L, "TOPLEFT", u(g.x0), -u(g.iconTop))
+        o.hp:ClearAllPoints()
+        o.hp:SetPoint("TOPLEFT", L, "TOPLEFT", u(g.x0 + P.PET_ICON + P.PET_IGAP), -u(g.unitTop))
+        o.hp:SetWidth(u(g.barW)); o.pw:SetWidth(u(g.barW)); o.unit:SetWidth(u(g.barW))
+    end
+    -- fed at every poll as the player's bars are: the game's values straight to the setters, nothing read back (no lag chunk: its queue
+    -- would keep a secret in a table)
+    function P.petValues()
+        local L, o = P.petL, P.pet
+        if not (L and o) then return end
+        local has, how = false, "off"
+        if P.wantedPet() then has, how = P.petHas() end
+        local x = { has = has, src = how, cbad = P.petCurveBad, a = P.petSrc }
+        P.pex = x
+        if not has then
+            if L:IsShown() then L:Hide() end
+            P.petLayout(0)
+            return
+        end
+        P.petLayout(((P.cp and P.cp:IsShown()) and (P.CP_GAP + P.CPH) or 0) + P.PET_GAP + P.petGeo().row)
+        if not L:IsShown() then L:Show() end
+        -- the portrait: GetPetIcon's plain file, else the game's own portrait setter (a widget setter: nothing read back)
+        local okI, ic = pcall(GetPetIcon)
+        ic = (okI and (type(ic) == "number" or type(ic) == "string") and not secret(ic)) and ic or nil
+        if ic then
+            if o.icon ~= ic then pcall(function() o.face:SetTexture(ic) end); o.icon = ic end
+        elseif o.icon ~= "portrait" and type(SetPortraitTexture) == "function" and pcall(SetPortraitTexture, o.face, "pet") then
+            o.icon = "portrait"
+        end
+        -- dead (plainly so): greyed (prd12: no name, no word)
+        local okD, d = pcall(UnitIsDead, "pet")
+        local dead = okD and not secret(d) and (d == true or d == 1) or false
+        if o.dead ~= dead then
+            o.dead = dead
+            local c = dead and P.PET_DEAD_RGB or P.HEALTH_RGB
+            P.paint(o.hp, c[1], c[2], c[3])
+            pcall(function() o.face:SetDesaturated(dead) end)
+        end
+        -- health: the player's green (prd12, the user's pick "Same green as mine"; the strip's own place and frame tell it apart)
+        pcall(function() o.hp:SetMinMaxValues(0, UnitHealthMax("pet")) end)
+        pcall(function() o.hp:SetValue(UnitHealth("pet")) end)
+        -- power by the pet's own type: a hunter's pet FOCUS, a demon MANA
+        local okT, pt, tok = pcall(UnitPowerType, "pet")
+        pt = okT and num(pt) or 0
+        tok = (okT and type(tok) == "string" and not secret(tok)) and tok or P.PTOK[pt]
+        if tok ~= o.ptok or not o.pw.rgb then
+            local cc = (tok and P.POWER[tok]) or P.POWER.MANA
+            P.paint(o.pw, cc[1], cc[2], cc[3])
+            o.ptok = tok
+        end
+        -- (again each poll: nothing the game does to the textures leaves them grey)
+        for _, b in ipairs({ o.hp, o.pw }) do
+            if b.rgb then pcall(function() b.fill:SetVertexColor(b.rgb[1], b.rgb[2], b.rgb[3]) end) end
+        end
+        pcall(function() o.pw:SetMinMaxValues(0, UnitPowerMax("pet", pt)) end)
+        pcall(function() o.pw:SetValue(UnitPower("pet", pt)) end)
+        -- happiness: only a plain answer (1 unhappy, 2 content, 3 happy); a secret or none: no face
+        local okH, hv = pcall(function()
+            if type(C_PetInfo) == "table" and type(C_PetInfo.GetPetHappiness) == "function" then return C_PetInfo.GetPetHappiness() end
+            return GetPetHappiness()
+        end)
+        local h = okH and num(hv) or nil
+        local uv = h and P.PET_HAPPY_U[h]
+        if uv then o.happy:SetTexCoord(uv[1], uv[2], 0, P.PET_HAPPY_V); o.happy:Show() else o.happy:Hide() end
+        if (uv ~= nil) ~= (P.petHappyOn == true) then P.petHappyOn = uv ~= nil; P.petLayout(P.petDrop, true) end   -- prd13: re-centred
+        x.dead, x.ptok, x.happy, x.icon = dead or nil, tok, uv and h or nil, o.icon ~= nil or nil
+    end
+    -- out of combat on the curve route: the strip's alpha the pet's own UnitHealthPercent through the same curve; its OWN bad flag (a
+    -- refused pet call - no pet, a client without - never turns the player's curve off); otherwise plainly shown (it fades with the HUD)
+    -- (review of prd11, 2026-11-11: the tick runs this BEFORE the poll that hides the strip, so a pet dismissed / despawned had its
+    -- curve asked with no pet and the refusal latched for the session - the strip then held at 1 out of combat on the curve route.
+    -- Now: presence again first (no pet: hidden, no room, NOTHING latched); a refusal latches only while a pet plainly exists; once
+    -- latched, the strip takes the PLAYER's curve (the bars' own layer: it fades with the HUD), else plainly 1)
+    function P.petHide()
+        local L = P.petL
+        if L and L:IsShown() then L:Hide() end
+        P.petLayout(0)
+    end
+    function P.petCurve(on)
+        local L = P.petL
+        if not (L and L:IsShown()) then return end
+        if on and P.curve then
+            local has = false
+            if P.wantedPet() then has = P.petHas() end
+            if not has then P.petHide(); P.petSrc = "gone"; return end
+            if not P.petCurveBad then
+                local ok, err = pcall(function()
+                    local a = UnitHealthPercent("pet", false, P.curve)
+                    if a == nil then error("no value") end
+                    L:SetAlpha(a)
+                end)
+                if ok then P.petSrc = "curve"; return end
+                if P.petHas() then P.petCurveBad = tostring(err):sub(1, 80) end
+            end
+            if P.petCurveBad and not P.curveBad and pcall(function()
+                local a = UnitHealthPercent("player", false, P.curve)
+                if a == nil then error("no value") end
+                L:SetAlpha(a)
+            end) then P.petSrc = "player"; return end
+        end
+        pcall(function() L:SetAlpha(1) end)
+        P.petSrc = "plain"
+    end
+
+    -- ---------------------------------------------------------------- prd14: Party mode's pick on you / your pet
+    -- Party mode's pick when it is you or your pet (PadMap's export: on, box.u - its own secure attributes, plain), else nil
+    function P.partyPick()
+        local p = type(WC.padMap) == "table" and WC.padMap.party or nil
+        if type(p) ~= "table" or type(p.on) ~= "function" or type(p.box) ~= "function" then return nil end
+        local okO, on = pcall(p.on)
+        if not okO or on ~= true then return nil end
+        local okB, b = pcall(p.box)
+        local who = okB and type(b) == "table" and b.u or nil
+        if who == "player" or who == "pet" then return who end
+        return nil
+    end
+    -- a gold box of four edges on P.f's own top layer (never on the curve's P.g, never under the pet strip's alpha). prd14 review (the
+    -- user's ask, 2026-11-11: the box round the bars / the strip): ONE mouse-less area frame per box spans what is boxed (its two corners
+    -- may come from two regions: a frame's TOPLEFT and BOTTOMRIGHT are independent), and all four edges hang on that one area - no edge
+    -- takes its two points from two regions (those clashed on the pet: the portrait's top against the bars' top, 46 px apart in x)
+    function P.pickRing(host)
+        local r = { t = {} }
+        r.area = CreateFrame("Frame", nil, host)
+        r.area:EnableMouse(false)
+        for i = 1, 4 do
+            r.t[i] = host:CreateTexture(nil, "OVERLAY", nil, 7)
+            r.t[i]:SetColorTexture(P.PICK_GOLD[1], P.PICK_GOLD[2], P.PICK_GOLD[3], 0.95)
+            r.t[i]:Hide()
+        end
+        -- the area: TOPLEFT on tl (+ offsets), BOTTOMRIGHT on br (+ offsets); the edges on the area alone
+        function r.place(tl, tlx, tly, br, brx, bry)
+            local t, a, px = r.t, r.area, u(P.PICK_PX)
+            a:ClearAllPoints()
+            a:SetPoint("TOPLEFT", tl, "TOPLEFT", tlx, tly)
+            a:SetPoint("BOTTOMRIGHT", br, "BOTTOMRIGHT", brx, bry)
+            for i = 1, 4 do t[i]:ClearAllPoints() end
+            t[1]:SetPoint("TOPLEFT", a, "TOPLEFT", 0, 0); t[1]:SetPoint("TOPRIGHT", a, "TOPRIGHT", 0, 0); t[1]:SetHeight(px)
+            t[2]:SetPoint("BOTTOMLEFT", a, "BOTTOMLEFT", 0, 0); t[2]:SetPoint("BOTTOMRIGHT", a, "BOTTOMRIGHT", 0, 0); t[2]:SetHeight(px)
+            t[3]:SetPoint("TOPLEFT", a, "TOPLEFT", 0, 0); t[3]:SetPoint("BOTTOMLEFT", a, "BOTTOMLEFT", 0, 0); t[3]:SetWidth(px)
+            t[4]:SetPoint("TOPRIGHT", a, "TOPRIGHT", 0, 0); t[4]:SetPoint("BOTTOMRIGHT", a, "BOTTOMRIGHT", 0, 0); t[4]:SetWidth(px)
+        end
+        function r.show(on)
+            for i = 1, 4 do if on then r.t[i]:Show() else r.t[i]:Hide() end end
+            r.on = on
+        end
+        return r
+    end
+    -- built with the bars: one box round the player's health + power (their PRD frames: 3 texels up / left, 7 right, 8 down; the two bars
+    -- share x: both TOP-centred, P.W wide), one round the pet's whole strip row: the portrait's left to the bars' right rim (7 texels at
+    -- the PLAYER's scale, the pet's frame uses it: P.petBuild o.k), and in y the row itself (P.petGeo: the row's top and bottom are the
+    -- taller of the portrait and the bars' unit with its rims, whichever that is)
+    function P.pickBuild()
+        if P.pick or not P.f then return P.pick end
+        local host = CreateFrame("Frame", nil, P.f)
+        host:SetAllPoints(P.f)
+        host:EnableMouse(false)
+        pcall(function() host:SetFrameLevel(P.hp:GetFrameLevel() + 30) end)
+        local k = u(P.HH / 8)
+        local pad = u(P.PICK_PAD)
+        local o = { host = host, you = P.pickRing(host), pet = P.pickRing(host) }
+        o.you.place(P.hp, -(3 * k + pad), 3 * k + pad, P.pw, 7 * k + pad, -(8 * u(P.PH / 8) + pad))
+        if P.pet and P.pet.ring and P.pet.unit then
+            local g = P.petGeo()
+            -- the ring sits g.iconTop under the row's top, the unit (health's top) g.unitTop; the row is g.row tall
+            o.pet.place(P.pet.ring, -pad, u(g.iconTop) + pad, P.pet.unit, 7 * k + pad, -(u(g.row - g.unitTop - g.unit) + pad))
+        end
+        P.pick = o
+        return o
+    end
+    -- ---------------------------------------------------------------- prd15: Party mode's [me][pet] row and Hub's grid under it
+    -- Party mode on (PadMap's on, plainly true) outside a raid (raids: unchanged)
+    function P.partyModeOn()
+        local p = type(WC.padMap) == "table" and WC.padMap.party or nil
+        if type(p) ~= "table" or type(p.on) ~= "function" then return false end
+        local okO, on = pcall(p.on)
+        if not okO or on ~= true then return false end
+        local okR, r = pcall(IsInRaid)
+        if okR and r == true then return false end
+        return true
+    end
+    -- the HUD's place for Hub's party grid, in UI units from UIParent's CENTER (the HUD's own height and width settings and its scale;
+    -- never its show / hide slide): x = the HP bar's left, top = the bars' top, y = the room's top under the bars (and the combo pips),
+    -- PET_GAP + PARTY_GAP under the power bar (the first row's name clear of the power bar's lip)
+    function P.partyGeo()
+        if not P.wd then pcall(P.loadSize) end
+        local s = (num(P.sc) or P.S_DEF) / 100
+        local y = num(P.y) or P.loadY()
+        local cpx = (P.cp and P.cp:IsShown()) and (P.CP_GAP + P.CPH) or 0
+        local w = num(P.W) or P.W_DEF
+        y = y + P.liftFor(P.partyModeOn())                              -- (the guard's lift the block is going to: Hub fades its rows to it)
+        -- (h: the two bars' height, for the solo tab beside the [me][pet] row)
+        return { x = -u(w) / 2 * s, top = u(y) * s, h = u(P.HH + P.BAR_GAP + P.PH) * s,
+                 y = u(y - (P.HH + P.BAR_GAP + P.PH + cpx + P.PET_GAP + P.PARTY_GAP)) * s, s = s }
+    end
+    -- prd15 THE ON-SCREEN GUARD (the user, 2026-11-12: "KEEP IT ON SCREEN"): in Party mode, the lift (spec px, up) that keeps the block -
+    -- the HUD's bars (the combo pips included), and Hub's rows under them (P.partyRoomPx, their rings in it) or the bars' lip while solo -
+    -- LIFT_MARGIN px (scaled) clear of the screen's bottom edge; 0 when it fits and always out of Party mode (nothing moves then)
+    function P.liftFor(on)
+        if not on then return 0 end
+        local s = (num(P.sc) or P.S_DEF) / 100
+        local y = num(P.y) or P.loadY()
+        local okH, hh = pcall(function() return UIParent:GetHeight() end)
+        hh = (okH and num(hh) and hh > 0) and hh or 768
+        local cpx = (P.cp and P.cp:IsShown()) and (P.CP_GAP + P.CPH) or 0
+        local room = num(P.partyRoomPx) or 0
+        local block = P.HH + P.BAR_GAP + P.PH + cpx + ((room > 0) and (P.PET_GAP + P.PARTY_GAP + room) or P.HH)
+        local one = u(1) * s
+        if one <= 0 then return 0 end
+        local bottom = (y - block) * one                                -- UI units from UIParent's CENTER
+        local need = (-hh / 2 + u(P.LIFT_MARGIN)) - bottom
+        if need <= 0 then return 0 end
+        return math.floor(need / one * 100 + 0.999) / 100
+    end
+    -- Hub's grid's height (UI units; 0 = none): the room under the bars (P.f's height; the aura row stands above the bars in Party mode)
+    function P.partyRoom(ui)
+        local s = (num(P.sc) or P.S_DEF) / 100
+        local one = u(1) * s
+        local px = (num(ui) and ui > 0 and one > 0) and ui / one or 0
+        if px == P.partyRoomPx then return end
+        P.partyRoomPx = px
+        if P.f then P.petLayout(P.dropFor(), true) end
+    end
+    -- the move of the pet strip AND the aura row (prd15: both follow Party mode): fade out (PET_FADE_S), move while unseen, fade in; with
+    -- neither shown they move at once. Plain alpha on our own frames (the strip's layer holds over the curve's alpha for those 0.4 s; the
+    -- aura icons back at 1 after); the pick box waits for the strip (P.pickStep)
+    function P.aurasShown()
+        for _, list in ipairs({ P.buffs or {}, P.debuffs or {} }) do
+            for _, o in ipairs(list) do if o.f and o.f:IsShown() then return true end end
+        end
+        return false
+    end
+    function P.moveAlpha(a)
+        local L = P.petL
+        if L and L:IsShown() then pcall(function() L:SetAlpha(a) end) end
+        for _, list in ipairs({ P.buffs or {}, P.debuffs or {} }) do
+            for _, o in ipairs(list) do if o.f then pcall(function() o.f:SetAlpha(a) end) end end
+        end
+    end
+    function P.petMoveStep(dt)
+        local on = P.partyOn == true
+        local want = on and "beside" or "under"
+        local L = P.petL
+        local lift = P.liftFor(on)
+        local lifts = math.abs((num(P.lift) or 0) - lift) > 0.01
+        local moved = P.petSide ~= want or P.auraUp ~= on or lifts
+        if lifts then P.hudFade = true end                               -- (the bars themselves move: they fade too)
+        local function swap()
+            P.petSide, P.auraUp = want, on
+            if P.f then P.petLayout(P.dropFor(), true) end
+            P.cache = nil                                                -- (the aura row drawn again at its new place)
+            if math.abs((num(P.lift) or 0) - lift) > 0.01 then P.lift = lift; P.place() end
+        end
+        local hudShown = P.hudFade and P.f ~= nil and P.f:IsShown() and (num(P.alpha) or 0) > 0
+        if not ((L and L:IsShown()) or P.aurasShown() or hudShown) then
+            if P.petFadeA then P.petFadeA = nil; P.moveAlpha(1) end
+            P.hudFade = nil
+            if moved then swap() end
+            return
+        end
+        local a = P.petFadeA or 1
+        if moved then
+            a = a - (num(dt) or 0) / P.PET_FADE_S
+            if a <= 0 then
+                a = 0
+                swap()
+                pcall(P.drawAuras, true)
+            end
+        elseif a < 1 then
+            a = math.min(1, a + (num(dt) or 0) / P.PET_FADE_S)
+        end
+        if a >= 1 then
+            if P.petFadeA then P.petFadeA = nil; P.moveAlpha(1) end
+            P.hudFade = nil
+        else
+            P.petFadeA = a
+            P.moveAlpha(a)
+        end
+    end
+    -- the boxes follow the pick (the pet's only while its strip shows); P.pickWho = what is boxed, for the tests
+    function P.pickStep(who)
+        local o = P.pick
+        if not o then return end
+        local petShown = P.petL ~= nil and P.petL:IsShown()
+        o.you.show(who == "player")
+        o.pet.show(who == "pet" and petShown and P.petFadeA == nil)      -- prd15: back with the strip, at its new place
+        P.pickWho = (who == "player" and "player") or ((who == "pet" and petShown) and "pet") or nil
     end
 
     -- ---------------------------------------------------------------- when it shows
@@ -3579,6 +4313,11 @@ do
         P.build()
         local t = now()
         P.on = true
+        -- prd14: Party mode's pick on you / your pet (read every PICK_S)
+        if not P.pickAt or t - P.pickAt >= P.PICK_S or t < P.pickAt then P.pickAt = t; P.partyWho = P.partyPick() end
+        P.partyOn = P.partyModeOn()                                     -- prd15: every frame (the lift and Hub's grid read it live)
+        -- prd15: Party mode on holds the HUD up too (it is the block's [me] row: the grid hangs under it)
+        local picked = P.partyWho ~= nil or P.partyOn == true
         local fight = P.fight()
         local hurt, src = P.hurt()
         if fight then P.lastFight = t end
@@ -3587,15 +4326,22 @@ do
         local rest, rwhy = P.powerRest(t, fight)
         P.prest = rwhy
         local powerOff = rest == false and not fight
-        if powerOff then
+        if picked then
+            pcall(function() P.g:SetAlpha(1) end)                       -- prd14: the boxed bars plainly shown
+            if P.petL then pcall(function() P.petL:SetAlpha(1) end) end
+            P.petSrc = "party"
+        elseif powerOff then
             pcall(function() P.g:SetAlpha(1) end)                       -- (the power keeps it up: the health curve may not hide it)
+            P.petCurve(false)
         elseif settled and P.curveSet() then
             hurt, src = true, "curve"                                    -- (our timing stays on: the layer itself shows or not)
+            P.petCurve(true)                                             -- prd11: the pet's strip by its own health, its own flag
         else
             pcall(function() P.g:SetAlpha(1) end)
+            P.petCurve(false)
         end
         P.src = src
-        local on = fight or hurt == true or powerOff
+        local on = fight or hurt == true or powerOff or picked
         if on then P.offAt = nil
         elseif not P.offAt then P.offAt = t end
         -- the target: 1 while wanted; out of combat and full (or no signal), HOLD_S then a FADE_S fade
@@ -3608,28 +4354,43 @@ do
         P.alpha = e
         local dy = -P.TRAVEL * (1 - e)
         if dy ~= P.dy then P.dy = dy; P.place() end
-        P.why = fight and "fight" or (powerOff and "power") or (src == "curve" and "curve") or (hurt and "hurt") or (P.alpha > 0 and "fading") or "full"
+        P.why = fight and "fight" or (picked and "party") or (powerOff and "power") or (src == "curve" and "curve") or (hurt and "hurt") or (P.alpha > 0 and "fading") or "full"
         if P.alpha > 0 then
             if not P.f:IsShown() then P.f:Show() end
-            P.f:SetAlpha(P.alpha * P.REST)
+            P.f:SetAlpha(P.alpha * P.REST * ((P.hudFade and P.petFadeA) or 1))   -- prd15: the HUD fades too while its lift changes
             P.pollAt = P.pollAt or 0
             if t - P.pollAt >= P.POLL_S then P.pollAt = t; P.values() end
             P.drawAuras(true)                                -- (a) test45: whenever the bar shows (a HoT after the fight too)
         elseif P.f:IsShown() then
             P.f:SetAlpha(0); P.f:Hide()
         end
+        P.petMoveStep(dt)                                               -- prd15: the pet strip's move (after its alpha for this frame)
+        P.pickStep(P.partyWho)                                          -- prd14: after the poll (the pet strip's shown state is fresh)
         P.shown = P.alpha > 0
     end
 
     local ev = CreateFrame("Frame")
     for _, e in ipairs({ "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_ENTERING_WORLD" }) do pcall(function() ev:RegisterEvent(e) end) end
-    for _, e in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER", "UNIT_AURA",
-                         "UNIT_HEAL_PREDICTION", "UNIT_ABSORB_AMOUNT_CHANGED", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_CHANNEL_START",
-                         "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_CHANNEL_STOP" }) do
+    -- prd11: the bars' values heard for the player AND the pet; the casts (the cost, the spend) and the auras (the row is the player's)
+    -- for the player only
+    for _, e in ipairs({ "UNIT_HEALTH", "UNIT_MAXHEALTH", "UNIT_POWER_UPDATE", "UNIT_POWER_FREQUENT", "UNIT_MAXPOWER", "UNIT_DISPLAYPOWER",
+                         "UNIT_HEAL_PREDICTION", "UNIT_ABSORB_AMOUNT_CHANGED" }) do
+        pcall(function() ev:RegisterUnitEvent(e, "player", "pet") end)
+    end
+    for _, e in ipairs({ "UNIT_AURA", "UNIT_SPELLCAST_START", "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_STOP", "UNIT_SPELLCAST_FAILED",
+                         "UNIT_SPELLCAST_SUCCEEDED", "UNIT_SPELLCAST_INTERRUPTED", "UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_PET" }) do
         pcall(function() ev:RegisterUnitEvent(e, "player") end)
     end
+    for _, e in ipairs({ "PET_UI_UPDATE", "UNIT_HAPPINESS" }) do pcall(function() ev:RegisterEvent(e) end) end
     ev:SetScript("OnEvent", function(_, e, unit, _, spellID)
-        if e == "UNIT_SPELLCAST_START" or e == "UNIT_SPELLCAST_CHANNEL_START" then
+        -- prd11: only the player's own casts and auras are ours (a pet's never sets the cost or the spend)
+        if unit ~= nil and unit ~= "player" and (e == "UNIT_AURA" or e:sub(1, 15) == "UNIT_SPELLCAST_") then return end
+        if e == "UNIT_PET" or e == "PET_UI_UPDATE" then
+            if P.pet then P.pet.icon = nil end                          -- (a new pet: its portrait again)
+            -- (review of prd11: gone at once, before any curve is asked of it)
+            if P.petL and P.petL:IsShown() and not (P.wantedPet() and (P.petHas())) then P.petHide() end
+            if P.f and P.shown then P.pollAt = 0 end
+        elseif e == "UNIT_SPELLCAST_START" or e == "UNIT_SPELLCAST_CHANNEL_START" then
             if P.f then pcall(P.castCost, spellID) end
         elseif e == "UNIT_SPELLCAST_STOP" or e == "UNIT_SPELLCAST_FAILED" or e == "UNIT_SPELLCAST_INTERRUPTED" or e == "UNIT_SPELLCAST_CHANNEL_STOP" then
             P.castEnd()
@@ -3760,7 +4521,14 @@ end
 -- scale, so the 9 out matches the bar's units) in the plate's own strata, one frame level UNDER the plate's UnitFrame - so under its
 -- name, level and health bar fill. Only our own frame is parented / levelled (legal in combat); the plate's level and strata are
 -- READ (no taint), nothing of it is written; forbidden plates (enemies in instances) never reach us (GetNamePlateForUnit).
-WC.rings = { V = "at7", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
+-- at8 (the user, 2026-11-12, on 1.0.26: "the aggro tint looks like its floating because its trying to go around the cast bar too (which
+-- is not there)"): at7's frame round Hub's target bar was cut for the HUD art's whole PIECES (3 texels left / top, 7 right, 8 bottom),
+-- but most of the right and bottom pieces are clear (the c60 art's visible rim is 3 texels on every side: rows 11..13, cols 125..127,
+-- one faint texel past them); the frame stood 31 px under the bar, so the outline floated ~20 px below it as if round a cast bar.
+-- Now R.barAnchor puts the art's outline ON the rim's visible edge (3 texels out on every side) and only round the health bar (the
+-- cast bar, pips and auras under it are never inside): the frame's outsets solved from the art's own geometry (its outline PAD - 3 in
+-- from the frame's sides and bottom, PAD - 4 from its top, of a 166 x 20 bar's frame), so the glow beyond it is the nameplate's.
+WC.rings = { V = "at8", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
              ALPHA = 0.95, OUTSET = 6, PAD = 9, TOP_IN = 4, TEX_V = 53 / 64, list = {}, est = {}, react = {}, why = {}, n = 0,
              COL = { far = { 0.32, 0.86, 0.36 }, approach = { 1, 0.84, 0.24 }, near = { 1, 0.55, 0.12 }, inside = { 0.93, 0.16, 0.12 } },
              TEX = "Interface\\AddOns\\WowCompanion\\Media\\tint_glow" }
@@ -3831,6 +4599,24 @@ do
         return o
     end
 
+    -- at8: the target bar's tint frame round its health bar [hp] (w x h: its size, else read): the art's outline on the HUD rim's
+    -- visible edge, 3 texels (k = h / 8) out on every side; returns the four outsets (left, top, right, bottom)
+    function R.barAnchor(f, hp, w, h)
+        h = tonumber(h) or (hp.GetHeight and hp:GetHeight()) or 17
+        w = tonumber(w) or (hp.GetWidth and hp:GetWidth()) or 0
+        if not (type(h) == "number" and h > 0) then h = 17 end
+        if type(w) ~= "number" then w = 0 end
+        local rim = 3 * h / 8
+        local W0, H0 = 166 + 2 * R.PAD, 20 + 2 * R.PAD                  -- the art's frame (tools/make_world_markers.py)
+        local inS, inT = R.PAD - 3, R.PAD - 4                            -- its outline in from the frame's sides / bottom, top
+        local l = (rim + inS * w / W0) / (1 - 2 * inS / W0)              -- l = rim + inS * (w + 2l) / W0
+        local s = (h + 2 * rim) / (H0 - inT - inS)                       -- the art's vertical stretch: (h + t + b) / H0
+        local t, b = rim + inT * s, rim + inS * s
+        f:SetPoint("TOPLEFT", hp, "TOPLEFT", -l, t)
+        f:SetPoint("BOTTOMRIGHT", hp, "BOTTOMRIGHT", l, -b)
+        return l, t, l, b
+    end
+
     function R.tick(dt)
         local rec = A and A.last
         local on = R.wanted() and rec and type(rec.m) == "table" and not A.off
@@ -3882,11 +4668,8 @@ do
                         if o.plate ~= tbHp then
                             o.f:ClearAllPoints()
                             o.f:SetParent(UIParent)
-                            -- round the bar's HUD frame (its lip: 3 texels left / top, 7 right, 8 bottom of an 8-texel-high bar)
-                            local h = tbHp:GetHeight() or 17
-                            local k = h / 8
-                            o.f:SetPoint("TOPLEFT", tbHp, "TOPLEFT", -3 * k - 7, 3 * k + 7)
-                            o.f:SetPoint("BOTTOMRIGHT", tbHp, "BOTTOMRIGHT", 7 * k + 7, -8 * k - 7)
+                            -- at8: on the HUD rim's visible edge, round the health bar only (never the cast bar under it)
+                            R.barAnchor(o.f, tbHp)
                             o.plate, o.bar, o.onBar = tbHp, nil, true
                             o.strata, o.lvl = nil, nil
                         end

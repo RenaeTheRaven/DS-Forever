@@ -2101,14 +2101,14 @@ class MapView(context: Context) : View(context) {
     }
 
     private val cGold = Color.parseColor("#FFD100")
-    private val cBronze = Color.parseColor("#C8AA6E")
-    private val cDim = Color.parseColor("#8F8168")
-    private val cInk = Color.parseColor("#0E0B08")
-    private val cField = Color.parseColor("#141009")
-    private val cPanel = Color.parseColor("#17120C")
+    private val cBronze: Int get() = Theme.bronze          // the theme's (2026-11-12); Classic #C8AA6E
+    private val cDim: Int get() = Theme.dim          // the theme's (2026-11-12); Classic #8F8168
+    private val cInk: Int get() = Theme.ink          // the theme's (2026-11-12); Classic #0E0B08
+    private val cField: Int get() = Theme.field          // the theme's (2026-11-12); Classic #141009
+    private val cPanel: Int get() = Theme.panel          // the theme's (2026-11-12); Classic #17120C
     private val cPlayer = Color.parseColor("#AAD372")
     private val cFlight = Color.parseColor("#7FC4E8")
-    private val cText = Color.parseColor("#E8DCC0")
+    private val cText: Int get() = Theme.text          // the theme's (2026-11-12); Classic #E8DCC0
 
     private val pLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE; strokeWidth = 3f; color = cBronze
@@ -3412,36 +3412,46 @@ class MapView(context: Context) : View(context) {
         if (a.m == map?.optInt("mapID", Int.MIN_VALUE)) { deriveQuestAreas(map); invalidate() }
     }
     private val qdbAreas = LinkedHashMap<Int, QdbAreas.Areas>()
+    /** Home's area pick's inputs, [st] the shown focus (FocusAreas: tracked quests as 1427, plus the merged Polestar quest tracked
+     *  or not - the user, 2026-11-11: "isn't showing the questie quest areas for the focused quest") */
+    private fun areaIn(st: Int): FocusAreas.In {
+        val rd = { e: JSONObject -> e.optBoolean("ready") || e.optBoolean("done") }
+        val tRD = HashMap<Int, Boolean>(); for (e in tracked) e.optInt("id", 0).takeIf { it != 0 }?.let { if (it !in tRD) tRD[it] = rd(e) }
+        val merged = psMerged()
+        return FocusAreas.In(trackedKnown, trackedNo.keys.toSet(), st, merged, tRD,
+            questById[merged]?.let { mapOf(merged to rd(it)) } ?: emptyMap())
+    }
+    private var areaSaid = ""
 
     private fun deriveQuestAreas(m: JSONObject?) {
         qAreas.clear(); qCircles.clear()
         deriveQdb(m)
         if (m == null) return
         QuestTrace.init(context)
-        val st = shownFocus()                           // the game's focus, else the default (refreshDefault)
+        val st = shownFocus()   // the game's focus, else the default (refreshDefault); merged: psFocus() = the merged quest
         val r = rect
         val placed = HashSet<Int>()
+        val ai = areaIn(st)
+        val qs0 = m.optJSONArray("quests")
+        val mapQs = if (qs0 == null) emptyList() else (0 until qs0.length()).map { i ->
+            qs0.optJSONObject(i)?.let { it.optInt("questID", 0) to it.optBoolean("done", false) } ?: (0 to true) }
         // a tracked quest the GAME places no point for on this map but QuestieDB has spawns for here still gets its areas
-        qdbAreas[m.optInt("mapID", Int.MIN_VALUE)]?.let { a ->
-            val onMap = HashSet<Int>()
-            m.optJSONArray("quests")?.let { qs -> for (i in 0 until qs.length()) qs.optJSONObject(i)?.let { onMap.add(it.optInt("questID", 0)) } }
-            for (o in a.objs.map { it.qid }.distinct()) {
-                if (o in onMap || !shownQuest(o)) continue
-                if (tracked.firstOrNull { it.optInt("id", 0) == o }?.let { it.optBoolean("ready") || it.optBoolean("done") } == true) continue
-                if (qdbAreasFor(m, o, o == st)) placed.add(o)
-            }
+        val qdbQids = qdbAreas[m.optInt("mapID", Int.MIN_VALUE)]?.objs?.map { it.qid } ?: emptyList()
+        for (p in FocusAreas.qdbOnly(ai, qdbQids, mapQs.map { it.first }.toSet())) if (qdbAreasFor(m, p.qid, p.focused)) placed.add(p.qid)
+        val picks = FocusAreas.onMap(ai, mapQs)        // done: the "?" at the hand-in, no area; untracked: no area (merged: FocusAreas)
+        "areas: st=$st merged=${ai.merged} tracked=${ai.tracked.sorted()} qdb=${qdbQids.distinct()} placed=${placed.sorted()} map=${picks.map { it.qid }}".let {
+            if (it != areaSaid) { areaSaid = it; android.util.Log.i("WCMAP", it) }   // the device check: which quests Home draws
         }
-        val qs = m.optJSONArray("quests") ?: run { qAreas.sortBy { if (it.focused) 1 else 0 }; return }
-        for (i in 0 until qs.length()) {
-            val q = qs.optJSONObject(i) ?: continue
-            if (q.optBoolean("done", false)) continue      // ready: the "?" at the hand-in, no area
-            val id = q.optInt("questID", 0)
-            if (!shownQuest(id)) continue                  // untracked: no area
-            val focused = id != 0 && id == st
+        val qs = qs0 ?: run { qAreas.sortBy { if (it.focused) 1 else 0 }; return }
+        for (p in picks) {
+            val q = qs.optJSONObject(p.index) ?: continue
+            val id = p.qid
+            val focused = p.focused
             // QuestieDB's areas first (the user's pick), then the shape traced from the user's play, the circle. (The baked
             // AzerothCore shapes, assets/quest_areas.json, left the app with the art harvest, the user 2026-10-09.)
             var any = id in placed || qdbAreasFor(m, id, focused)
-            if (!any && r != null && r.valid) QuestTrace.shape(id, r.continent)?.let { pts ->
+            // t2: one area per separate traced blob (never one strip joining them), only real areas (no thin strips)
+            if (!any && r != null && r.valid) for (pts in QuestTrace.shapes(id, r.continent)) {
                 val wx = DoubleArray(pts.size) { pts[it][0] }
                 val wy = DoubleArray(pts.size) { pts[it][1] }
                 toQArea(r, wx, wy, focused, true)?.let { qAreas.add(it); any = true }
@@ -3502,7 +3512,8 @@ class MapView(context: Context) : View(context) {
     // "b"; an off choice lasts until the next login, Settings.polestarOffBoot), and the game's focus follows it through the one focus
     // path ([PolestarFocusSync]): the step's tracked quest focused, the focus cleared for a step with no quest in the log (the user's
     // ruling), debounced against the game's own auto-track. The default push waits while the row is picked ([psWaits]).
-    class PolestarStep(val title: String?, val words: String?, val kind: String?, val quest: Int, val map: Int, val x: Double, val y: Double)
+    // ps3 (the user, 2026-11-11: "The polestar tracked quest went missing from my quests"): a step with no spot of its own (Map.lua's
+    // nl: talk / use / train goals) keeps the row ([PolestarStep.parse]); only the goal sent to the router has none ([polestarGoal]).
     private var psStep: PolestarStep? = null
     private var psPicked = true                          // ps3: the default at login (an older add-on without "b": in memory only)
     private var psBoot = 0L                              // the login's stamp (pstep "b") the pick belongs to
@@ -3511,13 +3522,18 @@ class MapView(context: Context) : View(context) {
     private val psBlue = Color.rgb(120, 200, 255)
     private fun psShown(): Boolean = Settings.questTracking == "polestar" && psStep != null
     private fun psHolds(): Boolean = psPicked && psShown()
+    /** pn4 (the user, 2026-11-11: "a polestar objective that is not in my bag and not telling me where to go"): Polestar is the
+     *  tracker - the setting, the light blue row picked, and a Polestar step seen within the last minute (through a step's none-gaps:
+     *  no flapping word; no guide at all: no word, no taps) - said to the add-on (PolestarNav.tick's ps), so its compass leads to
+     *  Polestar's waypoint whether or not a quest is focused or in the log */
+    fun polestarHolds(): Boolean = Settings.questTracking == "polestar" && psPicked && psStepAt != 0L &&
+        System.currentTimeMillis() - psStepAt < 60_000L
     private fun psFocus(): Int { val q = psStep?.quest ?: 0; return if (psHolds() && q > 0 && questById.containsKey(q)) q else 0 }
     /** {"type":"pstep"}: Polestar's live objective, or none */
     fun onPolestarStep(d: JSONObject) {
-        val before = psShown(); val beforeHolds = psHolds(); val beforeWords = psStep?.let { it.title + "|" + it.words }
-        psStep = if (d.optBoolean("none") || !d.has("m")) null else PolestarStep(
-            d.optString("t", "").ifEmpty { null }, d.optString("g", "").ifEmpty { null }, d.optString("k", "").ifEmpty { null },
-            d.optInt("q", 0), d.optInt("m", 0), d.optDouble("x", Double.NaN), d.optDouble("y", Double.NaN))
+        val before = psShown(); val beforeHolds = psHolds(); val beforeWords = psStep?.sig()
+        val beforeMerged = psMerged()
+        psStep = PolestarStep.parse(d)
         if (psStep != null) psStepAt = System.currentTimeMillis()   // (Map.lua re-sends a none every 15 s: only a real step stamps)
         // ps3: a gap with no step keeps the pick (psHolds needs a step anyway); a new login's stamp picks the row again, unless this
         // login's off choice was stored (an app restart in the same login keeps it)
@@ -3528,7 +3544,7 @@ class MapView(context: Context) : View(context) {
             psPicked = if (first && !psPicked) { Settings.polestarOffBoot = b; false } else Settings.polestarOffBoot != b
         }
         if (psShown() != before) { rebuildItems(); if (cursor.shown && cursor.sel == MapList.POLESTAR && !psShown()) cursor.reset() }
-        if (psHolds() != beforeHolds || psStep?.let { it.title + "|" + it.words } != beforeWords) psChanged()
+        if (psHolds() != beforeHolds || psStep?.sig() != beforeWords || psMerged() != beforeMerged) psChanged()
         psSyncTick()
         postInvalidate()
     }
@@ -3547,6 +3563,46 @@ class MapView(context: Context) : View(context) {
         if (on) psSync.picked()                          // an explicit re-pick lifts the re-send cap
         psChanged()
     }
+    // ---- SKIP POLESTAR'S STEP / UNDO THE LAST SKIP (pk1; the user, 2026-11-12: "we need to make a way to skip a polestar objective,
+    // idealy in the home map moduale with X or Y, maybe we also add a previous step button? idk"): the light blue row's X / Y, the Map
+    // room's Polestar row and the pause wheel's two slices all come here; the host taps Map.lua's "pnav" row ([PolestarSkip.cols])
+    /** the host's way to tap a Skip ([prev] false) or a Previous; null = not wired (the press says so) */
+    var onPolestarSkip: ((prev: Boolean) -> Boolean)? = null
+    /** Skip can be pressed now (a Polestar step is shown and the add-on can skip it) */
+    fun polestarCanSkip(): Boolean = PolestarSkip.canSkip(psShown(), psStep)
+    /** Previous can be pressed now (a skip is left to undo) */
+    fun polestarCanPrev(): Boolean = PolestarSkip.canPrev(psShown(), psStep)
+    /** Polestar's step as shown on the light blue row (its title, else its goal's words), or null when there is none */
+    fun polestarTitle(): String? = if (psShown()) psStep?.let { it.title ?: it.words } else null
+    /** the goal's words under it (null when the same as the title, or none) */
+    fun polestarWords(): String? = if (psShown()) psStep?.let { st -> st.words?.takeIf { it != st.title } } else null
+    /** one press: Skip, or Previous ([prev]); nothing when it cannot be pressed now. True = the tap went */
+    fun polestarSkip(prev: Boolean): Boolean {
+        if (if (prev) !polestarCanPrev() else !polestarCanSkip()) return false
+        val why = polestarPress(prev)
+        if (why != null) note(why)
+        return why == null
+    }
+    /** pk3: one press from the pause wheel (any room): null = the tap went, else the line saying why not (the wheel shows it) */
+    fun polestarPress(prev: Boolean): String? {
+        if (if (prev) !polestarCanPrev() else !polestarCanSkip()) return PolestarSkip.cantLine(prev, polestarCanSkip())
+        val sent = onPolestarSkip?.invoke(prev) ?: false
+        return if (sent) null else PolestarSkip.NO_STEP_LINE
+    }
+    /**
+     * the add-on's answer {"type":"pskip"}: pk3 - the undo count at once (its u, else +1 / -1 for an ok press: Previous is there right
+     * after a Skip, no wait for the next step doc); a refused press says why on Home's map when [note] (the host: not a wheel press)
+     */
+    fun onPolestarSkipAnswer(d: org.json.JSONObject, note: Boolean = true) {
+        val ok = d.optBoolean("ok")
+        psStep?.let { st ->
+            val u = if (d.has("u")) d.optInt("u", -1) else null
+            val n = PolestarSkip.undoAfter(d.optString("op"), ok, u, st.undo)
+            if (n != st.undo) { psStep = st.withUndo(n); postInvalidate() }
+        }
+        if (ok || !note) return
+        PolestarSkip.refusedLine(d.optString("why", ""))?.let { note(it) }
+    }
     /** ps3: an explicit focus pick outside the Map list (Home, the World map, the Quests room): the light blue row lets go */
     fun psRelease() { if (Settings.questTracking == "polestar") psSetPicked(false) }   // (another mode: the login's default kept)
     /** ps3: the player cleared quest [id]'s focus in another room (Remove Focus): the default push never takes it back */
@@ -3554,6 +3610,7 @@ class MapView(context: Context) : View(context) {
     private fun psChanged() {
         cards.clear()
         orderTracked(trackedIds())
+        rebuildItems()                                   // the light blue row may stand for its quest now, or no longer (PolestarMerge)
         deriveFocusTarget(map)
         deriveQuestAreas(map)
         firedFocus = shownFocus()
@@ -3561,12 +3618,39 @@ class MapView(context: Context) : View(context) {
         psSyncTick()
         invalidate()
     }
-    /** the light blue row's card: Polestar's step title, the goal's words under it */
+    // ps4 (ps-noloc-guide)'s "row picked" for the add-on is [polestarHolds] above (int/1429: one signal; Map.lua WC.pnav.psOn, which
+    // PadMap's starter item on Y reads too)
+    /** ps4: the item PadMap armed on Y (its padmap doc's qitem id, 0 none): the light blue row's Y glyph shows only when it is ours */
+    var qitemArmed = 0
+        set(v) {
+            if (field == v) return
+            field = v; cards.remove(MapList.POLESTAR)
+            onShownFocusChanged?.let { cb -> post { cb() } }
+            postInvalidate()
+        }
+    /** the quest the picked light blue row stands for ([PolestarMerge]; the user, 2026-11-11: "consolidate that into one"), 0 none */
+    private fun psMerged(): Int = PolestarMerge.quest(psShown(), psPicked, psStep?.quest ?: 0) { questById.containsKey(it) }
+    /** the QUEST the cursor's key stands for on the map: the merged light blue row is its quest ([PolestarMerge.key]), else the key */
+    private fun selQuest(): Int = PolestarMerge.key(cursor.sel, psMerged())
+    /** the light blue row's card: Polestar's step title, the goal's words under it; merged (the user, 2026-11-11: "show that quests
+     *  objectives instead of 'complete that quest'"): the quest's own title and live objectives, in Polestar's light blue */
     private fun psCard(): UiKit.QuestCard? {
+        cards[MapList.POLESTAR]?.let { return it }
         val st = psStep ?: return null
-        val title = st.title ?: st.words ?: return null
-        val words = st.words?.takeIf { it != title }
-        return UiKit.QuestCard(title, 0, psBlue, listOfNotNull(words?.let { it to false }), focused = psHolds())
+        val q = psMerged()
+        val base = if (q > 0) (tracked.firstOrNull { it.optInt("id", 0) == q } ?: questById[q])?.let { cardFor(it) } else null
+        val ct = PolestarMerge.content(if (base != null) q else 0, st.title, st.words, base?.title, base?.objectives ?: emptyList())
+            ?: return null
+        // ps4 (the user, 2026-11-11: "My current polestar objective does not give any direction on where to go"): an item-started
+        // quest with the item in the bags reads "Use <item>" with its icon, and Y's glyph once PadMap has armed it on Y (m132)
+        val card = if (ct.merged && base != null)
+            UiKit.QuestCard(ct.title, base.level, psBlue, ct.lines, turnIn = base.turnIn, number = base.number, focused = true)
+        else if (st.useItem)
+            UiKit.QuestCard(st.title ?: st.useLine(), 0, psBlue, listOf(st.useLine() to false), focused = psHolds(),
+                useIcon = st.itemIcon, useGlyph = if (psHolds() && qitemArmed == st.itemId) glyph("y") else null)
+        else UiKit.QuestCard(ct.title, 0, psBlue, ct.lines, focused = psHolds())
+        cards[MapList.POLESTAR] = card
+        return card
     }
 
     // ---- QUESTTRAIL'S STEP AS THE FOCUS (b-qtrail-focus; the user, test51: "Using quest trail, the focused quest should be overwritten
@@ -3825,7 +3909,12 @@ class MapView(context: Context) : View(context) {
         }
         val current = listOfNotNull(m?.optString("subzone", "")?.ifEmpty { null }, m?.optString("zone", "")?.ifEmpty { null })
         val groups = MapList.groups(entries, questsPlv, current, ownHeaders)
-        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups, polestar = psShown()) { z -> openTabs[z] == true }
+        val merged = psMerged()
+        // pk2 (the user, 2026-11-12: "Open stays reachable on the quest's own row"): the merged quest's own row stays (PolestarMerge.listMerged)
+        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups, polestar = psShown(),
+            merged = PolestarMerge.listMerged(merged)) { z -> openTabs[z] == true }
+        // the user, 2026-11-11 ("consolidate that into one"): a selection on the quest the light blue row now stands for moves onto it
+        if (merged > 0) cursor.moved(merged, MapList.POLESTAR, listKeys())
     }
 
     private fun toggleTab(key: Int) {
@@ -3845,10 +3934,11 @@ class MapView(context: Context) : View(context) {
      * "they are just keeping the map placement where ever it just was instead of transitioning to the player location")
      */
     private fun landOn(key: Int) {
+        val q = PolestarMerge.key(key, psMerged())       // the merged light blue row lands as its quest
         when {
             key == MapList.ME -> centreOnPlayer()
-            key > 0 && key in trackedNo && selectedPoint() != null -> revealSelected()
-            key > 0 -> centreOnPlayer()
+            q > 0 && q in trackedNo && selectedPoint() != null -> revealSelected()
+            q > 0 -> centreOnPlayer()
         }
     }
 
@@ -4043,7 +4133,7 @@ class MapView(context: Context) : View(context) {
      * Worked out again when the quest, the map document or the quests document changes (not every frame).
      */
     private fun cursorRoute(): CursorRoute.Route? {
-        val q = cursor.sel
+        val q = selQuest()                              // the merged light blue row: its quest's line
         if (!cursor.shown || q <= 0) return null
         return routeFor(q)
     }
@@ -4256,9 +4346,16 @@ class MapView(context: Context) : View(context) {
     /** Polestar's goal: the focused quest's nearest still-needed goal here, else its nearest zone spot - (uiMapID, x, y), or null */
     fun polestarGoal(): DoubleArray? {
         if (Settings.questTracking != "polestar") return null
-        if (psHolds()) psStep?.let { st -> if (st.map != 0 && !st.x.isNaN() && !st.y.isNaN()) return doubleArrayOf(st.map.toDouble(), st.x, st.y) }
+        // ps3: a held step with no spot of its own sends no goal (no GO, no route): Polestar guides it itself, the quest's goals are not it
+        // ps4 (the user, 2026-11-11: "My current polestar objective does not give any direction on where to go"; the approved fallback):
+        // ... unless its quest is in the log - then that quest's objective areas, exactly as a focused quest's; Polestar's point wins
+        var q = focusQid
+        if (psHolds()) when (val g = PolestarStep.guide(psStep) { questById.containsKey(it) }) {
+            is PolestarStep.Guide.Point -> return doubleArrayOf(g.map.toDouble(), g.x, g.y)
+            is PolestarStep.Guide.Quest -> q = g.q
+            PolestarStep.Guide.None -> return null
+        }
         val m = map ?: return null
-        val q = focusQid
         if (q <= 0 || m.optInt("onTaxi", 0) == 1) return null
         val mapId = m.optInt("mapID", 0)
         val px = m.optDouble("x", Double.NaN); val py = m.optDouble("y", Double.NaN)
@@ -5213,7 +5310,10 @@ class MapView(context: Context) : View(context) {
         if (stops.size > 1) pairs.add(glyph("up") to "Select")
         when {
             at == MapList.ME -> if (onPlayerMenu != null) pairs.add(glyph("a") to "Menu")
-            at == MapList.POLESTAR -> pairs.add(glyph("a") to (if (psHolds()) "Unfocus" else "Focus"))
+            at == MapList.POLESTAR -> {
+                // pk1 (the user, 2026-11-12): X Skip, Y Previous (only while a skip is left to undo), merged or not
+                for ((b, w) in PolestarSkip.rowHints(psHolds(), polestarCanSkip(), polestarCanPrev())) pairs.add(glyph(b) to w)
+            }
             MapList.isGroup(at) -> pairs.add(glyph("a") to (if (openTabs[groupZone(at)] == true) "Close" else "Open"))
             at > 0 && at in MapList.untracked(items) -> {
                 if (onTrackFocusQuest != null) pairs.add(glyph("a") to "Track & focus")
@@ -5245,10 +5345,11 @@ class MapView(context: Context) : View(context) {
 
     /** where the selected quest is on this map (its objective, or its turn-in when ready), or null */
     private fun selectedPoint(): Marker? {
-        if (!cursor.shown || cursor.sel == 0) return null
-        for (mk in mkMid) if (mk.qid == cursor.sel && mk.shape == SH_OBJECTIVE) return mk
-        for (mk in mkTurnIn) if (mk.qid == cursor.sel) return mk
-        for (q in qdbSpots) if (q.lead && q.qid == cursor.sel) return Marker(q.x, q.y, if (q.turnIn) SH_TURNIN else SH_OBJECTIVE, q.qid)
+        val sq = selQuest()                              // the merged light blue row: its quest's point
+        if (!cursor.shown || sq <= 0) return null
+        for (mk in mkMid) if (mk.qid == sq && mk.shape == SH_OBJECTIVE) return mk
+        for (mk in mkTurnIn) if (mk.qid == sq) return mk
+        for (q in qdbSpots) if (q.lead && q.qid == sq) return Marker(q.x, q.y, if (q.turnIn) SH_TURNIN else SH_OBJECTIVE, q.qid)
         return null
     }
 
@@ -5395,18 +5496,24 @@ class MapView(context: Context) : View(context) {
             invalidate(); return MapCursor.Do.Nothing
         }
         // ps3: while the light blue row holds it is the focused row (A on the game's old quest focuses it, A on the row lets go)
-        val d = cursor.key(k, listKeys(), if (psHolds()) MapList.POLESTAR else focusQid, filterOpen, MapList.untracked(items))
+        // pk1 (the user, 2026-11-12: "X Skip, Y Previous"): the row's X skips Polestar's step, its Y undoes the last skip - merged
+        // with a quest too (that quest's Track / Open of the 2026-11-11 merge leave X and Y)
+        val d = cursor.key(k, listKeys(), if (psHolds()) MapList.POLESTAR else focusQid, filterOpen, MapList.untracked(items),
+            psSkip = PolestarSkip.canSkip(psShown(), psStep), psPrev = PolestarSkip.canPrev(psShown(), psStep))
         when (d) {
             MapCursor.Do.Show -> { listShow(cursor.sel); landOn(cursor.sel) }
             is MapCursor.Do.Select -> {
                 listShow(d.id); landOn(d.id)
                 // the quest box follows the list's quest while the cursor is on the list (the user's correction, 2026-10-17)
-                if (panelId != 0 && d.id > 0 && questById.containsKey(d.id) && d.id != panelId) {
-                    panelId = d.id; panelScroll = 0f; panelContentH = 0f; armedId = 0
+                val pq = PolestarMerge.key(d.id, psMerged())     // onto the merged light blue row: its quest's box
+                if (panelId != 0 && pq > 0 && questById.containsKey(pq) && pq != panelId) {
+                    panelId = pq; panelScroll = 0f; panelContentH = 0f; armedId = 0
                 }
             }
             MapCursor.Do.PlayerMenu -> openPlayerMenu()
             MapCursor.Do.Polestar -> psToggle()
+            MapCursor.Do.PsSkip -> polestarSkip(prev = false)
+            MapCursor.Do.PsPrev -> polestarSkip(prev = true)
             is MapCursor.Do.Toggle -> toggleTab(d.key)
             is MapCursor.Do.Track -> onTrackFocusQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
             is MapCursor.Do.Watch -> onTrackQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
@@ -5459,7 +5566,7 @@ class MapView(context: Context) : View(context) {
         // back down: its zone's tab opened, so the cursor can stay on it there
         if (!on) questById[id]?.optString("zone", "")?.takeIf { it.isNotEmpty() }?.let { openTabs[it] = true }
         lastQuests?.let { applyQuests(it) }
-        if (cursor.shown && cursor.sel == id) { listShow(id); revealSelected() }
+        if (cursor.shown && selQuest() == id) { listShow(cursor.sel); revealSelected() }
         invalidate()
     }
 
@@ -5561,7 +5668,7 @@ class MapView(context: Context) : View(context) {
             QuestTier.DIFFICULT -> Theme.questYellow
             QuestTier.VERY_DIFFICULT -> Theme.questOrange
             QuestTier.IMPOSSIBLE -> Theme.questRed
-            QuestTier.UNKNOWN -> Theme.gold
+            QuestTier.UNKNOWN -> Theme.gameGold
         }
         val objs = ArrayList<Pair<String, Boolean>>()
         e.optJSONArray("obj")?.let { arr ->
@@ -5761,12 +5868,14 @@ class MapView(context: Context) : View(context) {
         val winBot = y0 + gh - (if (more > 0) lineO else 0f)
         if (above > 0) c.drawText(Tr.t("$above more above"), x + ROW_PAD_X, y0 + lineO - 10f, dp)
         // THE TOP SPOT, where Home's flying card lands (see [morph]): the first tracked quest's row as the list puts it once settled
-        val ti = list.indexOfFirst { it is MapList.Item.Tracked }
+        // (merged, the user 2026-11-11: the light blue row is the focused quest's one row, so Home's card lands on it)
+        val psOne = psMerged() > 0
+        val ti = if (psOne) list.indexOfFirst { it is MapList.Item.Polestar } else list.indexOfFirst { it is MapList.Item.Tracked }
         if (ti >= listFirst && ti >= 0) {
-            val e0 = tracked.firstOrNull { it.optInt("id", 0) == list[ti].key }
-            if (e0 != null) {
+            val h0 = if (psOne) itemH(list[ti]) else tracked.firstOrNull { it.optInt("id", 0) == list[ti].key }?.let { rowContentH(it) }
+            if (h0 != null && h0 > 0f) {
                 val t0 = winTop + at[ti] - at[listFirst] + (if (isSel(list[ti])) SEL_GAP else 0f)
-                flyLand.set(x, t0, x + w, t0 + rowContentH(e0))
+                flyLand.set(x, t0, x + w, t0 + h0)
             }
         }
         val stops = listKeys()
@@ -5775,7 +5884,7 @@ class MapView(context: Context) : View(context) {
         // the FOCUSED quest is drawn last, so while it slides up to the top spot it passes over the others
         for (pass in 0..1) for (i in 0 until n) {
             val it = list[i]
-            val front = it is MapList.Item.Tracked && it.id == shownFocus()
+            val front = if (psOne) it is MapList.Item.Polestar else it is MapList.Item.Tracked && it.id == shownFocus()
             if ((pass == 1) != front) continue
             if (fly && i == ti && front) continue            // in flight: drawFlight draws it
             val pos = rowPos[it.key] ?: at[i]
@@ -5813,17 +5922,19 @@ class MapView(context: Context) : View(context) {
      */
     private fun drawFlight(c: Canvas) {
         val card = morphCard ?: return
-        if (flyLand.isEmpty || tracked.isEmpty()) return
-        val e = tracked[0]
-        if (e.optInt("id", 0) != shownFocus()) return
+        if (flyLand.isEmpty) return
+        // merged (the user, 2026-11-11: "consolidate that into one"): the light blue card flies, Home's card and the list's one row
+        val ps = if (psMerged() > 0) psCard() else null
+        val e = if (ps == null) tracked.firstOrNull() ?: return else null
+        if (e != null && e.optInt("id", 0) != shownFocus()) return
         val a = if (morphOpening) morphK else 1f - morphK         // 1 = in the list's top spot
         val ox = hostX(); val oy = hostY()
         // UI Art's flight: the box AND the type size eased together, Home's CARD_HOME_SCALE to the list's 1
         flyTmp.set(card.left - ox + (flyLand.left - (card.left - ox)) * a, card.top - oy + (flyLand.top - (card.top - oy)) * a,
                    card.right - ox + (flyLand.right - (card.right - ox)) * a, card.bottom - oy + (flyLand.bottom - (card.bottom - oy)) * a)
         val sc = UiKit.CARD_HOME_SCALE + (1f - UiKit.CARD_HOME_SCALE) * a
-        drawRow(c, e, flyTmp, sc)
-        if (cursor.shown && cursor.sel == e.optInt("id", 0)) UiKit.focus(c, flyTmp)
+        if (ps != null) UiKit.questCard(c, flyTmp, ps, scale = sc) else if (e != null) drawRow(c, e, flyTmp, sc)
+        if (cursor.shown && cursor.sel == (e?.optInt("id", 0) ?: MapList.POLESTAR)) UiKit.focus(c, flyTmp)
     }
 
     // ---- FOCUS: the Quests room's "Show on map" (requested by the quests session).
@@ -6674,7 +6785,7 @@ class MapView(context: Context) : View(context) {
                 val np = UiKit.bodyPaint(18f, Color.rgb(230, 210, 160)).apply { setShadowLayer(3f, 0f, 0f, Color.BLACK) }
                 c.drawText(Tr.t("QuestTrail's arrow is not showing"), left + 16f, top + 30f, np)
             }
-        } else if (poleOn && !compact && !morphOn && !px.isNaN() && !py.isNaN() && (route == null || psHolds() || cursor.sel == qtOrGameFocus()) && run {
+        } else if (poleOn && !compact && !morphOn && !px.isNaN() && !py.isNaN() && (route == null || psHolds() || selQuest() == qtOrGameFocus()) && run {
                 // the user, 2026-11-11 ("the polestar option ... should also show the path on the bottom map"): Polestar's own path
                 // stands alone - it was drawn only while DS Forever's own route existed too, so with none of ours it never showed
                 val fb = top + fh - (if (hintsOn()) HINT_BAND else 0f)
@@ -6685,7 +6796,7 @@ class MapView(context: Context) : View(context) {
                 ok
             }) {
             pathFor = 0
-        } else if (route != null && cursor.sel == shownFocus() && arrivedInFocusArea()) {
+        } else if (route != null && selQuest() == shownFocus() && arrivedInFocusArea()) {
             pathFor = 0                       // test60: inside the focused quest's area - arrived, no line, no flags
         } else if (route != null) {
             // Polestar chosen but not routing: the app's own route, and why
@@ -6703,7 +6814,8 @@ class MapView(context: Context) : View(context) {
             c.clipRect(left, top, left + fw, fb)
             val rr = rect
             // Vanilla: the leg bent round hostile ground (b-danger-layer); its last stretch is the line's own (words, edge arrow)
-            val leg = dangerLeg(cursor.sel, route)
+            val rq = selQuest()                           // the merged light blue row: its quest
+            val leg = dangerLeg(rq, route)
             // THE CHECKPOINTS (the user on test45: "At every bend I want a checkpoint flag which the arrow leads to. After the flag,
             // have some low-opacity dots towards the next checkpoint"): the bends round danger, then the step's own point (a gate,
             // a tram, a dock, a flight master, the edge; the goal ends it), then where the way goes on beyond it. The stretch to the
@@ -6716,13 +6828,13 @@ class MapView(context: Context) : View(context) {
             val yd = if (rr != null && rr.valid) (leg?.let { DangerGrid.yards(it, rr.width, rr.height) }
                 ?: CursorRoute.yards(px, py, route.x, route.y, rr.width, rr.height).toDouble()).toInt() else 0
             var fx = sx(px); var fy = sy(py)
-            val unc = if (leg != null) uncheckedOf(cursor.sel) else (false to false)
+            val unc = if (leg != null) uncheckedOf(rq) else (false to false)
             for ((i, cp) in cps.withIndex()) {
                 val dim = CHECKPOINT_DIM.getOrElse(i) { 0f }.let { if (i == stepAt) max(it, CHECKPOINT_DIM.last()) else it }
                 if (dim <= 0f) break
                 val tx = sx(cp[0]); val ty = sy(cp[1])
                 val plain = (i == 0 && unc.first) || (i == stepAt && unc.second)
-                if (i == stepAt && !plain) drawCursorPath(c, cursor.sel, route, yd, fx, fy, tx, ty, left, top, left + fw, fb, dim)
+                if (i == stepAt && !plain) drawCursorPath(c, rq, route, yd, fx, fy, tx, ty, left, top, left + fw, fb, dim)
                 else drawStretch(c, fx, fy, tx, ty, if (i == stepAt) max(dim, 0.8f) else dim, unchecked = plain)
                 fx = tx; fy = ty
             }
@@ -6736,7 +6848,7 @@ class MapView(context: Context) : View(context) {
                 drawFlag(c, sx(cp[0]), sy(cp[1]), rank = i, alpha = if (i == 0) nearFade(cp, px, py) else 1f)
             }
             // QuestTrail's line straight to its point: its dangerous stretch warned
-            if (leg == null && qtOn && cursor.sel == qtOrGameFocus()) dangerWarn(c, listOf(doubleArrayOf(px, py), doubleArrayOf(route.x, route.y)), "QuestTrail", ::sx, ::sy)
+            if (leg == null && qtOn && rq == qtOrGameFocus()) dangerWarn(c, listOf(doubleArrayOf(px, py), doubleArrayOf(route.x, route.y)), "QuestTrail", ::sx, ::sy)
             c.restoreToCount(save)
         } else pathFor = 0
         // ---- HOME'S SMALL MAP: the focused quest's checkpoints too (test48: "I cannot see the checkpoint flags when the map module
@@ -6938,6 +7050,20 @@ class MapView(context: Context) : View(context) {
                 if (bubbleN * 2 + 2 > bubbleXY.size) { bubbleXY = bubbleXY.copyOf(bubbleXY.size * 2); bubbleQ = bubbleQ.copyOf(bubbleQ.size * 2) }
                 bubbleXY[2 * bubbleN] = cxp; bubbleXY[2 * bubbleN + 1] = cyp; bubbleQ[bubbleN] = qid; bubbleN++
             } else drawIcon(c, Ic.QUEST_DONE, cxp, cyp, QUEST_ICON_PX)
+        }
+
+        // ---- POLESTAR'S GOAL (pn4; the user, 2026-11-11: "a polestar objective that is not in my bag and not telling me where to go"):
+        // a held step with no quest focused through it (an accept / talk / go-to step) had no mark on either map; now the compass's own
+        // objective disc with its "!" at Polestar's waypoint ([PolestarNav.goalMark]), and on Home's small map pinned just inside the
+        // rim on the way to it when it is off the field (as the next checkpoint flag), so the way always shows
+        if (!morphOn) PolestarNav.goalMark(psHolds(), psStep, map?.optInt("mapID", 0) ?: 0, psFocus(), rect)?.let { g ->
+            val gx = sx(g[0]); val gy = sy(g[1])
+            val nb = top + (if (compact) compactTop() else 0f)
+            if (gx in left..(left + fw) && gy in nb..(top + fh)) UiKit.questDisc(c, gx, gy, BUBBLE_ART, focus = true)
+            else if (compact && !px.isNaN() && !py.isNaN())
+                rimPoint(sx(px), sy(py), gx, gy, left + RIM_FLAG_IN, nb + RIM_FLAG_IN, left + fw - RIM_FLAG_IN, top + fh - RIM_FLAG_IN)
+                    ?.let { UiKit.questDisc(c, it[0], it[1], BUBBLE_ART * 0.8f, focus = true) }
+            else if (onField(gx, gy)) UiKit.questDisc(c, gx, gy, BUBBLE_ART, focus = true)
         }
 
         // ---- THE CORPSE's gravestone: drawn with the rim arrow below (the stone OR the arrow); here only when the player's own
@@ -7216,8 +7342,9 @@ class MapView(context: Context) : View(context) {
 
         // the selected quest's bubble wears the round ring (UI Art: round things get round cursors), touch or controller;
         // its list row is highlighted in drawTracker
-        if (!compact && !morphOn && cursor.shown && cursor.sel != 0) {
-            for (i in 0 until bubbleN) if (bubbleQ[i] == cursor.sel)
+        val ringQ = selQuest()                          // the merged light blue row rings its quest's bubble
+        if (!compact && !morphOn && cursor.shown && ringQ > 0) {
+            for (i in 0 until bubbleN) if (bubbleQ[i] == ringQ)
                 UiKit.focusRing(c, bubbleXY[2 * i], bubbleXY[2 * i + 1], BUBBLE_ART * 0.32f + 10f)
         }
 

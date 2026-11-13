@@ -24,7 +24,14 @@ object PadMapModel {
 
     /** a spell a combat button names: its id and icon when the game knows the name; [item] (PadMap m32): an ITEM it keeps for outside
      *  fights ("/use [nocombat] item:<id>"), [id] then the item's id */
-    data class Ref(val id: Int?, val name: String, val icon: Int, val item: Boolean = false)
+    /** [kind] (m127): Smart Y's pick's source - food / drink / both / buff / or / manners (a Manners pick shows as Manners'); null elsewhere */
+    /** [layer] (PadMap m132, THE FIGHT-ONLY LAYER - the user, 2026-11-11: "Build a fight-only layer"): a combat button's In combat entry
+     *  that is a whole-button thing - "command" / "bind" / "item" / "mount" - with [key] (the command's / binding's key, "i:<id>" /
+     *  "m:<id>"; no [id], so nothing reads it as a spell); null = a spell */
+    data class Ref(val id: Int?, val name: String, val icon: Int, val item: Boolean = false, val kind: String? = null,
+                   val layer: String? = null, val key: String? = null) {
+        val manners: Boolean get() = kind == "manners"
+    }
 
     /** [combat] / [otherwise]: a COMBAT button's two spells ([otherwise] null = nothing out of combat); [fight]: the spell a base X / Y / A
      *  (FIXED) casts in a fight (PadMap m7, the user 2026-10-01 "Yes, per button"; no macro: the companion's own secure button) */
@@ -156,7 +163,7 @@ object PadMapModel {
 
     private fun count(o: JSONObject?): MacroCount? = o?.let { MacroCount(it.optInt("n", 0), intOrNull(it, "max")) }
     private fun ref(o: JSONObject?): Ref? = o?.let { r ->
-        textOrNull(r, "n")?.let { Ref(intOrNull(r, "id"), it, r.optInt("i", 0), r.optBoolean("item", false)) }
+        textOrNull(r, "n")?.let { Ref(intOrNull(r, "id"), it, r.optInt("i", 0), r.optBoolean("item", false), layer = textOrNull(r, "t"), key = textOrNull(r, "key")) }
     }
 
     /** The `padmap` message; null when it is not one. */
@@ -203,11 +210,13 @@ object PadMapModel {
             },
             smartBuffs = SmartYModel.parse(m.optJSONObject("sb")),
             qitem = m.optJSONObject("qitem")?.let { o -> Ref(intOrNull(o, "id"), textOrNull(o, "n") ?: "Quest item", o.optInt("i", 0), item = true) },
-            smartY = m.optJSONObject("smarty")?.let { o -> textOrNull(o, "n")?.let { Ref(intOrNull(o, "id"), it, o.optInt("i", 0), item = true) } },
+            // m127: the pick's kind kept (the verified report: dropped here, a Manners pick looked like Smart Y's own)
+            smartY = m.optJSONObject("smarty")?.let { o -> textOrNull(o, "n")?.let { Ref(intOrNull(o, "id"), it, o.optInt("i", 0), item = true, kind = textOrNull(o, "k")) } },
             fish = m.optJSONObject("fish")?.let { o -> textOrNull(o, "n")?.let { Ref(intOrNull(o, "id"), it, o.optInt("i", 0)) } },
             formFights = objects(m.optJSONArray("ff")).mapNotNull { o ->
                 val f = o.optInt("f", 0); val p = o.optInt("p", 0)
-                val r = textOrNull(o, "n")?.let { Ref(intOrNull(o, "id"), it, o.optInt("i", 0)) }
+                // PadMap m141 (PadTabCtl p43): a form's fight-layer command / item / mount carries `t` / `key` (no id)
+                val r = textOrNull(o, "n")?.let { Ref(intOrNull(o, "id"), it, o.optInt("i", 0), layer = textOrNull(o, "t"), key = textOrNull(o, "key")) }
                 if (f > 0 && p in 1..8 && r != null) FormFight(f, p, r) else null
             },
             faceKeys = m.optJSONObject("face")?.optJSONObject("keys")?.let { k ->
@@ -425,11 +434,14 @@ object PadMapModel {
         /** p29 (f-combat-forms): the In combat tab's chosen form (its spell id; null = Caster) and the form row's cursor (0 = Caster) */
         val form: Int? = null,
         val fcur: Int? = null,
-        /** PARTY MODE's tab (PadTabCtl p33, PARTY_BUILD.md 4.4): the left page's row (1..12), the focus ("rows" / "right"), the right
-         *  page's row (0-based) */
-        val ppos: Int = 2,
-        val pfocus: String = "rows",
+        /** PARTY MODE's tab (PadTabCtl p37, party_design.md B): the place on the diamonds (the router's 1..8: 1-4 the D-pad's left /
+         *  up / right / down, 5 X, 6 Y, 7 B, 8 A), the focus ("tabs" / "sets" / "touch" / "diam" / "right"), the right page's row
+         *  (0-based), the layer on show (1 base, 2 ZL, 3 ZR, 4 both), the Touch row's tile (1 Touch, 2 Hold) */
+        val ppos: Int = 8,
+        val pfocus: String = "diam",
         val pright: Int = 0,
+        val pset: Int = 1,
+        val ptouch: Int = 1,
     )
     /** the button Move carries: its set (1-4), its place (1-8), its bar page */
     data class Carry(val set: Int, val pos: Int, val page: Int)
@@ -463,9 +475,11 @@ object PadMapModel {
             rad = c.optJSONArray("rad")?.let { a -> List(minOf(8, a.length())) { i -> a.optInt(i, 0) } } ?: emptyList(),
             form = intOrNull(c, "form")?.takeIf { it > 0 },
             fcur = intOrNull(c, "fcur"),
-            ppos = c.optInt("ppos", 2).coerceIn(1, 12),
-            pfocus = c.optString("pfocus", "rows").ifEmpty { "rows" },
+            ppos = c.optInt("ppos", 8).coerceIn(1, 8),
+            pfocus = c.optString("pfocus", "diam").ifEmpty { "diam" },
             pright = c.optInt("pright", 0).coerceAtLeast(0),
+            pset = c.optInt("pset", 1).coerceIn(1, 4),
+            ptouch = c.optInt("ptouch", 1).coerceIn(1, 2),
         )
     }
 
