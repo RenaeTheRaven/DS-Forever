@@ -142,7 +142,11 @@ class DsForeverScreen(private val context: Context) {
     /** the launcher came back to the front: the bottom screen is DS Forever's again */
     fun show() { hidden = false; update() }
     /** the launcher went away: Cocoon's bottom grid is the user's (the game itself is paused by the launcher then) */
-    fun hide() { hidden = true; shown?.dismiss(); shown = null }
+    fun hide() {
+        hidden = true
+        if (shown != null) com.jrees.wowcompanion.DiagLog.event("app", "bottom screen hidden (the launcher went to the background)")   // #147
+        shown?.dismiss(); shown = null
+    }
     private var hidden = false
 
     /**
@@ -157,6 +161,8 @@ class DsForeverScreen(private val context: Context) {
     private val traffic = object : Runnable {
         override fun run() {
             if (!running || !gameOn) return
+            // issues #16 / #84 / #147: does the game screen hold the window focus (else every press goes to another window)
+            (context as? Activity)?.let { a -> com.jrees.wowcompanion.PadDiag.focusNote(a.hasWindowFocus(), shown?.typing == true) }
             val uid = android.os.Process.myUid()
             val rx = android.net.TrafficStats.getUidRxBytes(uid); val tx = android.net.TrafficStats.getUidTxBytes(uid)
             if (lastRx >= 0 && rx >= 0) {
@@ -188,19 +194,59 @@ class DsForeverScreen(private val context: Context) {
     private fun update() {
         if (!running || hidden) return
         val game = gameDisplay()
-        val target = dm?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)?.firstOrNull { it.isValid && it.displayId != game }
-        if (target == null) { shown?.dismiss(); shown = null; Log.i(TAG, "no other screen than the game's ($game)"); return }
+        val all = dm?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)?.filter { it.isValid }.orEmpty()
+        val screens = all.map { Screen(it.displayId, builtIn(it), it.name ?: "") }
+        val pickId = pickScreen(screens, game, shown?.display?.displayId)
+        val target = all.firstOrNull { it.displayId == pickId }
+        // issue #196: every screen seen, so a docked report shows what Android offered and what was picked
+        Log.i(TAG, "screens ${screens.joinToString { "${it.id}:${if (it.builtIn == null) "?" else if (it.builtIn) "in" else "ext"}:${it.name}" }} game $game -> $pickId")
+        if (target == null) {
+            if (shown != null) com.jrees.wowcompanion.DiagLog.event("app", "bottom screen gone: no other screen than the game's ($game)")   // #147
+            shown?.dismiss(); shown = null; Log.i(TAG, "no other screen than the game's ($game)"); return
+        }
         if (shown?.display?.displayId == target.displayId) return
         shown?.dismiss()
-        shown = try { HostPresentation(context, target) { rebuild() }.also { it.show(); it.board(boardWanted) } } catch (t: Throwable) { Log.w(TAG, "presentation: ${t.message}"); null }
+        shown = try { HostPresentation(context, target) { rebuild() }.also { it.show(); it.board(boardWanted) } } catch (t: Throwable) {
+            Log.w(TAG, "presentation: ${t.message}")
+            com.jrees.wowcompanion.DiagLog.event("app", "bottom screen failed to open on display ${target.displayId}: ${t.javaClass.simpleName}")   // #147
+            null
+        }
         Log.i(TAG, "DS Forever on display ${target.displayId} (game on $game)")
     }
 
     /** the host asked to start over (its recreate, e.g. after a permission): a fresh Presentation */
     private fun rebuild() { main.post { shown?.dismiss(); shown = null; update() } }
 
+    /**
+     * issue #196 ("When I connect the Thor to the TV ... it moves the bottom screen to the TV"): since Android 12 the PRESENTATION
+     * list puts EXTERNAL displays (HDMI / USB-C) BEFORE the built-in ones, so the first entry was the TV once one was plugged in, and
+     * the display listener moved DS Forever there. A built-in panel's type through Display.getType() (hidden, read by reflection);
+     * null = unknown, then the name decides (an "HDMI" / "external" / "DisplayPort" / "USB" / "wireless" name = not built in).
+     */
+    private fun builtIn(d: Display): Boolean? {
+        val type = runCatching { Display::class.java.getMethod("getType").invoke(d) as Int }.getOrNull()
+        if (type != null) return type == TYPE_INTERNAL
+        return if (EXTERNAL_NAME.containsMatchIn(d.name ?: "")) false else null
+    }
+
     companion object {
         const val TAG = "DSFORK"
+        /** android.view.Display.TYPE_INTERNAL (hidden constant) */
+        const val TYPE_INTERNAL = 1
+        private val EXTERNAL_NAME = Regex("hdmi|external|displayport|usb|wireless|wifi|cast", RegexOption.IGNORE_CASE)
+
+        /** one presentation display as [pickScreen] sees it; builtIn null = unknown */
+        data class Screen(val id: Int, val builtIn: Boolean?, val name: String)
+
+        /**
+         * the bottom screen's display (issue #196), pure for the tests: never the game's; the one already showing DS Forever while it is
+         * still there (a TV plugged in later never takes it away); else a built-in panel, then an unknown one, an external one last.
+         */
+        fun pickScreen(screens: List<Screen>, game: Int, current: Int?): Int? {
+            val others = screens.filter { it.id != game }
+            if (current != null && others.any { it.id == current }) return current
+            return others.minWithOrNull(compareBy<Screen> { when (it.builtIn) { true -> 0; null -> 1; false -> 2 } }.thenBy { it.id })?.id
+        }
         /** the one DS Forever of the launcher's activity (S5) */
         @Volatile var current: DsForeverScreen? = null; private set
         fun begin(activity: Activity) { if (current == null) current = DsForeverScreen(activity).also { it.start() } }
@@ -317,7 +363,8 @@ private class HostPresentation(outer: Context, display: Display, private val onR
      * for its keyboard, and this window is NOT focusable so the game keeps the focus. A touch on a text field makes it focusable for the
      * typing; a touch anywhere else gives the focus back to the game.
      */
-    private var typing = false
+    var typing = false
+        private set
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
@@ -338,6 +385,8 @@ private class HostPresentation(outer: Context, display: Display, private val onR
      * launcher's activity sends them (the user on the Thor, 10-28: the chooser and Update did not answer the controller)
      */
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        // #84 / #147: a press that reaches the bottom window (it holds the focus) never reaches PadFeed or the game
+        com.jrees.wowcompanion.PadDiag.bottomKey(event, typing)
         if (com.jrees.wowcompanion.StartKeys.route(event)) return true
         return super.dispatchKeyEvent(event)
     }

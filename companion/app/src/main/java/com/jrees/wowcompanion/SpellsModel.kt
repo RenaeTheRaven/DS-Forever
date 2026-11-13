@@ -113,6 +113,56 @@ object SpellsModel {
         )
     }
 
+    /** issues #18 / #20 / #31 ("Trying to bind an attack, doesnt show up on bottom screen"; "Any modifier key binding doesn't work"; "i cant
+     *  bind new spells to anything"): the reports carried no word of what the Bind box did, so every bind answer is one log line: the
+     *  answer, where it went, how the add-on read the triggers (probe src / pad / padSrc / game / slotSrc / shift) and what the app's
+     *  own controller reader saw ([app]: raw ms since LT / RT were last held, and the set held within [APP_TRIG_WINDOW_MS] before the ack,
+     *  or "app reader off" when the Cast room's reader has the pad). Raw numbers, no verdict: the ack arrives after the press */
+    data class AppTrig(val readerOn: Boolean, val ltAgoMs: Long?, val rtAgoMs: Long?)
+    const val APP_TRIG_WINDOW_MS = 1500L
+
+    /** a refusal the add-on's box keeps waiting after (Book.lua b50 bindPress: reserved / unsure / form-unknown / dpad bar): the player
+     *  presses again, so the new-spell flow must not go Home on it. Every other answer ends the box */
+    fun bindFinal(r: BindResult): Boolean = r.ok || r.why !in setOf("reserved", "unsure", "form-unknown", "dpad bar")
+
+    /** the new-spell flow's Bind box, step by step. The user (2026-11-12, "Wait for keep/undo"): after a bind took, the box asks keep /
+     *  undo (Book b42 mode "confirm"); the flow must not go Home meanwhile, only once the player keeps it or the box closes.
+     *  WAIT = the box waits for a button (keep going, no timeout of its own); CONFIRM = a bind took, the box's answer is coming / asking
+     *  keep or undo (the app arms a timeout); DONE = the box is over (go Home as before) */
+    enum class BindStep { WAIT, CONFIRM, DONE }
+
+    /** a bind answer (spellsack op "bind"): one that took waits for the box's keep / undo (or its 1.5 s result close); a refusal the box
+     *  keeps waiting after waits; any other refusal ends it */
+    fun bindStepAck(r: BindResult): BindStep = when { r.ok -> BindStep.CONFIRM; bindFinal(r) -> BindStep.DONE; else -> BindStep.WAIT }
+
+    /** a spellsctl while the flow's box is open; [confirming] = a bind took and keep / undo is awaited. null = no change. The add-on's
+     *  own notes (Book b42): bind-kept / bind-cancel / result-closed end it; bind-undone puts the box back to waiting for a button
+     *  ("b removes it and let's you keep binding"). While confirming, the controller let go or the box back on the book (any other
+     *  close) also ends it */
+    fun bindStepCtl(c: Ctl, confirming: Boolean): BindStep? = when {
+        c.note == "bind-kept" || c.note == "bind-cancel" || c.note == "result-closed" -> BindStep.DONE
+        c.note == "bind-undone" -> BindStep.WAIT
+        confirming && (!c.on || c.mode == "book") -> BindStep.DONE
+        else -> null
+    }
+
+    fun bindLogLine(msg: JSONObject, app: AppTrig): String {
+        val p = msg.optJSONObject("pad")
+        val pr = msg.optJSONObject("probe")
+        fun o(j: JSONObject?, k: String): String = if (j != null && j.has(k) && !j.isNull(k)) j.opt(k).toString() else "-"
+        fun recent(a: Long?) = a != null && a <= APP_TRIG_WINDOW_MS
+        val appLt = recent(app.ltAgoMs); val appRt = recent(app.rtAgoMs)
+        val appSet = when { appLt && appRt -> 4; appRt -> 3; appLt -> 2; else -> 1 }
+        val ok = msg.optBoolean("ok", false)
+        val head = if (ok) "ok" else "refused ${msg.optString("why", "failed").ifEmpty { "failed" }}"
+        val at = if (p == null) "-" else "s=${o(p, "s")} pg=${o(p, "pg")} b=${o(p, "b")} p=${o(p, "p")}${if (p.optBoolean("fight", false)) " fight" else ""}"
+        val appPart = if (!app.readerOn) "app reader off"
+            else "app lt=${app.ltAgoMs?.let { "${it}ms" } ?: "-"} rt=${app.rtAgoMs?.let { "${it}ms" } ?: "-"} recent set=$appSet"
+        return "spells bind: ${msg.optString("v", "?")} id=${msg.optInt("id", 0)} $head at $at; read src=${o(pr, "src")} pad=${o(pr, "pad")} " +
+            "padSrc=${o(pr, "padSrc")} game=${o(pr, "game")} over=${o(pr, "over")} slotSrc=${o(pr, "slotSrc")} shift=${o(pr, "shift")} " +
+            "held=${o(pr, "held")}; $appPart"
+    }
+
     fun parseBind(msg: JSONObject): BindResult? {
         if (msg.optString("type") != "spellsack" || msg.optString("op") != "bind") return null
         val id = msg.optInt("id", 0).takeIf { it > 0 } ?: return null
@@ -148,6 +198,9 @@ object SpellsModel {
 
     data class News(val nid: Int, val spellId: Int, val line: Int?, val at: Double?)
     data class Pushed(val nid: Int, val spellId: Int, val slot: Int?, val page: Int?, val at: Double?)
+    /** Spells s8 (PadMap m143, the user 2026-11-12: a prompt to rank up spells already on a bar): a just-learned TOP rank [spellId] whose
+     *  lower ranks sit on [count] buttons (bars, the spell radial, In-combat entries) an A would upgrade; [kept] = picked lower on purpose */
+    data class RankUp(val spellId: Int, val count: Int, val kept: Int)
 
     data class Book(
         val version: String,
@@ -170,6 +223,8 @@ object SpellsModel {
         /** Book b12 (s2): the room's way in and out on the `spells` row: "open" (the Spellbook face), "topen" (the Talents face),
          *  "close" -- secure clicks on the game's own buttons; empty from an older addon */
         val win: Map<String, Int> = emptyMap(),
+        /** Spells s8: the rank-up candidates among the news (empty from an older add-on: no rank-up prompt then) */
+        val rankUps: List<RankUp> = emptyList(),
     )
 
     /** The `spells` message (the whole document, `type` = "spells"); null when it is not one. */
@@ -214,6 +269,10 @@ object SpellsModel {
                 (listOf("open", "close", "topen", "croom", "bfon", "bfoff") + (0 until PV_GROUPS).map { "vb$it" } +
                     (0 until PV_PER).map { "vo$it" }).mapNotNull { k -> if (w.has(k)) w.optInt(k, -1).takeIf { it in 0..39 }?.let { k to it } else null }.toMap()
             } ?: emptyMap(),
+            rankUps = objects(s.optJSONArray("rk")).mapNotNull { o ->
+                val id = o.optInt("id", 0); val n = o.optInt("n", 0)
+                if (id <= 0 || n <= 0) null else RankUp(id, n, o.optInt("kept", 0))
+            },
         )
     }
 

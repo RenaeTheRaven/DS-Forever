@@ -136,7 +136,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var groupFinderView: GroupFinderView
     /** the game's own LFG window was open at the last `gf` document; null until the first (no room jump at start) */
     private var gfWin: Boolean? = null
-    /** the Spellbook room (spells session), and what it brings over the whole screen (the Bind box, the "New spell" card) */
+    /** the Spellbook room (spells session), and what it brings over the whole screen (the Bind box) */
     private lateinit var spellbookView: SpellbookView
     // the CONTROLLER ROOM (spells session's view; Home hosts it in Chat's old spot on the bar, 2026-10-05)
     private lateinit var controllerView: ControllerView
@@ -158,7 +158,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private val svArmed = HashSet<String>()
     private val svSeen = HashSet<String>()                              // the run's FIRST word per table decides (a partial restore later must not)
     private var svRun = Long.MIN_VALUE
-    private val SV_PLAYER_OPS = setOf("combat", "cface", "uncombat", "uncface", "clear", "command", "spell", "move", "bind", "rspell")
+    private val SV_PLAYER_OPS = setOf("combat", "cface", "uncombat", "uncface", "clear", "command", "spell", "move", "bind", "rspell", "rankup")
     private fun svKeptDir() = java.io.File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "DS Forever/settings")
     /** the Professions room (professions session): the book of cards and a crafting page per profession */
     private lateinit var professionsView: ProfessionsView
@@ -619,7 +619,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         homeView.onBHome = { strip.homePressed() }
         partyWire()
         MemWatch.testBuild = runCatching { packageManager.getPackageInfo(packageName, 0).versionName?.contains("-test") == true }.getOrDefault(false)
-        MemWatch.start()                                                  // WCMEM: where the memory goes (the 1.0.17 low-memory kills)
+        MemWatch.start(this)                                              // WCMEM: where the memory goes (the 1.0.17 low-memory kills); 1.0.28: Android's trims
         homeView.onPartyLeaveRest = { partyLeaveHome("a Home module full screen") }
         // Home's controller reader passes each held mask to Interact's pop-up while it shows: its Make Space ring follows the real A
         // press (display only; one getevent). In a room no reader of Home's runs: the ring falls back to Interact's document
@@ -773,6 +773,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             ui.post(signInTick)
         }
         ui.postDelayed(guardTick, 3000L)                                 // the exit guard: no room ever without a working B
+        hostUpAt = SystemClock.elapsedRealtime(); ui.postDelayed(silenceCheck, AddonSilence.AFTER_MS)   // #147: the add-ons' silence
         // the saved login is changed in Settings (the user 2026-10-08: "Change saved login" moves there)
         settingsView.loginSaved = { HomeLoginStore.has(this) }
         settingsView.onLogin = { loginPrompt.open() }
@@ -795,7 +796,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         if (LauncherHooks.pkg != null) {
             startView.firstLabel = "Save your Battle.net login"; startView.firstW = 680f      // the longer words
             sweepTrigger()
-            NativeLogin.onChange = { if (!shell.hostGone()) loginShow() }
+            NativeLogin.onChange = { if (!shell.hostGone()) { loginShow(); downloadLine() } }
         }
         loginWatch = HomeLoginWatch(
             // the games whose login screen can be up: GameNative's and WoW Forever's logs, each with the package that writes it
@@ -819,10 +820,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             onNotNow = { setupDeclined = true; close() }
             onDismiss = { close() }
         }
+        // the user 2026-11-12: the "New spell" card is scrapped (Home's one-at-a-time prompt asks about each learned spell)
         spellsOverlay = SpellsOverlay(this,
-            // the card waits while an NPC window or a game dialog is up
-            blocked = { interactView.visibility == View.VISIBLE || dialogView.visibility == View.VISIBLE },
-            onOpen = { id -> show(Room.SPELLBOOK); spellbookView.openAt(id) },
             // ONE controller reader at a time (home's finding): the Bind box reads the triggers only while the Cast view's is off
             otherReader = { castView.isShown },
             // the Bind box's controller picture, drawn by the Cast room as it draws its own sets (false = no layout yet: stand-ins)
@@ -1785,6 +1784,15 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var docCurrent = false
     /** the first CURRENT document since start was logged (Home's restart check proves documents arrive; batch 24, 2026-10-01) */
     private var docFlowSeen = false
+    /** #147 (1.0.24, "cant get the bottom screen to work"): no add-on document at all while the bottom screen was up, said once */
+    private var hostUpAt = 0L
+    private val silenceCheck = Runnable {
+        if (shell.hostGone()) return@Runnable
+        val gameMs = if (LauncherHooks.gameStartSec > 0) System.currentTimeMillis() - LauncherHooks.gameStartSec * 1000 else 0L
+        AddonSilence.line(docFlowSeen, LauncherHooks.gameUp(), SystemClock.elapsedRealtime() - hostUpAt, gameMs)?.let {
+            Log.w("WCSETUP", it); DiagLog.event("addons", it)
+        }
+    }
     /**
      * The game's bag button handed the controller to Bags: show that room. Bags letting go while its room shows ends it as every room
      * ends: HOME (USER RULING 2026-09-28 23:12, B goes Home everywhere; 2026-10-01 "the EXACT same for all rooms" - no more going back
@@ -1883,7 +1891,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                     // the start screen waits for the game's first current word, as at every start
                     ui.postDelayed({
                         setupBusy = false; setupView.close()
-                        startView.line = if (SetupBridge.seeding) SetupFlow.timesLine(SetupFlow.Step.PREPARE) else "Waiting for the game."; startView.visibility = View.VISIBLE
+                        startView.line = if (SetupBridge.seeding) SetupFlow.timesLine(SetupFlow.Step.PREPARE) else PreLoginTraffic.waitingLine(PreLoginTraffic.WAITING_LINE, NativeLogin.downloading); startView.visibility = View.VISIBLE
                     }, 4_000L)
                 }
             }
@@ -1930,11 +1938,20 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             Log.w("WCSETUP", "add-ons the game had switched off, on again: ${msg.optJSONArray("list")}${if (addonsReloaded) " (reloaded once already)" else ": reloading"}")
             if (!addonsReloaded) { addonsReloaded = true; if (GameInput.reload()) reloadStarted() }
         }
+        // chat33 (#183, "Not able to send messages"): each DS Forever add-on the game did not load (the game's reason), the shared
+        // capture's version (0 = Interact never ran: no room can hold the controller) and the first Lua errors from our files; one a login
+        if (msg.optString("probe") == "ours") oursProbeLine(msg)?.let { (warn, line) ->
+            if (warn) Log.w("WCSETUP", line) else Log.i("WCSETUP", line)
+            DiagLog.event("addons", line)                    // #84 / #147: also in the rolling file (logcat's lines go within minutes)
+        }
         // hub21: the frames standing where the bottom-left bar is (one probe per login)
         if (msg.optString("probe") == "barprobe") Log.i("WCHUB", "bar probe (${msg.optInt("scanned")} frames): ${msg.optJSONArray("frames")}")
         // pad14: WoW's hardware cursor setting before / after DS Forever's one switch to the software cursor
         if (msg.optString("probe") == "cursorsoft") Log.i("WCCURSOR", "gxCursor before ${msg.optString("before")} set ${msg.optString("set")} after ${msg.optString("after")}")
         if (msg.optString("probe") == "partyerr") Log.w("WCPARTY", "party error (${msg.optString("u")}): ${msg.optString("err")}")
+        // prd16 / uf16 (issue #181): what a fight's aura reads gave the top screen's HUD row / target bar, once per kind (WCLOG: the report
+        // carries it)
+        if (msg.optString("probe") == "aurasec") Log.i("WCLOG", AuraProbe.line(msg))
         // chat29: what the game says its chat style is, and what the switch did (the chat bar on the top screen, 2026-11-04)
         if (msg.optString("probe") == "chatstyle") Log.i("WCCHAT", "chat style: now ${msg.optString("now")} default ${msg.optString("default")} " +
             "set ${msg.optString("set")} after ${msg.optString("now2")} ${msg.optString("why")}")
@@ -2363,7 +2380,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // would tap close). Home's finding, AGENT_LOG 9596d1a. The book, the tree and the chosen talent replay: the last known state shows.
             "spellsctl" -> if (current) SpellsModel.parseCtl(msg)?.let { c ->
                 spellbookView.onCtl(c); controllerView.onCtl(c); spellsOverlay.onCtl(c)
-                if (c.note == "bind-cancel" || c.note == "result-closed") newSpellBindDone()   // f-new-spell-prompt: the Bind box closed
+                newSpellBindCtl(c)   // f-new-spell-prompt: the Bind box closed, kept or undid (SpellsModel.bindStepCtl)
                 // the page the controller drives (Book.lua b3 `pg`) picks the room: the game's own Talents / Spellbook buttons bring theirs
                 // up; between the two rooms the page follows the bar (no taps here: see pickRoom)
                 // (the Talents page flag BEFORE the jump: show()'s hand-over reads it, so a page the game moved is not moved again)
@@ -2382,7 +2399,17 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                     }
                 }
             }
-            "spellsack" -> if (current) SpellsModel.parseBind(msg)?.let { spellsOverlay.onBind(it); spellbookView.invalidate(); newSpellBindDone() }
+            "spellsack" -> if (current) {
+                // issues #18 / #20 / #31: every bind answer in the report's log (the add-on's trigger read beside the app's own)
+                if (msg.optString("op") == "bind") {
+                    Log.i("WCHOME", SpellsModel.bindLogLine(msg, spellsOverlay.triggerRead()))
+                }
+                // review of #31's fix: a refusal the box keeps waiting after (dpad bar, reserved, unsure, form-unknown) must not end the
+                // new-spell flow, or the player is sent Home before pressing again; the box's close (bind-cancel / result-closed) and the
+                // 120 s timeout still end it
+                // the user 2026-11-12 ("Wait for keep/undo"): a bind that TOOK does not end it either: the box asks keep / undo first
+                SpellsModel.parseBind(msg)?.let { spellsOverlay.onBind(it); spellbookView.invalidate(); newSpellBindStep(SpellsModel.bindStepAck(it)) }
+            }
             // the Professions room (professions session): the professions, the open one's recipes, the answers to its taps
             "prof" -> msg.optJSONObject("p")?.let { p ->
                 val was = ProfessionsStore.overview?.open
@@ -2464,10 +2491,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             "smartyack" -> if (current && ::settingsView.isInitialized) settingsView.onSmartAck(msg.optString("op"), msg.optBoolean("ok", false), msg.optString("why").ifEmpty { null })
             "padack" -> if (current) PadMapModel.parseAck(msg)?.let {
                 spellbookView.onPadAck(it); controllerView.onPadAck(it)
+                if (it.op == "rankup") newSpellRankAck(it)                      // PadMap m143: the rank-up prompt's A answered
                 // issue #136 (2026-11-11): the toolbar switch refused by the game (a fight, no character) is logged; DpadChoice re-sends it
                 if (!it.ok && (it.op == "dpad-on" || it.op == "dpad-off")) Log.w(HomeView.TAG, "dpad: the game refused ${it.op} (${it.why ?: "no reason"}); kept, sent again")
                 // the player changed an In-combat setting: the backup follows the store from now on (test22 P0)
-                if (msg.optBoolean("ok") && msg.optString("op") in setOf("combat", "cface", "uncombat", "uncface", "clear") &&
+                if (msg.optBoolean("ok") && msg.optString("op") in setOf("combat", "cface", "uncombat", "uncface", "clear", "rankup") &&
                     ::combatKeep.isInitialized) combatKeep.onPlayerChange()
                 // the PLAYER's own change (not the app's default switches, not a restore's puts): the store is the truth from now on
                 if (msg.optBoolean("ok") && msg.optString("op") in SV_PLAYER_OPS && !(::combatKeep.isInitialized && combatKeep.restoringNow()))
@@ -2732,6 +2760,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     fun onDestroy() {
         Theme.removeListener(themeChanged)
         ui.removeCallbacks(guardTick); guardReader?.stop(); guardReader = null
+        ui.removeCallbacks(silenceCheck)
         ArtHarvest.offState(iconArtState)
         IndoorSchedulerStep.stop()
         ui.removeCallbacks(signInTick)
@@ -2766,6 +2795,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // the line back, but never over a newer one (the review: "Reloading the game's interface" must not be overwritten)
             lineBeforeLogin?.let { if (startView.line == lineWritten) startView.line = it }
             lineBeforeLogin = null; lineWritten = null
+            downloadLine()
             // a start screen brought back only for the row goes with it (never during a reload, which owns the screen then)
             if (loginRevealed) { loginRevealed = false; if (reloadAt == 0L) startView.visibility = View.GONE }
             return
@@ -3197,6 +3227,13 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     }
     private var loginRevealed = false
 
+    /** issue #132 (the user's pick 2026-11-12): the plain waiting line says "Game downloading" while the game fetches its files */
+    private fun downloadLine() {
+        if (!::startView.isInitialized) return
+        val l = PreLoginTraffic.waitingLine(startView.line, NativeLogin.downloading)
+        if (l != startView.line) { startView.line = l; startView.invalidate() }
+    }
+
     /**
      * OUT OF THE WORLD, STILL SIGNED IN ([HomeLogin.State.away]: character select after a logout, measured 2026-10-06 - the bottom
      * screen kept the world it left): the start screen instead, the user's pick ("show a waiting screen there"). The next current
@@ -3369,7 +3406,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         val who = newSpellWho ?: return
         val onPad = NewSpells.onPad(newSpellMap)
         val q = NewSpells.enqueue(newSpells.queue(who), newSpells.handled(who), book.news.sortedBy { it.nid }.map { it.spellId }) {
-            NewSpells.worthAsking(book, it, onPad)
+            NewSpells.askKind(book, it, onPad) != null                        // rank up (2026-11-12): a new rank of a bound spell too
         }
         if (q != newSpells.queue(who)) { newSpells.add(who, q); Log.i(HomeView.TAG, "new spells: queue $q") }
         newSpellAsk()
@@ -3379,27 +3416,35 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private fun newSpellAsk() {
         val who = newSpellWho ?: return
         val book = lastBook ?: return
-        if (newSpellBinding != 0) { if (room == Room.HOME) newSpellBinding = 0 else return }   // back Home: that bind is over
+        if (newSpellBinding != 0) { if (room == Room.HOME) { newSpellBinding = 0; newSpellConfirm = 0 } else return }   // back Home: that bind is over
         if (newSpellAsking != 0) return
         if (room != Room.HOME || homeView.homeGuestWanted() || capHolder.isNotEmpty() || homeView.inFight() || book.combat) return
         if (setupView.visibility == View.VISIBLE || setupWaiting != null || startView.visibility == View.VISIBLE) return
         if (interactView.visibility == View.VISIBLE || dialogView.visibility == View.VISIBLE || spellsOverlay.visibility == View.VISIBLE) return
         val onPad = NewSpells.onPad(newSpellMap)
-        val q = NewSpells.stillWanted(newSpells.queue(who)) { NewSpells.worthAsking(book, it, onPad) }
-        if (q != newSpells.queue(who)) newSpells.setQueue(who, q)            // bound meanwhile (it shows on a bar): dropped unasked
+        val q = NewSpells.stillWanted(newSpells.queue(who)) { NewSpells.askKind(book, it, onPad) != null }
+        if (q != newSpells.queue(who)) newSpells.setQueue(who, q)            // bound / upgraded meanwhile: dropped unasked
         val id = q.firstOrNull() ?: return
         val e = NewSpells.entryOf(book, id) ?: return
+        val kind = NewSpells.askKind(book, id, onPad) ?: return
         newSpellAsking = id
         val title = "New spell: ${e.name}" + (e.rank?.let { " ($it)" } ?: "")
-        val show = {
+        val show = if (kind == NewSpells.Ask.RANK_UP) {
+            // rank up (the user 2026-11-12, "Prompt, A upgrades all"): A = every lower copy at once, B = never this rank again
+            val n = NewSpells.rankUpOf(book, id)?.count ?: 0
+            ({
+                setupView.ask(CompanionSetup.Prompt(Tr.t(NewSpells.rankUpTitle(e)), emptyList(), Tr.t(NewSpells.rankUpCount(n))), "Upgrade", "Skip",
+                    onYes = { newSpellRankUp(who, id) }, onNo = { newSpellAnswer(who, id, bind = false) }, icon = e.icon)
+            })
+        } else ({
             setupView.ask(CompanionSetup.Prompt(title, emptyList(), "Put it on a controller button now, or dismiss it."), "Bind", "Dismiss",
                 onYes = { newSpellAnswer(who, id, bind = true) }, onNo = { newSpellAnswer(who, id, bind = false) }, icon = e.icon)
-        }
+        })
         // only once the game hands Home the controller: a press never also reaches the game (setupHoldAck runs [setupWaiting])
         setupWaiting = show
         val wait = ++newSpellWaitId
         if (!setupPadOn()) { setupWaiting = null; newSpellAsking = 0; return }
-        Log.i(HomeView.TAG, "new spells: ask $id (${e.name}), waits for the controller")
+        Log.i(HomeView.TAG, "new spells: ask $id (${e.name}, ${kind.name.lowercase()}), waits for the controller")
         ui.postDelayed({ if (wait == newSpellWaitId && newSpellAsking == id && setupView.visibility != View.VISIBLE) newSpellRetry("no hold") }, 6_000L)
     }
 
@@ -3418,16 +3463,79 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         val e = if (bind) lastBook?.let { NewSpells.bindEntry(it, id) } else null
         if (e == null) { ui.postDelayed({ newSpellAsk() }, 400L); return }
         Log.i(HomeView.TAG, "new spells: bind $id")
-        newSpellBinding = id
+        newSpellBinding = id; newSpellConfirm = 0
         show(Room.SPELLBOOK); spellbookView.openAt(id)
         ui.postDelayed({ spellsCells(e) }, 400L)
         ui.postDelayed({ if (newSpellBinding == id && room != Room.SPELLBOOK) newSpellBindDone() }, 120_000L)
     }
 
-    /** the Bind box closed (bound, cancelled, refused): back Home, where the next prompt follows */
+    /** RANK UP's A (the user 2026-11-12, "Done at once"): Book b51's pick and the new rank's two taps; the add-on upgrades every lower
+     *  copy at once and answers padack op "rankup" (its count), which the prompt shows in one line ("Upgraded on 3 buttons") before it
+     *  closes. In combat it is refused and asked again later (the prompt's own gates hold it until the fight is over) */
+    private var newSpellRankWait = 0                  // the spell whose A was sent, waiting for the add-on's answer
+    private fun newSpellRankUp(who: String, id: Int) {
+        if (newSpellRankWait != 0) return
+        val cells = lastBook?.let { NewSpells.rankUpCells(it, id) }
+        if (cells == null || !TapBridge.tapsSpaced(this, spellsPad, cells, 120L)) {
+            Log.w(HomeView.TAG, "new spells: rank up $id not sent (no touch way)")
+            newSpellRankDone(who, id, "That did not work", done = true); return
+        }
+        newSpellRankWait = id
+        Log.i(HomeView.TAG, "new spells: rank up $id sent")
+        ui.postDelayed({ if (newSpellRankWait == id) { Log.w(HomeView.TAG, "new spells: rank up $id, no answer"); newSpellRankDone(who, id, "That did not work", done = true) } }, 5_000L)
+    }
+    private fun newSpellRankAck(a: PadMapModel.Ack) {
+        val id = newSpellRankWait
+        if (id == 0 || a.what != id.toString()) return
+        val who = newSpellWho ?: return
+        Log.i(HomeView.TAG, "new spells: rank up $id ${if (a.ok) "upgraded ${a.idx ?: 0}" else "refused (${a.why})"}")
+        when {
+            a.ok -> newSpellRankDone(who, id, NewSpells.rankUpLine(a.idx ?: 0), done = true)
+            a.why == "combat" -> newSpellRankDone(who, id, "Not while in combat", done = false)   // deferred: asked again after the fight
+            else -> newSpellRankDone(who, id, "That did not work", done = true)
+        }
+    }
+    /** the answer's line on the prompt for a moment, then the next one; [done] = never asked again (this rank) */
+    private fun newSpellRankDone(who: String, id: Int, line: String, done: Boolean) {
+        newSpellRankWait = 0
+        if (done) newSpells.done(who, id)
+        setupView.answer(Tr.t(line))
+        ui.postDelayed({
+            if (newSpellAsking == id) { newSpellAsking = 0; setupView.close(); setupPadOff(); ui.postDelayed({ newSpellAsk() }, 400L) }
+        }, 1_500L)
+    }
+
+    /** the user 2026-11-12 ("Wait for keep/undo"): a bind that took waits for the box's keep / undo (or its close) before Home. Not
+     *  stuck: no word within [NEW_SPELL_CONFIRM_MS] ends it as before; leaving the room is the 120 s timer / Home's newSpellAsk as before */
+    private var newSpellConfirm = 0                   // >0: the generation of the armed keep / undo wait; 0 = not waiting
+    private var newSpellConfirmGen = 0
+    private val NEW_SPELL_CONFIRM_MS = 90_000L
+
+    private fun newSpellBindStep(step: SpellsModel.BindStep) {
+        if (newSpellBinding == 0) return
+        when (step) {
+            SpellsModel.BindStep.DONE -> newSpellBindDone()
+            SpellsModel.BindStep.WAIT -> newSpellConfirm = 0
+            SpellsModel.BindStep.CONFIRM -> {
+                val gen = ++newSpellConfirmGen
+                newSpellConfirm = gen
+                val id = newSpellBinding
+                Log.i(HomeView.TAG, "new spells: bound $id, waits for keep / undo")
+                ui.postDelayed({ if (newSpellConfirm == gen && newSpellBinding == id) { Log.i(HomeView.TAG, "new spells: no keep / undo word, Home"); newSpellBindDone() } }, NEW_SPELL_CONFIRM_MS)
+            }
+        }
+    }
+
+    private fun newSpellBindCtl(c: SpellsModel.Ctl) {
+        if (newSpellBinding == 0) return
+        SpellsModel.bindStepCtl(c, newSpellConfirm != 0)?.let { newSpellBindStep(it) }
+    }
+
+    /** the Bind box closed (kept, cancelled, refused): back Home, where the next prompt follows */
     private fun newSpellBindDone() {
         if (newSpellBinding == 0) return
         newSpellBinding = 0
+        newSpellConfirm = 0
         ui.postDelayed({ if (room == Room.SPELLBOOK) show(Room.HOME); ui.postDelayed({ newSpellAsk() }, 700L) }, 900L)
     }
     /** issue #136 (2026-11-11): the game run ([LauncherHooks.gameStartSec]) whose first word each character's kept choice was checked

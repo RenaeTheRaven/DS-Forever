@@ -14,6 +14,25 @@
 -- USER RULINGS (2026-09-27): one row per STACK and in BAG ORDER -- the room shows the bags
 -- exactly as they are, because every action works on one stack at a time. Sorting and a merged
 -- "clean" view may come later as toggles; the wire stays per-slot either way.
+--
+-- bags-kit2 (issue #89, 1.0.21: "replacing an existing armor kit with another one does not work, the confirmation screen loops"): while
+-- the room's "Choose an item" list is up and the GAME asks its own question about the pick (StaticPopup REPLACE_ENCHANT and the like,
+-- or any pop-up the game's controller focuses), A / B are PASSED to the game, as for a bag's bind question ("bindask"). Before, the
+-- room kept A: every Yes re-used the kit on the item, the game asked again, and the question came back for ever (KIT.asking).
+--
+-- bags-empty1 (issue #29, 1.0.16 streaming: "bad argument #1 to '?' (Usage: local result = C_Item.IsEquippableItem(itemInfo))" from
+-- SecureTemplates.lua:433, self = Button <TapPad.lua:291>, actionType "item", then "WowCompanion has been blocked from an action only
+-- available to the Blizzard UI" - SetPreferredGamepadInteractTarget()): a click on a secure "item" cell whose slot is EMPTY (a bag
+-- row's "<bag> <slot>", or binv's worn slot) makes the game's own item action call IsEquippableItem(nil) and raise; the error frame
+-- that opens takes the gamepad UI's focus and the gamepad bar stays blocked until a /reload (the reporter's chain). Now each such cell
+-- checks its slot just before the click (PreClick, out of combat): empty = no secure action for that click (type nil; PostClick puts
+-- "item" back), so nothing raises. A filled slot's click is exactly as before. In a fight attributes cannot change, so an empty cell
+-- still raises there; its tap proof says so (empty / emptyFight) so a next report shows whether that case is still hit.
+-- bags-empty2 (issue #29 review: "a tap on an empty slot still raises, opens the error frame and blocks the gamepad bar until /reload" in
+-- combat): at PLAYER_REGEN_DISABLED (the lockdown has not begun, attributes can still be written) every guarded cell whose slot is
+-- empty gets type nil for the whole fight; PLAYER_REGEN_ENABLED puts "item" back. Cost: an item looted into an empty slot mid-fight
+-- cannot be used by tap until the fight ends (a no-op, never an error). A slot that empties DURING the fight (the last potion used)
+-- keeps its "item" and can still raise; its tap proof says emptyFight without fightOff, so a next report shows whether that is hit.
 
 local ADDON = ...
 local WC = _G.WowCompanion
@@ -132,6 +151,69 @@ local rowSlots = {}
 -- would do the wrong thing: open only while the bags are hidden, close only while they show. Attributes cannot change
 -- in a fight, so the cells are switched out of combat only; in a fight `gameDoors` is false and the app uses the old
 -- take / leave columns (bmvq 29 / 30).
+-- bags-empty1 (issue #29): a secure "item" cell with an empty slot gets no secure action for that click (see the header).
+-- isEmpty() answers true only when the game says the slot holds nothing; lastEmpty = the last empty click, for the tap proof.
+local lastEmpty = { at = -math.huge, key = nil, fight = false, off = false }
+local guarded = {}                                      -- bags-empty2: every guarded cell (a set), for the fight's switch
+local function emptyGuard(btn, key, isEmpty)
+    btn.wcSlotKey, btn.wcIsEmpty = key, isEmpty
+    guarded[btn] = true
+    if btn.wcEmptyHooked then return end
+    btn.wcEmptyHooked = true
+    pcall(btn.HookScript, btn, "PreClick", function(self)
+        local f = self.wcIsEmpty
+        if type(f) ~= "function" then return end
+        local okE, empty = pcall(f)
+        if not (okE and empty == true) then return end
+        local fight = InCombatLockdown() and true or false
+        lastEmpty.at, lastEmpty.key, lastEmpty.fight = GetTime(), self.wcSlotKey, fight
+        lastEmpty.off = fight and self:GetAttribute("type") ~= "item"
+        if fight or self:GetAttribute("type") ~= "item" then return end
+        self:SetAttribute("type", nil)
+        self.wcEmptyOff = true
+    end)
+    pcall(btn.HookScript, btn, "PostClick", function(self)
+        if self.wcEmptyOff and not InCombatLockdown() then
+            self:SetAttribute("type", "item")
+            self.wcEmptyOff = nil
+        end
+    end)
+end
+-- the tap proof's flags: this click (key) found its slot empty just now
+local function emptyFlags(t, key)
+    if lastEmpty.key == key and GetTime() - lastEmpty.at < 1 then
+        if lastEmpty.fight then t.emptyFight = true; t.fightOff = lastEmpty.off or nil else t.empty = true end
+    end
+    return t
+end
+-- bags-empty2: the fight's switch. PLAYER_REGEN_DISABLED: empty cells off for the fight; PLAYER_REGEN_ENABLED: back to "item".
+local function emptyFightOff()
+    if InCombatLockdown() then return end
+    for btn in pairs(guarded) do
+        local okE, empty = pcall(btn.wcIsEmpty)
+        if okE and empty == true and btn:GetAttribute("type") == "item" and pcall(btn.SetAttribute, btn, "type", nil) then
+            btn.wcFightOff = true
+        end
+    end
+end
+local function emptyFightOn()
+    if InCombatLockdown() then return end
+    for btn in pairs(guarded) do
+        if btn.wcFightOff and pcall(btn.SetAttribute, btn, "type", "item") then btn.wcFightOff = nil end
+    end
+end
+local function bagSlotEmpty(bag, slot)
+    return function()
+        local ok, id = CALL(function() return C_Container.GetContainerItemID(bag, slot) end)
+        return ok and id == nil
+    end
+end
+local function wornSlotEmpty(slot)
+    return function()
+        local ok, id = CALL(function() return GetInventoryItemID("player", slot) end)
+        return ok and id == nil
+    end
+end
 local DOOR_OPEN, DOOR_CLOSE = 39, 38
 local doors = { open = nil, close = nil, stale = true }
 local syncDoors                                         -- set once the bag windows are known (below)
@@ -148,6 +230,7 @@ function WC.bagsPadRows(bagList)
                 if col < n then
                     btn:SetAttribute("type", "item")
                     btn:SetAttribute("item", bag .. " " .. (col + 1))
+                    emptyGuard(btn, "b" .. bag .. ":" .. (col + 1), bagSlotEmpty(bag, col + 1))
                 elseif col == DOOR_OPEN then doors.open = btn
                 elseif col == DOOR_CLOSE then
                     doors.close = btn
@@ -162,8 +245,8 @@ function WC.bagsPadRows(bagList)
                     return
                 end
                 -- the proof a tap landed (the secure action itself already ran)
-                WC.emit({ type = "cap", bagsTap = { bag = bag, slot = col + 1,
-                    combat = InCombatLockdown() and true or false } })
+                WC.emit({ type = "cap", bagsTap = emptyFlags({ bag = bag, slot = col + 1,
+                    combat = InCombatLockdown() and true or false }, "b" .. bag .. ":" .. (col + 1)) })
             end)
             if bag == 0 and syncDoors then syncDoors() end
         end
@@ -737,6 +820,7 @@ end
 
 bf:SetScript("OnEvent", function(_, event, a1)
     if event == "PLAYER_REGEN_ENABLED" and syncDoors then syncDoors() end
+    if event == "PLAYER_REGEN_DISABLED" then pcall(emptyFightOff) elseif event == "PLAYER_REGEN_ENABLED" then pcall(emptyFightOn) end
     -- GET_ITEM_INFO_RECEIVED fires for every item anything asks about (chat links, tooltips,
     -- other addons). Only a name WE are waiting for is worth a re-collect. (pcall: the arg is
     -- used as a table key, and nothing has measured whether an event arg can be secret.)
@@ -1081,6 +1165,8 @@ local function syncPass()
     local want = false
     if ctl.on and not ctl.pending then
         if ctl.mode == "bindask" then want = "PAD1 PAD2"
+        -- bags-kit2 (issue #89): the game's own question about the pick (Replace enchant?) is answered by the game's own A / B
+        elseif ctl.mode == "target" and WC._kit and WC._kit.asking() then want = "PAD1 PAD2"
         elseif ctl.open and ctl.mode == "grid" and ctl.pick == nil then want = "PAD2" end
     end
     if want == (ctl.passing or false) or not (cap and cap.pass) then return end
@@ -1326,8 +1412,29 @@ function KIT.used(bag, slot)
     local id = bagItemID(bag, slot)
     if id then KIT.last = { id = id, t = GetTime() } end
 end
+-- bags-kit2 (issue #89): the GAME is asking about the pick - its replace / bind question for the item just chosen, or any pop-up
+-- its controller focuses (its A / B answer that one, never our list). Read only; the pop-up's name, nil when none asks
+KIT.ASKS = { REPLACE_ENCHANT = true, TRADE_REPLACE_ENCHANT = true, BIND_ENCHANT = true, ACTION_WILL_BIND_ITEM = true,
+             REPLACE_TRADESKILL_ENCHANT = true }
+function KIT.asking()
+    for i = 1, 4 do
+        local f = _G["StaticPopup" .. i]
+        if type(f) == "table" and S(function() return f:IsShown() end) == true then
+            local which = S(function() return f.which end)
+            if type(which) == "string" and KIT.ASKS[which] then return which end
+            if S(function() return f.gamepadFocused end) == true then return type(which) == "string" and which or "?" end
+        end
+    end
+    return nil
+end
 -- the pick started / ended: the room's cursor follows; any route says it (an "itarget" document: the Character room waits for it)
 function KIT.step()
+    -- bags-kit2 (issue #89): the game's question about the pick came or went: report, so syncPass hands A / B over (or back)
+    local ask = (ctl.on and ctl.mode == "target") and KIT.asking() or nil
+    if ask ~= KIT.askWas then
+        KIT.askWas = ask
+        if ctl.on and ctl.mode == "target" then report(ask and ("pick-ask-" .. ask) or "pick-answered") end
+    end
     local on = KIT.on()
     if not on and next(KIT.byKey) ~= nil and not InCombatLockdown() then KIT.byKey = {} end    -- the pick's cells free again
     if on ~= KIT.was then
@@ -1358,10 +1465,11 @@ if WC.pad and WC.pad.secureRow then
         end
         btn:SetAttribute("type", "item")
         btn:SetAttribute("item", tostring(col + 1))
+        emptyGuard(btn, "w" .. (col + 1), wornSlotEmpty(col + 1))
     end, function(col)
         if col == KIT.STOP_COL then WC.emit({ type = "cap", kitStop = true }); return end
         if col >= KIT.CELL0 then WC.emit({ type = "cap", kitTap = { cell = col, use = KIT.mt[col], combat = InCombatLockdown() and true or false } }); return end
-        WC.emit({ type = "cap", kitTap = { slot = col + 1, combat = InCombatLockdown() and true or false } })
+        WC.emit({ type = "cap", kitTap = emptyFlags({ slot = col + 1, combat = InCombatLockdown() and true or false }, "w" .. (col + 1)) })
     end)
 end
 
@@ -1959,6 +2067,9 @@ local function onPress(key)
         -- "equipping": the game is working: nothing here
     elseif ctl.mode == "target" then
         -- "Choose an item": up / down walk the list, A uses the chosen item (the pick's target), B stops the pick
+        -- bags-kit2 (issue #89): while the game asks about the pick, A / B are its own (passed); one that still reaches the room
+        -- (the pass not yet in force) never uses the item again - that was the loop - and the pass is made again
+        if (A or B) and KIT.asking() then ctl.passing = false; report("pick-ask-" .. key); return end
         local list = KIT.list()
         if key == "PADDUP" or key == "PADDDOWN" then
             ctl.tsel = math.max(1, math.min(#list, (ctl.tsel or 1) + (key == "PADDUP" and -1 or 1))); report(nil)
