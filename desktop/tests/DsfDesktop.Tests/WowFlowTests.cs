@@ -217,6 +217,7 @@ namespace DsfDesktop.Tests
         [Test]
         public static void TheUpdateSwapsTheFolders()
         {
+            if (DsfDesktop.Host.Wine) throw new SkipException("custom-thor: no self-update on a Linux PC");
             var root = Path.Combine(Path.GetTempPath(), "dsf update " + Guid.NewGuid().ToString("N"));
             var app = Path.Combine(root, "DsForeverDesktop"); var next = Path.Combine(root, "next");
             var fake = Path.Combine(Environment.SystemDirectory, "hostname.exe");

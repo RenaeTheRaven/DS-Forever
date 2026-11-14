@@ -250,11 +250,9 @@ namespace DsfDesktop.Tests
         static string SelfSigned()
         {
             if (selfSigned != null) return selfSigned;
-            using (var rsa = new System.Security.Cryptography.RSACng(2048))
-            {
-                var req = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=t", rsa, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
-                return selfSigned = Convert.ToBase64String(req.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(1)).RawData);
-            }
+            // custom-thor: the hand-written certificate (Mono, under Wine, has no CertificateRequest)
+            using (var rsa = new System.Security.Cryptography.RSACryptoServiceProvider(2048))
+                return selfSigned = Convert.ToBase64String(global::DsfDesktop.SelfSigned.Der("t", rsa, DateTime.UtcNow, DateTime.UtcNow.AddDays(1)));
         }
     }
 }

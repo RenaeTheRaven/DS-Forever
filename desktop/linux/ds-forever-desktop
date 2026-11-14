@@ -1,0 +1,80 @@
+#!/bin/bash
+# custom-thor: starts DS Forever Desktop on a Linux PC (see README.md).
+#
+# Desktop itself runs under Proton in the game's own prefix, so WoW and Battle.net are ordinary windows to it; the streaming host
+# is the native Linux Sunshine beside this script, run by dsf-sunshine-helper.py for Desktop's stand-in sunshine.exe.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+set -u
+HERE=$(dirname "$(readlink -f "$0")")
+CONF=${XDG_CONFIG_HOME:-$HOME/.config}/dsforever-desktop
+STATE=${XDG_DATA_HOME:-$HOME/.local/share}/dsforever-desktop
+mkdir -p "$CONF" "$STATE"
+
+# where the game lives: the prefix, runner and game id Battle.net is started with (Faugus Launcher's, here)
+if [ ! -f "$CONF/env" ]; then
+    cat > "$CONF/env" <<'EOF'
+# DS Forever Desktop on Linux: the Proton prefix WoW runs in, and how it is started. Sourced by the launcher.
+WINEPREFIX="$HOME/Faugus/battlenet"
+GAMEID="umu-faugus5dd8f7d6"
+PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/Proton-CachyOS Latest"
+PROTON_ENABLE_WAYLAND=0
+WINE_SIMULATE_WRITECOPY=1
+EOF
+fi
+# shellcheck disable=SC1091
+. "$CONF/env"
+
+if [ ! -f "$CONF/sunshine-extra.conf" ]; then
+    cat > "$CONF/sunshine-extra.conf" <<'EOF'
+# Extra settings for the Linux Sunshine, one "name = value" per line (Sunshine's own setting names). They win over Desktop's.
+# The monitor to stream, as Sunshine's log names it (DP-1, DP-2, ...); without it Sunshine takes the first one it is offered:
+# output_name = DP-3
+EOF
+fi
+
+# the bridge's TLS certificate: Mono (which Proton runs Desktop on) can't make one, so openssl does, once
+SEED="$STATE/bridge-seed.pfx"
+if [ ! -f "$SEED" ] || [ ! -f "$SEED.pass" ]; then
+    (
+        set -e
+        umask 077
+        tmp=$(mktemp -d)
+        trap 'rm -rf "$tmp"' EXIT
+        pass=$(openssl rand -hex 18)
+        openssl req -x509 -newkey rsa:2048 -nodes -sha256 -days 10950 -subj "/CN=DS Forever Desktop $(uname -n)" \
+            -addext "basicConstraints=CA:FALSE" -addext "keyUsage=digitalSignature,keyEncipherment" -addext "extendedKeyUsage=serverAuth" \
+            -keyout "$tmp/key.pem" -out "$tmp/cert.pem" 2>/dev/null
+        # the old 3DES / SHA-1 envelope is the one Mono reads
+        openssl pkcs12 -export -inkey "$tmp/key.pem" -in "$tmp/cert.pem" -out "$SEED" -passout "pass:$pass" \
+            -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+        printf '%s' "$pass" > "$SEED.pass"
+    ) || { echo "ds-forever-desktop: couldn't make the bridge certificate (is openssl installed?)" >&2; exit 1; }
+fi
+
+[ -r /dev/uinput ] && [ -w /dev/uinput ] || echo "ds-forever-desktop: no access to /dev/uinput: the Thor's controller won't reach the game" >&2
+
+winpath() { local p=${1//\//\\}; printf 'Z:%s' "$p"; }
+
+PORT=${DSF_HELPER_PORT:-48209}
+HELPER=
+# a second start only brings the running Desktop's window up: its helper already holds the port
+if ! (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+    TOKEN=$(openssl rand -hex 16)
+    DSF_SUNSHINE_HELPER_TOKEN=$TOKEN python3 "$HERE/dsf-sunshine-helper.py" --port "$PORT" --sunshine "$HERE/sunshine/AppRun" \
+        --extra "$CONF/sunshine-extra.conf" --log "$STATE/sunshine-console.log" 2>> "$STATE/helper.log" &
+    HELPER=$!
+    trap '[ -n "$HELPER" ] && kill "$HELPER" 2>/dev/null' EXIT
+    printf '%s' "$TOKEN" > "$STATE/helper.token"
+    chmod 600 "$STATE/helper.token"
+else
+    TOKEN=$(cat "$STATE/helper.token" 2>/dev/null)
+fi
+
+cd "$HERE/app" || exit 1
+export WINEPREFIX GAMEID PROTONPATH PROTON_ENABLE_WAYLAND WINE_SIMULATE_WRITECOPY
+DSF_LINUX_HOST=1 \
+DSF_SUNSHINE_DIR=$(winpath "$HERE/app/sunshine-linux") \
+DSF_BRIDGE_SEED=$(winpath "$SEED") \
+DSF_SUNSHINE_HELPER="$PORT:$TOKEN" \
+    umu-run "$HERE/app/DsForeverDesktop.exe" "$@" >> "$STATE/desktop-console.log" 2>&1

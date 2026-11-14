@@ -46,11 +46,40 @@ namespace DsfDesktop.Sunshine
             // per-request timeouts (Within): a PIN submit waits on the device's handshake, everything else is quick
             http = new HttpClient(h) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes(user + ":" + pass)));
+            if (Host.Wine) TrustOnMono(this);
+        }
+
+        // custom-thor: Mono (under Wine) never calls the handler's own certificate callback; only the process-wide one. So that one
+        // makes the same decision for Sunshine's API: a certificate nothing else vouches for is accepted only from 127.0.0.1 and
+        // only when it is the one in a live SunshineApi's cert file. Everything else (GitHub) keeps the normal rule.
+        static readonly List<WeakReference<SunshineApi>> onMono = new List<WeakReference<SunshineApi>>();
+
+        static void TrustOnMono(SunshineApi api)
+        {
+            lock (onMono)
+            {
+                onMono.RemoveAll(w => !w.TryGetTarget(out _));
+                onMono.Add(new WeakReference<SunshineApi>(api));
+                ServicePointManager.ServerCertificateValidationCallback = (sender, cert, chain, errors) =>
+                {
+                    if (errors == System.Net.Security.SslPolicyErrors.None) return true;
+                    if (!(sender is HttpWebRequest w) || w.RequestUri.Host != "127.0.0.1" || cert == null) return false;
+                    List<SunshineApi> live;
+                    lock (onMono) live = onMono.Select(r => r.TryGetTarget(out var a) ? a : null).Where(a => a != null).ToList();
+                    using (var c2 = new X509Certificate2(cert)) return live.Any(a => a.CheckLocal(c2));
+                };
+            }
         }
 
         bool CheckCert(HttpRequestMessage req, X509Certificate2 cert, X509Chain chain, System.Net.Security.SslPolicyErrors errors)
         {
             if (req.RequestUri.Host != "127.0.0.1") return false;
+            return CheckLocal(cert);
+        }
+
+        /// <summary>a certificate shown by 127.0.0.1: ours when it is the one in our cert file (any, while that file is not there yet)</summary>
+        bool CheckLocal(X509Certificate2 cert)
+        {
             try
             {
                 if (certFile != null && File.Exists(certFile))

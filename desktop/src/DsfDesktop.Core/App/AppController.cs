@@ -426,6 +426,8 @@ namespace DsfDesktop.App
 
         void UpdateTick()
         {
+            // custom-thor: no self-update on a Linux PC (the official zip is the Windows build and would replace this one)
+            if (Host.Wine) return;
             if (DateTime.UtcNow < nextUpdateCheck) return;
             nextUpdateCheck = DateTime.UtcNow.AddSeconds(DsfDesktop.Thor.DesktopUpdate.CheckEveryS);
             if (update == null) update = new DsfDesktop.Thor.DesktopUpdate(Paths.DataDir);

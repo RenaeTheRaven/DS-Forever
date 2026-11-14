@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- custom-thor: the stand-in sunshine.exe for a Linux PC (see ../README.md). GPL-3.0-or-later, as DS Forever. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>DsfDesktop.Linux</RootNamespace>
+    <AssemblyName>sunshine</AssemblyName>
+  </PropertyGroup>
+</Project>

@@ -115,6 +115,7 @@ namespace DsfDesktop.Tests
         public static void ReadsThisPcsListenerTable()
         {
             // the live table: not empty on any Windows PC (it always listens on 135 / 445), every port in range
+            if (DsfDesktop.Host.Wine) throw new SkipException("custom-thor: Wine's listener table has no rows for Linux programs (PortGuard tries the ports instead)");
             var rows = PortGuard.TcpListeners();
             A.True(rows.Count > 0, "some listeners");
             A.True(rows.All(x => x.Port > 0 && x.Port < 65536), "ports in range");

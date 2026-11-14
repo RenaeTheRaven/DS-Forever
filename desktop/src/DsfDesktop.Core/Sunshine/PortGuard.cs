@@ -134,7 +134,7 @@ namespace DsfDesktop.Sunshine
                 }
                 else
                 {
-                    var names = string.Join(", ", foreign.Select(f => f.kind == PortOwner.Unknown || f.name == "?" ? "an unknown program" : f.name + ".exe").Distinct());
+                    var names = string.Join(", ", foreign.Select(f => f.kind == PortOwner.Unknown || f.name == "?" || f.name == "another program" ? "an unknown program" : f.name + ".exe").Distinct());
                     rep.Problem = "other_app";
                     rep.Line = "Another program (" + names + ") is using the streaming ports (" + ports + ")";
                     rep.Hint = "Close it, or stop its service in Services.";
@@ -217,7 +217,39 @@ namespace DsfDesktop.Sunshine
 
         /// <summary>the check on this PC right now</summary>
         public static PortReport Now(int basePort, int ourPid, bool ourRunning, bool settled, string ourDir)
-            => Check(TcpListeners(), basePort, ourPid, ourRunning, settled, ourDir, Who);
+            => Host.Wine ? NowOnLinux(basePort, ourPid, ourRunning, settled, ourDir)
+                         : Check(TcpListeners(), basePort, ourPid, ourRunning, settled, ourDir, Who);
+
+        const int LinuxOtherPid = int.MaxValue;
+
+        /// <summary>
+        /// custom-thor: under Wine the listener table has no rows for Linux programs, and the streaming host is one (the native
+        /// Sunshine our stand-in sunshine.exe starts). So each watched port is tried instead: one that answers on OUR base while our
+        /// host runs is ours; any other is another program's (its name is not known here).
+        /// </summary>
+        static PortReport NowOnLinux(int basePort, int ourPid, bool ourRunning, bool settled, string ourDir)
+        {
+            var ours = OurPorts(basePort);
+            var rows = new List<TcpListenerRow>();
+            foreach (var port in StockPorts.Concat(ours).Distinct())
+                if (Answers(port)) rows.Add(new TcpListenerRow(port, ourRunning && ourPid > 0 && ours.Contains(port) ? ourPid : LinuxOtherPid));
+            return Check(rows, basePort, ourPid, ourRunning, settled, ourDir, pid => pid == LinuxOtherPid ? new ProcInfo("another program", null) : null);
+        }
+
+        static bool Answers(int port)
+        {
+            try
+            {
+                using (var c = new System.Net.Sockets.TcpClient())
+                {
+                    var r = c.BeginConnect("127.0.0.1", port, null, null);
+                    if (!r.AsyncWaitHandle.WaitOne(300)) return false;
+                    c.EndConnect(r);
+                    return true;
+                }
+            }
+            catch (Exception) { return false; }
+        }
 
         [DllImport("iphlpapi.dll", SetLastError = true)]
         static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool sort, int af, int tableClass, int reserved);

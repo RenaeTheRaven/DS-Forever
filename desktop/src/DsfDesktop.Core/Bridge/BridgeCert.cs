@@ -25,6 +25,28 @@ namespace DsfDesktop.Bridge
                 }
             }
             var newPass = Crypto.Base64Url(Crypto.RandomBytes(24));
+            // custom-thor: under Wine the runtime is Mono, which can neither make a certificate (no CertificateRequest) nor attach a
+            // key to one. The Linux launcher makes the PFX with openssl; it is taken in here once and kept like our own.
+            byte[] bytes;
+            if (Host.Wine)
+            {
+                var seed = Environment.GetEnvironmentVariable("DSF_BRIDGE_SEED");
+                if (string.IsNullOrWhiteSpace(seed) || !File.Exists(seed) || !File.Exists(seed + ".pass"))
+                    throw new InvalidOperationException("no bridge certificate: start DS Forever Desktop with its Linux launcher (DSF_BRIDGE_SEED)");
+                bytes = File.ReadAllBytes(seed);
+                newPass = File.ReadAllText(seed + ".pass").Trim();
+            }
+            else bytes = MakeWithCertificateRequest(hostId, newPass);
+            Directory.CreateDirectory(dataDir);
+            File.WriteAllBytes(pfx, bytes);
+            File.WriteAllText(key, Crypto.Protect(newPass));
+            return Load(bytes, newPass);
+        }
+
+        // its own method: a runtime without CertificateRequest fails only when this one is compiled
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static byte[] MakeWithCertificateRequest(string hostId, string newPass)
+        {
             byte[] bytes;
             using (var rsa = new RSACng(2048))
             {
@@ -35,10 +57,7 @@ namespace DsfDesktop.Bridge
                 using (var c = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(30)))
                     bytes = c.Export(X509ContentType.Pfx, newPass);
             }
-            Directory.CreateDirectory(dataDir);
-            File.WriteAllBytes(pfx, bytes);
-            File.WriteAllText(key, Crypto.Protect(newPass));
-            return Load(bytes, newPass);
+            return bytes;
         }
 
         // a PFX loaded this way keeps its key in a temporary container, which SChannel (SslStream's server side) can use

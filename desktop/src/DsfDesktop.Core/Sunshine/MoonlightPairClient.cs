@@ -30,9 +30,22 @@ namespace DsfDesktop.Sunshine
         {
             this.host = host;
             this.httpPort = httpPort;
+            if (Host.Wine)
+            {
+                // custom-thor: Mono (under Wine) has no CertificateRequest; the handshake needs only the certificate's bytes and the key
+                key = new RSACryptoServiceProvider(2048);
+                cert = new X509Certificate2(SelfSigned.Der("NVIDIA GameStream Client", key, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow.AddYears(20)));
+            }
+            else cert = MakeWithCertificateRequest(out key);
+        }
+
+        // its own method: a runtime without CertificateRequest fails only when this one is compiled
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        static X509Certificate2 MakeWithCertificateRequest(out RSA key)
+        {
             key = new RSACng(2048);
             var req = new CertificateRequest("CN=NVIDIA GameStream Client", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            cert = req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(20));
+            return req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(20));
         }
 
         public static string Pem(X509Certificate2 c)

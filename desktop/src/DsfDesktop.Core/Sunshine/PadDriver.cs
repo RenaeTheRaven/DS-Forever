@@ -24,6 +24,8 @@ namespace DsfDesktop.Sunshine
         public static string Now()
         {
             if (cached != null && (DateTime.UtcNow - cachedAt).TotalSeconds < 30) return cached;
+            // custom-thor: on a Linux PC Sunshine makes its pad with uinput, not ViGEmBus
+            if (Host.Wine) { cached = "vigem"; cachedAt = DateTime.UtcNow; return cached; }
             bool? present;
             try
             {
