@@ -80,6 +80,13 @@ class CalendarView(context: Context) : View(context), BLeadsHome {
 
     private var shown = false
     private var holdSent = false
+    /** the shared grid for the row-back ask (padtab: the spells / quests documents' row; CompanionHost sets it) */
+    var padSource: () -> JSONObject? = { null }
+    /** the row is shared with the Macros room's (its document's `sh`; CompanionHost sets it): asked back on every showing */
+    var rowShared: () -> Boolean = { false }
+    /** the row-back asks this showing ([askRow]) */
+    private var rowAskedAt = -1_000_000L
+    private var rowTries = 0
     /** (c9) what the addon was last told the next B does, "home" / "back" (a take starts at "home"); null = nothing told */
     private var bSaid: String? = null
     private var wasHeld = false
@@ -130,7 +137,14 @@ class CalendarView(context: Context) : View(context), BLeadsHome {
         shown = true; leftByB = false; bSaid = "home"; retries = 0
         focus = dayKey(chosenDay)
         holdSent = false
-        sendHold("shown")
+        rowTries = 0; rowAskedAt = -1_000_000L
+        // the shared row (TapPad pad21): the Macros room had it - ask it back first; the hold goes on the document that lists it.
+        // While the row is shared it is asked back on EVERY showing, the hold right behind the ask (CalendarModel.showing)
+        when (CalendarModel.showing(state?.padRow, rowShared())) {
+            CalendarModel.Showing.ASK -> askRow("shown")
+            CalendarModel.Showing.ASK_HOLD -> { askRow("shown, shared"); sendHold("shown") }
+            CalendarModel.Showing.HOLD -> sendHold("shown")
+        }
         reconcileLater()
         invalidate()
     }
@@ -179,6 +193,10 @@ class CalendarView(context: Context) : View(context), BLeadsHome {
      */
     private fun reconcile() {
         removeCallbacks(recheck)
+        if (shown && state?.padRow == false) {
+            if (rowTries < RETRY_MAX) { askRow("no row"); postDelayed(recheck, RETRY_MS + 50) }
+            return
+        }
         val fix = CalendarModel.ctlFix(state, shown)
         if (fix == null) { retries = 0; return }
         val since = SystemClock.uptimeMillis() - (if (fix == "h") holdTapAt else freeTapAt)
@@ -193,6 +211,16 @@ class CalendarView(context: Context) : View(context), BLeadsHome {
     private fun reconcileLater() {
         removeCallbacks(recheck)
         postDelayed(recheck, RETRY_MS + 50)
+    }
+
+    /** the room's row back from the Macros room, its guest on the shared row (padtab 39 then 35; no game action), RETRY_MAX a showing */
+    private fun askRow(why: String) {
+        val now = SystemClock.uptimeMillis()
+        if (now - rowAskedAt < RETRY_MS || rowTries >= RETRY_MAX) return
+        rowTries++
+        val sent = TapBridge.taps(context, padSource(), CalendarModel.rowBackCells()) { w -> Log.i(TAG, "row back: refused ($w)") }
+        if (sent) rowAskedAt = now
+        Log.i(TAG, "row back ($why): padtab ${CalendarModel.PICK} then ${CalendarModel.ROW_BACK} ${if (sent) "sent" else "not sent"}")
     }
 
     /** (c9) where the NEXT B leads: back while something is open or the glow is in the day's list, else home (out of the room) */

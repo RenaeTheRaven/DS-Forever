@@ -86,7 +86,7 @@ object StartupDiag {
     fun collect(ctx: Context, now: Long = System.currentTimeMillis()): List<Section> = listOf(
         sec("App") { app(ctx, now) },
         sec("Device") { device(ctx) },
-        sec("GPU and container") { container() },
+        sec("GPU and container") { container(ctx) },
         sec("Game folder") { gameFolder(ctx) },
         sec("Start-up screen") { startScreen() },
         sec("Start-up stages (time since the app started)") { StartupTrace.lines().ifEmpty { listOf("(none recorded in this run)") } },
@@ -150,14 +150,23 @@ object StartupDiag {
         )
     }
 
-    private fun container(): List<String> = listOf(
+    private fun container(ctx: Context): List<String> = listOf(
         "GPU profile: ${LauncherHooks.gpuLine.ifEmpty { "(not picked yet in this run)" }}",
         "Launch: ${LauncherHooks.launchState.ifEmpty { "(no launch in this run)" }}",
         "Game screen up: ${LauncherHooks.gameUp()}" + (if (LauncherHooks.gameStartSec > 0) ", since ${stamp(LauncherHooks.gameStartSec * 1000)}" else ""),
         "Last clean exit: ${LauncherHooks.lastCleanExit.ifEmpty { "(none)" }}",
         // issues #132 / #42 / #57: downloading before the login screen, or a login screen that never read login.txt
         "Before the login screen: ${runCatching { NativeLogin.preLoginLine() }.getOrElse { "? (${it.message})" }}",
+        // the user, 2026-11-14 ("build it", the BLZ51914400 wave): which Windows identity the game started with (the mode, never a value)
+        line { Settings.init(ctx); windowsIdLine() },
     )
+
+    /** the report's Windows ID line: the choice, this run's game start or the last recorded one */
+    internal fun windowsIdLine(): String {
+        val ran = Settings.windowsIdRan
+        return WindowsId.reportLine(Settings.windowsId, WindowsId.launched, WindowsId.launchedAtMs, WindowsId.launchedResult,
+            ran?.first, ran?.second ?: 0L, ran?.third) { stamp(it) }
+    }
 
     private fun gameFolder(ctx: Context): List<String> {
         val root = GameFiles.gameRoot(ctx)
@@ -184,6 +193,12 @@ object StartupDiag {
             val p = choice?.product ?: WowProduct.of(root)
             GameConfigWtf.reportLine(File(root, "${p.flavorDir}/WTF/Config.wtf").takeIf { it.isFile }?.readText())
         }.getOrElse { "? (${it.message})" }
+        // the login triage (2026-11-13, #248): the portal the game signs in at beside the choice, the install's branch and the device
+        out += runCatching {
+            val src = GameRegion.choiceSource(ctx)
+            GameRegion.reportLine(GameRegion.chosen(ctx), src?.first, src?.second ?: 0L, choice?.row?.get("Branch"),
+                GameRegion.portalOf(root), Locale.getDefault().country) { stamp(it) }
+        }.getOrElse { "Region: ? (${it.message})" }
         out += "Active build (GameFiles): ${runCatching { GameFiles.activeBuild(root)?.let { "${it.first} ${it.second}" } }.getOrNull() ?: "none"}"
         out += "Last open problem: ${GameFiles.lastWhy ?: "(none)"}"
         return out
@@ -207,7 +222,7 @@ object StartupDiag {
             "Folder found ${i.folderFound}, wrong game ${i.wrongGame}, product ${i.product.ifEmpty { "?" }}, storage ${i.storage}",
             "Login saved ${i.loginSaved}, skipped ${i.loginSkipped}, sign-in ${i.signIn}, restart offered ${i.restartOffered}, restarting ${i.restarting}",
             "Art ${i.art} ${i.artPercent}%${if (i.artWhat.isNotBlank()) " (${i.artWhat})" else ""}${if (i.artWhy.isNotBlank()) ", why: ${i.artWhy}" else ""}",
-            "Add-ons installed ${i.addonsInstalled}; dependencies: ${i.dependencies ?: "(not checked)"}",
+            "Add-ons installed ${i.addonsInstalled}; problem: ${i.addonsProblem ?: "none"}; dependencies: ${i.dependencies ?: "(not checked)"}",
             "Interiors: ${i.indoor ?: "(no step)"}; icons: ${i.iconsLine ?: "?"}",
             "Client: ${i.client ?: "(not checked yet)"}; newer game build: ${i.gameOutdated ?: "none"}; stale data: ${i.staleData ?: "no"}",
             "App: ${i.appLine ?: "?"}; update offered: ${i.appUpdate ?: "none"}",
@@ -256,7 +271,9 @@ object StartupDiag {
         "Readiness: ${runCatching { IndoorSchedulerStep.readiness(ctx).let { "${it.label} (done ${it.done})" } }.getOrDefault("?")}",
         "Status: ${runCatching { IndoorSchedulerStep.status(ctx)?.toString()?.take(600) }.getOrNull() ?: "(none)"}",
         "Indoor maps in the background: ${runCatching { Settings.init(ctx); Settings.indoorBuild }.getOrDefault("?")}",
-        "Thor model: ${runCatching { DeviceTier.init(ctx); DeviceTier.model() }.getOrDefault("?")}; lighter mode ${runCatching { DeviceTier.lowMemory() }.getOrDefault(false)}",
+        // issue triage 2026-11-14 (the low-memory cluster #236 - #276): the reports could not say whether the game's smaller textures were on
+        "Thor model: ${runCatching { DeviceTier.init(ctx); DeviceTier.model() }.getOrDefault("?")}; lighter mode ${runCatching { DeviceTier.lowMemory() }.getOrDefault(false)}; " +
+            "low-memory graphics ${runCatching { Settings.init(ctx); if (Settings.lowMemGraphics) "on" else "off" }.getOrDefault("?")}",
     )
 
     private fun crashes(ctx: Context, now: Long): List<String> {

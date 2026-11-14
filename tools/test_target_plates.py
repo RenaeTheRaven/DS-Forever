@@ -252,7 +252,7 @@ function R0:SetShadowOffset(x, y) rawset(self, "shadow", { x, y }) end
     chk("uf20: none of the game's 19-texel HUD art left on the target bar (%d)" % len(old), len(old) == 0)
     hub_src = open(rt.HUB, encoding="utf-8").read()
     chk("uf20: no NEAREST filter in Hub.lua's code (crispTex / TB.FILTER gone)",
-        '"NEAREST"' not in hub_src and "crispTex" not in hub_src and 'local HV = "hub53"' in hub_src)
+        '"NEAREST"' not in hub_src and "crispTex" not in hub_src and 'local HV = "hub54"' in hub_src)
 
     # ------------------------------------------------------------------ uf20: the smooth rim at 720 / 1080 / 1440 lines
     media = os.path.join(rt.ROOT, "companion", "app", "src", "main", "assets", "companion", "addons", "WowCompanion", "Media")
@@ -558,7 +558,7 @@ WowCompanionDB.npFriends = nil; WowCompanionDB.npFriendsOff = nil
     chk("uf22: a glyph at the bar's level: the bar raised over it (%s > %s)" % (TB.f.level, gf.level), TB.f.level > gf.level)
     pm_src = open(os.path.join(rt.ROOT, *rtb.PADMAP_REL.split("/")), encoding="utf-8").read()
     chk("m155: PadMap's floating glyph in MEDIUM level 5, sized by Hub's UF.yPlate", rtb.glyph_layer(pm_src) == ("MEDIUM", 5)
-        and 'local PV = "m159"' in pm_src and "uf.yPlate" in pm_src and 'f:SetFrameStrata("HIGH")' not in pm_src)
+        and 'local PV = "m164"' in pm_src and "uf.yPlate" in pm_src and 'f:SetFrameStrata("HIGH")' not in pm_src)
 
     print("failed: %d" % len(fails))
     sys.exit(1 if fails else 0)

@@ -47,7 +47,7 @@ for k in ("tappad", "quests", "book", "padmap", "padtabctl"):
     check(e is None, "Lua 5.1 compiles %s (200 locals, 60 upvalues)" % os.path.basename(F[k]), e or '')
 
 # ================================================================ 10. TapPad pad11
-check('local PADV = "pad19"' in SRC["tappad"], "TapPad says pad19 (pad11's party row + the resting cursor hidden under the software cursor)")
+check('local PADV = "pad21"' in SRC["tappad"], "TapPad says pad21 (pad21 the shared row; pad11's party row + the resting cursor hidden under the software cursor)")
 check(re.search(r'local ROWS_MAX = 56\b', SRC["tappad"]) is not None, "TapPad ROWS_MAX = 56")
 
 
@@ -70,7 +70,7 @@ L10, d, rows = pad_at(126.6)
 check(abs(float(d['popupTop']) - 126.6) < 0.06 and rows == list(range(56)), "pad11 at popupTop 126.6: rows 0..55 placed and described",
       (d['popupTop'], rows[-3:], len(rows)))
 check(L10.eval('rawget(_G, "X57")') is None, "a 57th row does not register (ROWS_MAX 56)")
-check(d['v'] == 'pad19', "describe() says pad19", d['v'])
+check(d['v'] == 'pad21', "describe() says pad21", d['v'])
 L10, d, rows = pad_at(121.5)
 check(abs(float(d['popupTop']) - 121.5) < 0.06 and rows == list(range(54)), "pad11 at popupTop 121.5 (smallest scale): rows 0..53 only",
       (d['popupTop'], rows[-3:], len(rows)))
@@ -1196,7 +1196,7 @@ W7.execute('fire("GROUP_ROSTER_UPDATE")')
 P_KEYS = {"on", "aside", "box", "fight", "grp", "sel", "m", "res", "pd"}     # m150: Smart Res armed, a Hunter's dead pet
 M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "lv", "rng", "ic"}   # m129: plain facts only (no hp / full / hs / g / hit counts); m134: the pet's ic
 d = docs(W7, 0, 'party')[-1]
-check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm159' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
+check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm164' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
       "party: type v rs p{on aside? box? fight grp sel m}", sorted(d['p']))
 check('box' not in d['p'] and d['p']['on'] is False and d['p']['grp'] is True and d['p']['sel'] == 'bound',
       "Party mode off: no box; grp true; sel bound (Select toggles)", (d['p']['on'], d['p'].get('box'), d['p']['sel']))
@@ -1422,8 +1422,8 @@ check(picks(W9) == {"player": None, "party1": None, "party2": None}, "Smart Y of
 check(W9.eval('#SPY') == 0 and W9.eval('#VIOL') == 0, "no spied call, no lockdown breach")
 
 # ================================================================ THE PARTY TAB (PadTabCtl p33 + Book b47's padtab 26-37)
-check('local CV = "p53"' in SRC["padtabctl"] and 'local BV = "b60"' in SRC["book"] and 'local PV = "m159"' in SRC["padmap"],
-      "the versions: PadMap m146, PadTabCtl p46, Book b52 (b49 stance-bind #179, b50 toolbar D-pad #18/#20, b51 / m143 / m144 rank up, m146 / p46 / b52 Smart Range)")
+check('local CV = "p54"' in SRC["padtabctl"] and 'local BV = "b65"' in SRC["book"] and 'local PV = "m164"' in SRC["padmap"],
+      "the versions: PadMap m160, PadTabCtl p54, Book b61 (b49 stance-bind #179, b50 toolbar D-pad #18/#20, b51 / m143 / m144 rank up, m160 / p54 / b61 Smart Range gone)")
 W8 = world(pre='BOOK = { 403, 331, 8004, 324, 131, 546 }')
 W8.execute('''
 local ctl = WowCompanion._spellsBook.ctl
@@ -1555,8 +1555,8 @@ check(ctlDoc(W8)['note'] == 'pslot-no-pick', "37 with no fresh pick: nothing", c
 n0 = nsent(W8)
 W8.execute('ptab(39)')
 pa = docs(W8, n0, 'padack')
-# Book b52 (PadMap m146 SMART RANGE): padtab 39 is the Smart Range pick now (its code 0-4 follows); alone it is no game action
-check(pa == [] and W8.eval('WowCompanion.padTabCtl.srWants()') is True, "padtab 39: the Smart Range pick (Book b52), no game action, no refusal", pa)
+# Book b52: padtab 39 is the one-shot pick (b61: Smart Range's codes 0-4 are gone, unused); alone it is no game action
+check(pa == [] and W8.eval('WowCompanion.padTabCtl.srWants()') is True, "padtab 39: the one-shot pick (Book b52), no game action, no refusal", pa)
 W8.execute('NOW = NOW + 2.5; ptab(29); COMBAT = true')   # p53: 39 then 29 is the Cast bar tab now: the pick expires first
 n0 = nsent(W8)
 W8.execute('spellTaps(331)')
@@ -1877,7 +1877,7 @@ code = [re.sub(r'--.*$', '', ln) for ln in added]
 # m132 (the user, 2026-11-11: "Build a fight-only layer"): `self:SetBinding(` inside the header's own secure state snippet is the
 # restricted handle's OVERRIDE binding on that header (never saved, cleared with it), not the game's saved SetBinding; m133: the same
 # header handle reached as `h` (OV.fbSnip: the caller's "wc-hdr" ref, or the header itself)
-BAD = [r'(?<!self:)(?<!h:)\bSetBinding\s*\(', r'\bSaveBindings\b', r'\bCreateMacro\b', r'\bEditMacro\b', r'\bSetCVar\b', r'\bPlaceAction\b',
+BAD = [r'(?<!self:)(?<!h:)\bSetBinding\s*\(', r'\bSaveBindings\b', r'\bCreateMacro\b', r'\bEditMacro\b', r'\bDeleteMacro\b', r'\bSetCVar\b', r'\bPlaceAction\b',
        r'\bPickupAction\b', r'\bPickupMacro\b', r'\bShowUIPanel\b', r'\bHideUIPanel\b', r'\bToggleFrame\b', r'\bInspectUnit\b',
        r'\bUnitPopup_OpenMenu\b', r'\bTargetFrame_OpenMenu\b', r'\bToggleGameMenu\b', r'\bCloseAllBags\b', r'\bOpenAllBags\b',
        r'\bSetOverrideBinding\s*\(']
@@ -1897,15 +1897,25 @@ hits = [(p, ln) for (p, ln) in hits if not (p == r'\bPlaceAction\b' and ln == 'C
 # (the same two lines, the same player press; tools/test_bags_bindbox.py proves it)
 hits = [(p, ln) for (p, ln) in hits if not ((p == r'\bPlaceAction\b' and ln == 'CALL(function() return PlaceAction(storage) end)')
                                             or (p == r'\bPickupAction\b' and ln == 'CALL(function() return PickupAction(storage) end)'))]
-# PadMap m146 SMART RANGE (the user, 2026-11-12: "I am completely fine with saving macros for the addon"; "Hide text and sound"): OV.srSync
-# makes / rewrites / renames ONLY our own "DSF ..." character macros (name AND body), out of combat; DSF_SR0 / DSF_SR1 turn the error
-# speech off for the press and give the player's own value back (tools/test_smart_range.py proves both)
-SR_OK = {'if body ~= w.b then CALL(function() return EditMacro(name, name, DYNAMIC_ICON, w.b) end); changed = true end',
-         'CALL(function() return EditMacro(old, name, DYNAMIC_ICON, w.b) end); mine[old] = nil; changed = true',
-         'CALL(function() return CreateMacro(name, DYNAMIC_ICON, w.b, true) end); changed = true',
-         'if type(cc) == "table" and type(cc.SetCVar) == "function" then pcall(cc.SetCVar, cv, v) return end',
-         'pcall(SetCVar, cv, v)'}
-hits = [(p, ln) for (p, ln) in hits if ln not in SR_OK]
+# (PadMap m146-m149 Smart Range's macro / CVar allowance is gone with it: m160, the user 2026-11-13 "Lets scrap the smart ranged
+# attack"; its clean-up only DELETES our own macros, name AND exact body: tools/test_smart_range_gone.py)
+# THE MACROS ROOM (Spells s10, Book b63; the user, 2026-11-13: "Lets scrap the smart ranged attack and start building a macro room";
+# the pick D1: "edits only when the player presses New, Done or Delete, never in a fight"): the room's own writes of the PLAYER'S macros,
+# each behind its one guard and run only by the player's own New / Done / Delete (tools/test_macro_room.py: none outside a tap, none in
+# the lockdown), and D5's Bind box Normal road for a macro (PickupMacro, then Book b59's same PlaceAction line) on the slot the player
+# presses; nothing else of the player's is written
+MACRO_ROOM_LINES = {
+    (r'\bCreateMacro\b', 'local ok, ni = CALL(function() return CreateMacro(name, MR.ICON, "", st.tab == "c") end)'),
+    (r'\bEditMacro\b', 'local ok, ni = CALL(function() return EditMacro(i, name) end)'),
+    (r'\bEditMacro\b', 'local ok = CALL(function() return EditMacro(i, nil, nil, nb) end)'),
+    (r'\bPickupMacro\b', 'CALL(function() return PickupMacro(mi) end)'),
+    # (s10 review) the room's Delete is a write of the player's macros too: scanned like the others, its one line allowed; and PadMap
+    # m160's Smart Range clean-up, which deletes only OUR OWN old macros, name AND exact body, off every bar (the user, 2026-11-13:
+    # "Lets scrap the smart ranged attack"; tools/test_smart_range_gone.py proves it)
+    (r'\bDeleteMacro\b', 'local ok = CALL(function() return DeleteMacro(i) end)'),
+    (r'\bDeleteMacro\b', 'if ok and OV.srx.name(n) and OV.srx.body(body) and not bar[n] and CALL(function() return DeleteMacro(i) end) then m = m + 1 end'),
+}
+hits = [(p, ln) for (p, ln) in hits if (p, ln) not in MACRO_ROOM_LINES]
 check(not hits, "no trace in the new add-on code: no SetBinding / SaveBindings / macros / CVars / bar writes / Blizzard window code",
       hits[:3])
 check(not any('SetOverrideBindingClick' in ln and 'hdr' not in ln and 'owner' not in ln for ln in code),

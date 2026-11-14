@@ -448,10 +448,11 @@ class HomeView(
         if (open) classLeft = !lent(castView) || castView.classRadialLeft()
         val left = classLeft
         val col = ArrayList<Pair<View, RectF>>()
+        val half = if (left) HomeSlide.Half.LEFT else HomeSlide.Half.RIGHT
         for ((p, v) in views) {
             if (p == Part.BARS) continue
             val r = now[p] ?: continue
-            if ((r.centerX() < w / 2f) == left) col += v to r
+            if (halfOf(p, r, w) == half) col += v to r
         }
         val area = ClassSlot.column(col.filter { it.first.visibility == View.VISIBLE }.map { (_, r) -> ClassSlot.Area(r.left, r.top, r.right, r.bottom) },
             now[Part.BARS]?.bottom ?: 0f, h, g, left, w)
@@ -461,7 +462,7 @@ class HomeView(
         // slides back OVER it (the frozen picture rides it out, CastView), and the wheel goes when it is covered
         for ((p, v) in views) if (p != Part.BARS) {
             val r = now[p]
-            v.translationZ = if (r != null && (r.centerX() < w / 2f) == left && (open || classLayer.visibility == View.VISIBLE)) CLASS_COVER_Z else restZ(p)
+            v.translationZ = if (r != null && halfOf(p, r, w) == half && (open || classLayer.visibility == View.VISIBLE)) CLASS_COVER_Z else restZ(p)
         }
         if (open) {
             classLayer.visibility = View.VISIBLE
@@ -501,6 +502,9 @@ class HomeView(
     }
     /** the side the open wheel took (true = the left column's) */
     private var classLeft = true
+    /** fix/castbar-slides: the half a laid part belongs to for a side slide: the cast bar by its side (Both = neither), any other part by
+     *  its centre ([HomeSlide.half]) */
+    private fun halfOf(p: Part, r: RectF, w: Float): HomeSlide.Half = HomeSlide.half(p == Part.STRIP, laidSide, laidHidden, r.centerX(), w)
 
     /**
      * f-radial-middle (1.0.9, the user: "The Dpad up radial, and spell radial should slideup between the middle of the modules like the
@@ -513,21 +517,48 @@ class HomeView(
         if (open && (width == 0 || flow.screen.full != null)) return null            // the host asks only while Home is the room
         if (open == wheelOpen) return if (open) RectF(wheelRect) else null
         wheelOpen = open
+        if (open) wheelFit(now)
+        wheelPart(now, open)
+        return if (open) RectF(wheelRect) else null
+    }
+    /**
+     * the middle wheel's square for the page laid as [places]: as tall as the space under the bars allows (the user on test18: "I want
+     * the dpad up radial to be about the same size as the pause menu radial"; the pause wheel fills the same height); no longer held to
+     * the chat column's width (it rises from below, behind the parting columns). fix/castbar-slides: Both's bar stays where it is (it is
+     * neither column's), so the wheel sits above it
+     */
+    private fun wheelFit(places: Map<Part, RectF>) {
         val w = width.toFloat(); val h = height.toFloat()
         val g = UiKit.MODULE_GAP
-        if (open) {
-            // the user on test18: "I want the dpad up radial to be about the same size as the pause menu radial": as tall as the space
-            // under the bars allows (the pause wheel fills the same height); no longer held to the chat column's width (it rises from
-            // below now, behind the parting columns)
-            val s = ClassSlot.middle(w, h, now[Part.BARS]?.bottom ?: 0f, g, w * WHEEL_SLOT_MAX)
-            wheelRect.set(s.left, s.top, s.left + s.side, s.top + s.side)
-            wheelPush = s.push
-        }
+        val s = ClassSlot.middle(w, h, places[Part.BARS]?.bottom ?: 0f, g, w * WHEEL_SLOT_MAX,
+            bottom = HomeSlide.middleBottom(laidSide, laidHidden, places[Part.STRIP]?.top, h, g))
+        wheelRect.set(s.left, s.top, s.left + s.side, s.top + s.side)
+        wheelPush = s.push
+    }
+    /**
+     * fix/radials-clip-castbar (the user on 1.0.32-1469: "The spells and ds tool bar radials both also clip that bar"): the page laid
+     * again UNDER an open middle wheel (a fight beginning or ending: the bar slid away by Hide in combat comes back up, the controller
+     * grows or shrinks) re-fits the wheel and parts the columns again by the page as it now is - the bar back in Left / Right goes with
+     * its column, the wheel moves above Both's bar. It was fitted once, at its open: a spell radial opened in a fight (the bar hidden =
+     * no column's) left the bar where the fight's end laid it back, under the wheel. [onWheelSlot] hands the wheel its new square.
+     */
+    private fun wheelRefit(places: Map<Part, RectF>) {
+        if (!wheelOpen || width == 0) return
+        val was = RectF(wheelRect)
+        wheelFit(places)
+        wheelPart(places, true)
+        if (was != wheelRect) onWheelSlot?.invoke(RectF(wheelRect))
+    }
+    /** fix/radials-clip-castbar: the open wheel's square changed ([wheelRefit]), in Home's coordinates */
+    var onWheelSlot: ((RectF) -> Unit)? = null
+    /** the columns part for the middle wheel ([open]) by [places], or come back */
+    private fun wheelPart(places: Map<Part, RectF>, open: Boolean) {
+        val w = width.toFloat()
         for ((p, v) in views) {
             if (p == Part.BARS) continue
             if (v.visibility != View.VISIBLE) { if (!open) { v.animate().cancel(); v.translationX = 0f }; continue }
-            val r = now[p] ?: continue
-            val to = if (!open) 0f else if (r.centerX() < w / 2f) -wheelPush else wheelPush
+            val r = places[p] ?: continue
+            val to = if (!open) 0f else HomeSlide.dx(halfOf(p, r, w), wheelPush)
             v.animate().cancel()
             val a = v.animate().translationX(to).setDuration(if (open) Motion.MODULE_OPEN else Motion.MODULE_CLOSE)
                 .setInterpolator(Motion.curve()).withLayer()
@@ -536,7 +567,6 @@ class HomeView(
             a.setListener(null)
             a.start()
         }
-        return if (open) RectF(wheelRect) else null
     }
     /**
      * f-radial-behind (1.0.9, the user: "the radial needs to look like its behind the Map and Chat modules, not slide up in front of it"):
@@ -599,6 +629,15 @@ class HomeView(
 
     /** B took a full module or the buff list back to Home's rest while the disc showed B: the disc's press (MainActivity: strip.homePressed) */
     var onBHome: (() -> Unit)? = null
+    /**
+     * THE CALENDAR BUTTON (the user, 2026-11-13: "The calender can be moved up to a button on the right side of the map name make it
+     * small"; HomeCalendarButton): its touch (at rest and in a fight, the first touch) and the open map module cursor's A open the
+     * Calendar room (the host's show)
+     */
+    var onCalendar: (() -> Unit)? = null
+    /** an invitation waits (the calendar document's `pend`): the game's mark on the button */
+    var calPending = false
+        set(v) { if (field != v) { field = v; invalidate(); auraPane.invalidate() } }
 
     // ---------------------------------------------------------------- the fight faces and B's give-back
 
@@ -631,7 +670,6 @@ class HomeView(
         castView.fightDpad = d
         castView.fightIds = HomeFightFace.ids(map, fightNow)            // b-combat-bar-states: their state by spell id
         castView.trigFights = HomeFightFace.trigFights(map, fightNow)   // the LT / RT / LT+RT In-combat spells, in fights only
-        castView.smartPairs = HomeFightFace.smartPairs(map)            // m146 SMART RANGE: the picture follows the press
         // test22 (the user: "I actually hate the form mark. Remove that."): no form mark on the bars, in a fight or otherwise
         // ONE line per change, so one approved log read proves what the toolbar's D-pad was given (Tracking's ask after test18)
         if (d != dpadSaid) { dpadSaid = d; Log.i("WCLOG", "dpad draw: fight=$fightNow dpad=$d") }
@@ -1596,6 +1634,8 @@ class HomeView(
             if (v.visibility != View.VISIBLE && !classOpen && pauseT == 0f) { v.animate().cancel(); v.translationX = 0f; v.translationZ = restZ(p) }
             v.visibility = View.VISIBLE; v.alpha = 1f
         }
+        // fix/radials-clip-castbar: an open middle wheel follows the page laid again (a fight's start / end), never over the bar
+        if (s.full == null || s.takeover) wheelRefit(to)
         if (!animate || before == null) {
             overlayFrom = overlayOf(s); overlayTo = overlayFrom; overlayOut = 1f; overlayIn = 1f
             flightClip(false)
@@ -1937,7 +1977,12 @@ class HomeView(
             if (sidePx > 0f && p != Part.BARS) {
                 val e = (t / UiKit.PAUSE_OPEN_MS).coerceIn(0f, 1f)
                 val ee = 1f - (1f - e) * (1f - e)
-                v.translationX = (if (o === left) -1f else 1f) * sidePx * ee; v.translationY = 0f
+                // fix/castbar-slides (the user on 1.0.31: "it should only slide the direction if its on that half. If its set to both it
+                // can stay in place"): the cast bar by its side (Left with the chat, Right with the minimap), Both's bar stays
+                val r = now[p]
+                v.translationX = if (p == Part.STRIP && r != null) HomeSlide.dx(halfOf(p, r, width.toFloat()), sidePx * ee)
+                    else (if (o === left) -1f else 1f) * sidePx * ee
+                v.translationY = 0f
                 if (v.visibility == View.VISIBLE) v.alpha = 1f - 0.35f * ee
             }
         }
@@ -1969,9 +2014,13 @@ class HomeView(
         if (zoneA > 0.01f && zoneText.isNotEmpty()) now[Part.MAP]?.let { m ->
             // the name is half the bar's height (UiKit.zoneBand): a 64 px bar = 32 px text (user 09-30: "the map name is SUPER
             // small and hard to read"); map's arrow keeps below ZONE_BAND_BOTTOM
-            val band = RectF(m.left + 8f, m.top + ZONE_BAND_TOP, m.right - 8f, m.top + ZONE_BAND_BOTTOM)
-            val save = if (zoneA < 0.99f) c.saveLayerAlpha(band.left - 4f, band.top - 4f, band.right + 4f, band.bottom + 4f, (zoneA * 255).toInt()) else -1
+            // THE CALENDAR BUTTON (the user, 2026-11-13: "a button on the right side of the map name make it small"): the band ends
+            // before it, and both fade and slide together
+            val band = RectF(m.left + 8f, m.top + ZONE_BAND_TOP, HomeCalendarButton.bandRight(m.right), m.top + ZONE_BAND_BOTTOM)
+            val cb = HomeCalendarButton.box(m.right, m.top)
+            val save = if (zoneA < 0.99f) c.saveLayerAlpha(band.left - 4f, band.top - 4f, cb[2] + 4f, band.bottom + 4f, (zoneA * 255).toInt()) else -1
             UiKit.zoneBand(c, band, zoneText, Theme.zoneColour(zonePvp))
+            UiKit.calendarButton(c, RectF(cb[0], cb[1], cb[2], cb[3]), calPending, down = auraPane.calDown)
             if (save >= 0) c.restoreToCount(save)
         }
         if (slideSave >= 0) c.restoreToCount(slideSave)
@@ -2373,7 +2422,7 @@ class HomeView(
             // (the user on the test build, 2026-10-12: "The quest arrow is getting stuck on the + and - buttons. It should show on
             // the edge of the screen for those"): the arrow keeps the true edge there, under the buttons, which rest at ZOOM_MIN
             if (lent(mapView) && !fullMap()) mapView.rimKeepOut = if (!mapView.compact) emptyList()
-                else listOf(buffBox, debuffBox, panel, warnBox).filter { !it.isEmpty }
+                else listOf(buffBox, debuffBox, panel, warnBox, calBox()).filter { !it.isEmpty }
             // Map 2026-10-09 (the user: the quest arrow under the card; the player lower): how far down the card covers the map now
             if (lent(mapView) && !fullMap()) mapView.compactCover = cardCover()
         }
@@ -2409,27 +2458,42 @@ class HomeView(
         // buffs' rows (8 a row, growing leftward, the first at the right), the debuffs' row under them; the cursor is the kit's
         // slot box; Right from the map enters on the buff row's LEFTMOST icon (nearest the map)
         private var fullCur: Pair<Boolean, Int>? = null              // (debuff, index in its list: 0 = rightmost)
-        val fullCursorOn get() = fullCur != null
+        val fullCursorOn get() = fullCur != null || calCur
         private val buffRects = ArrayList<RectF>(); private val debuffRects = ArrayList<RectF>()
 
         /** the open map closed: the cursor leaves the auras */
-        fun leaveFull() { fullCur = null; close(); if (lent(mapView)) mapView.hostZoomHidden = false }
+        fun leaveFull() { fullCur = null; calCur = false; close(); if (lent(mapView)) mapView.hostZoomHidden = false }
 
         /** D-pad Right from the map: onto the buffs' leftmost icon on their first line (the debuffs' when there are no buffs) */
         fun enterFull() {
             val nb = minOf(auras.shownBuffs.size, FULL_PER); val nd = minOf(auras.shownDebuffs.size, FULL_PER)
             fullCur = when { nb > 0 -> false to nb - 1; nd > 0 -> true to nd - 1; else -> null }
+            // the Calendar button (HomeCalendarButton): with no auras the cursor goes straight onto it
+            calCur = fullCur == null && calShows()
             invalidate()
         }
 
-        /** one press while the cursor is on an aura */
+        /** one press while the cursor is on an aura (or on the Calendar button) */
         fun fullKey(k: String) {
+            if (calCur) {
+                when (k) {
+                    // Left: the buffs' first row's right end (the debuffs' when there are no buffs), else back to the map
+                    "PADDLEFT" -> {
+                        calCur = false
+                        fullCur = when { auras.shownBuffs.isNotEmpty() -> false to 0; auras.shownDebuffs.isNotEmpty() -> true to 0; else -> null }
+                    }
+                    "PAD1" -> { calCur = false; onCalendar?.invoke() }          // A: the Calendar room
+                    "PAD2" -> calCur = false                                       // B: back to the map
+                }
+                invalidate(); return
+            }
             val (deb, i) = fullCur ?: return
             val n = (if (deb) auras.shownDebuffs else auras.shownBuffs).size
             val other = (if (deb) auras.shownBuffs else auras.shownDebuffs).size
             when (k) {
                 "PADDLEFT" -> fullCur = if (i + 1 < n && (i + 1) % FULL_PER != 0) deb to i + 1 else null      // past the leftmost: the map
                 "PADDRIGHT" -> if (i % FULL_PER > 0) fullCur = deb to i - 1
+                    else if (i < FULL_PER && (!deb || auras.shownBuffs.isEmpty()) && calShows()) { fullCur = null; calCur = true }   // the Calendar button
                 "PADDDOWN" -> if (!deb && i + FULL_PER < minOf(n, FULL_PER * ROW_LINES)) fullCur = false to i + FULL_PER
                     else if (!deb && other > 0) fullCur = true to minOf(i % FULL_PER, other - 1)
                 "PADDUP" -> if (deb && other > 0) fullCur = false to minOf(i % FULL_PER + FULL_PER * ((minOf(other, FULL_PER * ROW_LINES) - 1) / FULL_PER), other - 1)
@@ -2443,7 +2507,9 @@ class HomeView(
         private fun drawFull(c: Canvas, w: Float, h: Float, now: Long) {
             val nb = auras.shownBuffs.size; val nd = auras.shownDebuffs.size
             buffRects.clear(); debuffRects.clear()
-            val right = w - FULL_RIGHT
+            // the Calendar button has the corner (HomeCalendarButton.fullBox): the rows end left of it
+            val right = w - FULL_RIGHT - (if (calShows()) HomeCalendarButton.FULL_SHIFT else 0f)
+            if (calShows()) calBox().let { b -> UiKit.calendarButton(c, b, calPending, focus = calCur && open == null, down = calDown) }
             if (nb > 0) auraRow(c, auras.shownBuffs, false, FULL_TOP, right, buffBox, now, fromRight = true, rects = buffRects)
             var dTop = if (nb > 0) buffBox.bottom + 8f else FULL_TOP
             // the game's durability warning between the buffs and the debuffs (the user's pick): the debuffs make room for it
@@ -2729,9 +2795,58 @@ class HomeView(
 
         private var coverWas = false
 
+        // ---- THE CALENDAR BUTTON (HomeCalendarButton): its touch box here (the pane lies exactly over the map), its stop on the open
+        // map's cursor
+        /** a finger is down on it (its press look) */
+        var calDown = false
+            private set
+        private var calTracking = false
+        /** where the button shows in the pane: the band's corner at rest / in a fight, the corner by the buffs in the open map */
+        private fun calShows(): Boolean = shown?.let { it.full == null || it.takeover || fullMap() } == true && zoneText.isNotEmpty()
+        /** its box in the pane (the compact map: under the band's end; the open map: [HomeCalendarButton.fullBox]); empty = not shown */
+        fun calBox(): RectF {
+            if (!calShows() || width <= 0) return RectF()
+            val b = if (fullMap()) HomeCalendarButton.fullBox(width.toFloat(), FULL_RIGHT, FULL_TOP)
+                else HomeCalendarButton.box(width.toFloat(), 0f)
+            return RectF(b[0], b[1], b[2], b[3])
+        }
+        private fun calHit(x: Float, y: Float): Boolean {
+            if (!calShows() || open != null) return false
+            if (fullMap()) return HomeCalendarButton.inBox(x, y, HomeCalendarButton.fullBox(width.toFloat(), FULL_RIGHT, FULL_TOP), 12f)
+            return HomeCalendarButton.inHit(x, y, width.toFloat())
+        }
+        private fun calTouch(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    calTracking = calHit(e.x, e.y)
+                    if (calTracking) { calDown = true; this@HomeView.invalidate(); invalidate() }
+                    return calTracking
+                }
+                MotionEvent.ACTION_MOVE -> if (calTracking) {
+                    val d = calHit(e.x, e.y)
+                    if (d != calDown) { calDown = d; this@HomeView.invalidate(); invalidate() }
+                    return true
+                }
+                MotionEvent.ACTION_UP -> if (calTracking) {
+                    calTracking = false
+                    val go = calDown && calHit(e.x, e.y)
+                    calDown = false; this@HomeView.invalidate(); invalidate()
+                    if (go) { Log.i(TAG, "home: the Calendar button touched${if (grow.fighting(System.currentTimeMillis())) " (in a fight)" else ""}"); onCalendar?.invoke() }
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> if (calTracking) { calTracking = false; calDown = false; this@HomeView.invalidate(); invalidate(); return true }
+            }
+            return false
+        }
+        /** the open map's cursor is on the button (Right from the buffs' first row's right end; straight on with no auras) */
+        var calCur = false
+            private set
+
         override fun onTouchEvent(e: MotionEvent): Boolean {
             // a touch on the open quest panel is the panel's (the map below takes it), never a buff's
             if (e.actionMasked == MotionEvent.ACTION_DOWN && fullMap() && lent(mapView) && mapView.panelCover()?.contains(e.x, e.y) == true) return false
+            // THE CALENDAR BUTTON's touch (HomeCalendarButton): the first touch opens the Calendar room, in a fight too (D8)
+            if (calTouch(e)) return true
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     zoomDown = when { zoomIn.contains(e.x, e.y) -> -1; zoomOut.contains(e.x, e.y) -> +1; else -> 0 }
@@ -2972,8 +3087,8 @@ internal object ClassSlot {
      * how far each column parts (half the wheel and a gap)
      */
     data class Middle(val left: Float, val top: Float, val side: Float, val push: Float)
-    fun middle(w: Float, h: Float, barsBottom: Float, gap: Float, maxSide: Float): Middle {
-        val avail = (h - gap) - (barsBottom + gap)
+    fun middle(w: Float, h: Float, barsBottom: Float, gap: Float, maxSide: Float, bottom: Float = h - gap): Middle {
+        val avail = bottom - (barsBottom + gap)
         val side = minOf(avail, maxSide).coerceAtLeast(1f)
         val top = barsBottom + gap + (avail - side) / 2f
         return Middle((w - side) / 2f, top, side, side / 2f + gap)
@@ -2981,6 +3096,32 @@ internal object ClassSlot {
     /** how far a part of the column slides to be wholly off its own edge ([w] the page's width) */
     fun away(left: Boolean, partLeft: Float, partRight: Float, w: Float, gap: Float): Float =
         if (left) -(partRight + gap) else (w - partLeft + gap)
+}
+
+/**
+ * fix/castbar-slides (the user on 1.0.31: "When holding LB it slides right but it should only slide the direction if its on that half. If
+ * its set to both it can stay in place. The rb plus l2 class pet attack bar is also behaving weird now with the right side menu stuff
+ * sliding the both bar to the right and the circle going the full screen size"): which half of Home a part belongs to for the side
+ * slides (the LB picture, the class wheels, the middle wheel). Every part was put on a half by its centre; Both's bar spans the whole
+ * width, its centre is the page's middle (not left of it), so it counted as the RIGHT column: RB + RT's wheel took the union of the right
+ * column AND the full-width bar as its area (a square as tall as the page) and slid the bar away with the map. Now the cast bar's half
+ * is its side: Left goes with the chat, Right with the minimap, Both with neither (it stays); a bar slid away for a fight is no
+ * column's (it is below the page). The pause wheel's full slide keeps cb3's choice (Both goes left with the chat, pauseSlide).
+ */
+internal object HomeSlide {
+    enum class Half { LEFT, RIGHT, NONE }
+    fun half(strip: Boolean, side: CastStripModel.Side, hidden: Boolean, centerX: Float, w: Float): Half = when {
+        !strip -> if (centerX < w / 2f) Half.LEFT else Half.RIGHT
+        hidden -> Half.NONE
+        side == CastStripModel.Side.LEFT -> Half.LEFT
+        side == CastStripModel.Side.RIGHT -> Half.RIGHT
+        else -> Half.NONE
+    }
+    /** a side slide's offset for [h]: the left half goes left [px], the right half right, a part of neither stays */
+    fun dx(h: Half, px: Float): Float = when (h) { Half.LEFT -> -px; Half.RIGHT -> px; Half.NONE -> 0f }
+    /** the middle wheel's lowest edge: above Both's laid bar (it stays), else the page's foot */
+    fun middleBottom(side: CastStripModel.Side, hidden: Boolean, stripTop: Float?, h: Float, gap: Float): Float =
+        if (side == CastStripModel.Side.BOTH && !hidden && stripTop != null) minOf(h - gap, stripTop - gap) else h - gap
 }
 
 /** p-card-invisible: the quest card's state in words, for the WCHOME "quest card:" line (pure, so the JVM tests read it) */

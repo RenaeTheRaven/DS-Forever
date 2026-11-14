@@ -61,8 +61,9 @@ class SettingsTabsTest {
     /** every row's tab and group, exactly as approved (the D-pad walks them in this order) */
     @Test fun everyRowInItsApprovedGroup() {
         val want: Map<G, List<String>> = mapOf(
-            G.LOOK to listOf("Theme", "Language"),
-            G.ACCOUNT to listOf("Battle.net login", "Game account"),
+            G.LOOK to listOf("Theme", "Language", "Swap screens", "Restart DS Forever"),     // #232: Swap screens (only with a second screen)
+            // the user, 2026-11-14 ("build it"): Windows ID under Game account
+            G.ACCOUNT to listOf("Battle.net login", "Game account", "Windows ID"),
             G.HELP to listOf("Problem report", "Reload game UI", "Status"),
             // the clock extras (the user's picks 2026-11-13, feat/item-cooldowns): one row each, before the toolbar
             G.HOME to listOf("Controller on Home", "Combat layout", "Swing timer", "Focused quest", "Hearthstone", "Class teleport", "Gold",
@@ -77,7 +78,7 @@ class SettingsTabsTest {
             G.WINDOWS to listOf("Minimap", "Quest tracker", "Chat window", "NPC windows", "Loot window", "Game tooltips", "Cast bar",
                 "Player frame", "Target frame", "Controller bars, buffs and XP"),
             G.BUTTONS to listOf("ABXY location", "Button glyphs"),
-            G.WHEELS to listOf("Pause menu: open", "Pause menu: pick", "Item wheel: open", "Item wheel: pick", "Spell wheel: open",
+            G.WHEELS to listOf("Pause menu: open", "Pause menu: pick", "Start over game windows", "Item wheel: open", "Item wheel: pick", "Spell wheel: open",
                 "Spell wheel: pick", "Left class radial: open", "Left class radial: pick", "Right class radial: open", "Right class radial: pick"),
             G.SMART_Y to listOf("Smart Y"),
             G.COMBAT to listOf("Party mode", "Smart Res", "Start attack on hostile target", "Start the attack when a spell is cast", "Combat Auto Shot"),
@@ -136,7 +137,13 @@ class SettingsTabsTest {
             // hub52 (the user, 2026-11-13: "maybe we should set this as a toggle defaulted to off"): Top > Target
             listOf("Friendly plates") +
             // added since: the clock band's ammo (feat/clock-extras-v2)
-            listOf("Ammo")
+            listOf("Ammo") +
+            // the user's pick 2026-11-13 ("Make it a setting toggle defaulted to our wheel"): Controller > Pause menu (Start)
+            listOf("Start over game windows") +
+            // GitHub #232 (the user, 2026-11-14: build it): General > Look > Swap screens, its Restart under it after a change
+            listOf("Swap screens", "Restart DS Forever") +
+            // the user, 2026-11-14 ("build it", the BLZ51914400 wave): General > Account > Windows ID
+            listOf("Windows ID")
         val now = B.values().flatMap { it.rows }
         assertEquals(before.toSet(), now.toSet())
         assertEquals("a row in two places", now.size, now.toSet().size)
@@ -210,7 +217,8 @@ class SettingsTabsTest {
     }
 
     @Test fun settingsViewDrawsItsOwnBlocksOnly() {
-        assertEquals(listOf(B.THEME, B.LANGUAGE, B.ACCOUNT, B.GAME_ACCOUNT, B.HELP), SettingsTabs.viewBlocks(T.GENERAL))   // + the status (GameUiSection)
+        // #232: Swap screens under the language (SettingsView draws it, only with a second screen); Windows ID under Game account
+        assertEquals(listOf(B.THEME, B.LANGUAGE, B.SCREENS, B.ACCOUNT, B.GAME_ACCOUNT, B.WINDOWS_ID, B.HELP), SettingsTabs.viewBlocks(T.GENERAL))   // + the status (GameUiSection)
         assertEquals(listOf(B.MAP, B.CHAT), SettingsTabs.viewBlocks(T.BOTTOM))                            // under Home's section
         assertEquals(listOf(B.POLESTAR_TOP), SettingsTabs.viewBlocks(T.TOP))                              // the rest: GameUiSection
         assertEquals(listOf(B.CONTROLLER, B.PAUSE_WHEEL, B.ITEM_WHEEL, B.SPELL_WHEEL, B.CLASS_LEFT, B.CLASS_RIGHT, B.SMART_Y),
@@ -226,7 +234,8 @@ class SettingsTabsTest {
         for (b in listOf(B.PAUSE_WHEEL, B.ITEM_WHEEL, B.SPELL_WHEEL, B.CLASS_LEFT, B.CLASS_RIGHT)) {
             assertEquals(T.CONTROLLER, b.tab)
             assertEquals(G.WHEELS, b.group)
-            assertEquals(2, b.rows.size)
+            // the user's pick 2026-11-13: the pause menu's third row, Start over game windows (Our wheel / Game's wheel)
+            assertEquals(if (b == B.PAUSE_WHEEL) 3 else 2, b.rows.size)
             assertTrue(b.rows[0].endsWith(": open") && b.rows[1].endsWith(": pick"))
             for (r in b.rows) assertTrue("$r has a picture", SettingsPreview.has(r))
         }
@@ -302,7 +311,8 @@ class SettingsPreviewRowsTest {
     }
 
     @Test fun twentyTwoRowsAndTheMovingOnes() {          // f-radial-settings: + the spell wheel's own pair; 2026-11-13: + 12, + the cast bar's In combat
-        assertEquals(39, SettingsPreview.ROWS.size)
+        assertEquals(40, SettingsPreview.ROWS.size)                     // 2026-11-13: + Start over game windows
+        assertTrue(SettingsPreview.animated("Start over game windows"))
         assertTrue(SettingsPreview.animated("Swing timer") && SettingsPreview.animated("Frame limit") && !SettingsPreview.animated("Button glyphs"))
         assertTrue(SettingsPreview.animated("In combat"))                // the bar fading out in a fight
     }

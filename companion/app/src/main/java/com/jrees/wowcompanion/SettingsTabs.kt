@@ -48,9 +48,15 @@ object SettingsTabs {
         // 2026-11-12 (the user: "an oled theme, but different color variations for menus"): the theme picker, the language under it
         THEME(Group.LOOK, "Theme", listOf("Theme")),
         LANGUAGE(Group.LOOK, "Language", listOf("Language")),
+        // GitHub #232 (the user, 2026-11-14: build it): which screen has the game; only with a second screen, Restart under it after a
+        // change (ScreenSwap)
+        SCREENS(Group.LOOK, "Screens", listOf("Swap screens", "Restart DS Forever")),
         ACCOUNT(Group.ACCOUNT, "Battle.net login", listOf("Battle.net login")),
         // #47: several game accounts on one Battle.net login - the game's own picker each time, or its remembered pick
         GAME_ACCOUNT(Group.ACCOUNT, "Game account", listOf("Game account")),
+        // the user, 2026-11-14 ("build it", the BLZ51914400 wave): Per install / Original, from the next game start; while the running game
+        // started with the other one, a "Restart the game" row under it (Frames' words: the same launcher restart, so not listed again)
+        WINDOWS_ID(Group.ACCOUNT, WindowsId.ROW_ID, listOf(WindowsId.ROW_ID)),
         HELP(Group.HELP, "Help", listOf("Problem report", "Reload game UI")),
         COMPANION(Group.HELP, "Companion", listOf("Status"), Drawer.GAME_UI),
         // ---- Bottom screen (the old Home tab)
@@ -78,7 +84,8 @@ object SettingsTabs {
         CONTROLLER(Group.BUTTONS, "Buttons", listOf("ABXY location", "Button glyphs")),
         // f-radial-settings (1.0.9, the user: "better organize each radial setting into categories so its clear what each one is"): a
         // sub-heading per wheel, naming the button that opens it
-        PAUSE_WHEEL(Group.WHEELS, "Pause menu (Start)", listOf("Pause menu: open", "Pause menu: pick"), subHead = true),
+        // the user's pick 2026-11-13 ("Make it a setting toggle defaulted to our wheel"): Start over a game window, Our wheel / Game's wheel
+        PAUSE_WHEEL(Group.WHEELS, "Pause menu (Start)", listOf("Pause menu: open", "Pause menu: pick", PauseOver.ROW_ID), subHead = true),
         ITEM_WHEEL(Group.WHEELS, "Item wheel (D-pad Up)", listOf("Item wheel: open", "Item wheel: pick"), subHead = true),
         SPELL_WHEEL(Group.WHEELS, "Spell wheel (its button in Controller)", listOf("Spell wheel: open", "Spell wheel: pick"), subHead = true),
         CLASS_LEFT(Group.WHEELS, "Left class radial (LB + LT)", listOf("Left class radial: open", "Left class radial: pick"), subHead = true),

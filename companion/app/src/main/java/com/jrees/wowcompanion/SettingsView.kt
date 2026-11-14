@@ -122,6 +122,13 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private val segLight = Array(2) { RectF() }
     private val segLowGfx = Array(2) { RectF() }                      // 2026-11-08: Settings > System > Low-memory graphics                       // 1.0.17: Settings > Performance > Lighter mode
     private val segGameAcct = Array(2) { RectF() }                    // #47: Settings > General > Game account, Ask each time / Remembered
+    private val segSwap = Array(2) { RectF() }                        // #232: Settings > General > Swap screens, On / Off
+    private var btnSwapRestart = RectF()                              // its Restart DS Forever (the choice applies from a start)
+    /** the user, 2026-11-14 ("build it"): General > Account > Windows ID, Per install / Original; its "Restart the game" while the running
+     *  game started with the other one ([measuredWinIdRestart]: the measure's answer, the draw asks for a new layout when it changed) */
+    private val segWinId = Array(2) { RectF() }
+    private var btnWinIdRestart = RectF()
+    private var measuredWinIdRestart = false
     /** Map > Indoor maps: build in the background On / Off (Settings.indoorBuild; b-interiors-stutter) */
     private val segIndoor = Array(2) { RectF() }
     /**
@@ -165,6 +172,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** the pause wheel's own pair (HomeSettings.pauseTap / pausePickA; the user 2026-10-09) */
     private val segPauseOpen = Array(2) { RectF() }
     private val segPausePick = Array(2) { RectF() }
+    /** the user's pick 2026-11-13: Start over game windows (HomeSettings.pauseOverGame): Our wheel / Game's wheel */
+    private val segPauseOver = Array(2) { RectF() }
 
     /**
      * FRAME GENERATION (board f-frame-gen): the player's own Lossless.dll and its settings (FrameGen; applied at the next game start).
@@ -226,6 +235,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         HomeSettings.onChange { postInvalidate() }          // the wheels' two settings (also switched from the Controller DS tab)
         FrameGen.init(context)
         FrameGen.onChange { post { requestLayout(); invalidate() } }   // a pick finishes on a background thread; rows may come or go
+        WindowsId.onChange { post { requestLayout(); invalidate() } }  // a game start (the launcher's thread): the restart row may come or go
         CastSettings.init(context)
     }
 
@@ -259,7 +269,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     fun focusTargets(): List<RectF> =
         (listOf(btnReload) + (if (loginRow) listOf(btnLogin) else emptyList()) + listOf(btnReport, btnReportDismiss, btnStream) +
             listOf(btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus) + segQt.toList() + segPsTop.toList() + segPq.flatMap { it.toList() } + segDanger.toList() + segFog.toList() + segChat.toList() +
-            segTheme.toList() + segLang.toList() + segGameAcct.toList() + segLight.toList() + segLocation.toList() + segLayout.toList() + segPauseOpen.toList() + segPausePick.toList() + segOpen.toList() + segPick.toList() +
+            segTheme.toList() + segLang.toList() + segSwap.toList() + listOf(btnSwapRestart) + segGameAcct.toList() + segWinId.toList() + listOf(btnWinIdRestart) + segLight.toList() + segLocation.toList() + segLayout.toList() + segPauseOpen.toList() + segPausePick.toList() + segPauseOver.toList() + segOpen.toList() + segPick.toList() +
             // test40 ("I can't press down ... even though it appears like there are options below"): the spell wheel's and the class
             // radials' segments were drawn but never listed, so the cursor stopped at the item wheel
             segSpellOpen.toList() + segSpellPick.toList() + segClassLOpen.toList() + segClassLPick.toList() + segClassROpen.toList() +
@@ -292,9 +302,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         addonModuleBoxes.clear(); addonOptionSegs.clear(); addonCoreBtn.clear(); addonRestart.setEmpty(); addonSettingsBtn.clear()
         btnGuidePending.setEmpty(); for (r in segGuide) r.setEmpty()
         for (r in listOf(btnReload, btnLogin, btnReport, btnReportDismiss, btnStream, btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus,
-                         btnDeferred, btnRouteReview, btnDll, btnFlowMinus, btnFlowPlus, btnRestart)) r.setEmpty()
-        for (a in listOf(segIndoor, segLocation, segLayout, segPauseOpen, segPausePick, segOpen, segPick, segSpellOpen, segSpellPick, segClassLOpen, segClassLPick,
-                         segClassROpen, segClassRPick, segChat, segQt, segPsTop, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segTheme, segLight, segGameAcct,
+                         btnDeferred, btnRouteReview, btnDll, btnFlowMinus, btnFlowPlus, btnRestart, btnSwapRestart, btnWinIdRestart)) r.setEmpty()
+        for (a in listOf(segIndoor, segLocation, segLayout, segPauseOpen, segPausePick, segPauseOver, segOpen, segPick, segSpellOpen, segSpellPick, segClassLOpen, segClassLPick,
+                         segClassROpen, segClassRPick, segChat, segQt, segPsTop, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segTheme, segLight, segGameAcct, segSwap, segWinId,
                          segLimit, segFg, segMult, segPerf))
             for (r in a) r.setEmpty()
     }
@@ -303,6 +313,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         // the Frame rows counted HERE (the draw compares its own count with this one and asks for a new layout when a row came or went)
         measuredFg = fgRows().size
+        measuredWinIdRestart = winIdRestart()
         val h = Math.round(layoutHeight())
         // a part shrunk to nothing is never drawn again (a 0 px child is skipped): its last boxes must not stay pressable
         if (h == 0) clearBoxes()
@@ -342,10 +353,13 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** a block's rows' height (from its first row's top to its last row's bottom), laid out exactly as its draw function lays it out */
     private fun blockHeight(b: SettingsTabs.Block): Float = when (b) {
         SettingsTabs.Block.LANGUAGE -> ROW_H
+        // #232: only with a second screen; Restart under it while the saved choice is not the one in use
+        SettingsTabs.Block.SCREENS -> if (!ScreenSwap.offered) 0f else ROW_H + (if (swapPending() == ScreenSwap.Pending.NONE) 0f else 10f + ROW_H)
         SettingsTabs.Block.THEME -> themeGridH()
         SettingsTabs.Block.LIGHTER -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.ACCOUNT -> if (loginRow) ROW_H else 0f
         SettingsTabs.Block.GAME_ACCOUNT -> ROW_H
+        SettingsTabs.Block.WINDOWS_ID -> if (winIdRestart()) ROW_H + 10f + ROW_H else ROW_H
         SettingsTabs.Block.HELP -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.STREAMING -> ROW_H
         // zoom out, zoom in, World map (Quest tracking moved to Add-ons > Polestar, 2026-11-12)
@@ -354,7 +368,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         SettingsTabs.Block.POLESTAR_TOP -> if (psTopShown()) ROW_H else 0f
         SettingsTabs.Block.INDOOR -> ROW_H + 10f + ROW_H + deferredListH() + 10f + ROW_H
         SettingsTabs.Block.CONTROLLER -> ROW_H + 10f + ROW_H
-        SettingsTabs.Block.PAUSE_WHEEL, SettingsTabs.Block.ITEM_WHEEL, SettingsTabs.Block.SPELL_WHEEL,
+        SettingsTabs.Block.PAUSE_WHEEL -> ROW_H + 10f + ROW_H + 10f + ROW_H             // + Start over game windows
+        SettingsTabs.Block.ITEM_WHEEL, SettingsTabs.Block.SPELL_WHEEL,
         SettingsTabs.Block.CLASS_LEFT, SettingsTabs.Block.CLASS_RIGHT -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.CHAT -> ROW_H
         SettingsTabs.Block.FRAMES -> fgHeight()
@@ -366,6 +381,10 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private fun fgRows(): List<FrameGen.Row> = listOf(FrameGen.Row.LIMIT) + FrameGen.rows(FrameGen.hasDll(),
         FrameGen.showRestart(gameRunning(), SetupBridge.restarting, FrameGen.launched, FrameGen.current()) ||
             (gameRunning() && !SetupBridge.restarting && FrameGen.limitNeedsRestart(FrameGen.launchedLimit, FrameGen.fpsLimit)))
+
+    /** Windows ID's "Restart the game" row shows (the running game started with the other identity, no restart under way) */
+    private fun winIdRestart(): Boolean =
+        WindowsId.showRestart(gameRunning(), SetupBridge.restarting, WindowsId.launched, Settings.windowsId)
 
     private fun fgHeight(): Float {
         val n = fgRows().size                     // no side effect: the draw path asks this too ([measuredFg] is onMeasure's)
@@ -446,6 +465,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             segPauseOpen[1].contains(x, y) -> HomeSettings.pauseTap = false
             segPausePick[0].contains(x, y) -> HomeSettings.pausePickA = true
             segPausePick[1].contains(x, y) -> HomeSettings.pausePickA = false
+            segPauseOver[0].contains(x, y) -> HomeSettings.pauseOverGame = false
+            segPauseOver[1].contains(x, y) -> HomeSettings.pauseOverGame = true
             segOpen[0].contains(x, y) -> HomeSettings.radialTap = true
             segOpen[1].contains(x, y) -> HomeSettings.radialTap = false
             segPick[0].contains(x, y) -> HomeSettings.radialPickA = true
@@ -465,6 +486,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             addonTap(x, y) -> {}
             btnDll.contains(x, y) -> onChooseDll()
             btnRestart.contains(x, y) -> { btnRestart = RectF(); onRestart() }
+            btnWinIdRestart.contains(x, y) -> { btnWinIdRestart = RectF(); onRestart() }
             segFg[0].contains(x, y) -> FrameGen.enabled = false
             segFg[1].contains(x, y) -> if (FrameGen.hasDll()) FrameGen.enabled = true
             btnFlowMinus.contains(x, y) -> FrameGen.flowScale = FrameGen.stepFlow(FrameGen.flowScale, -1)
@@ -485,10 +507,20 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                     val pi = segs.indexOfFirst { it.contains(x, y) }
                     if (pi >= 0) { PolestarQol.set(GameUi.character, listOf(PolestarQol.QUEST, PolestarQol.VENDOR, PolestarQol.REPAIR)[k], pi == 0); invalidate(); return }
                 }
+                // #232: On / Off saved (it applies from a start: the Restart row comes or goes, so the slice is measured again)
+                val swi = segSwap.indexOfFirst { it.contains(x, y) }
+                if (swi >= 0) {
+                    Settings.swapScreens = swi == 0
+                    DiagLog.event("app", "Swap screens set ${if (swi == 0) "on" else "off"} (in use: ${ScreenSwap.inUseNow})")
+                    requestLayout(); invalidate(); return
+                }
+                if (!btnSwapRestart.isEmpty && btnSwapRestart.contains(x, y)) { btnSwapRestart = RectF(); ScreenSwap.restart?.invoke(); invalidate(); return }
                 val lti = segLight.indexOfFirst { it.contains(x, y) }
                 if (lti >= 0) { Settings.lighterMode = lti == 0; invalidate(); return }
                 val gai = segGameAcct.indexOfFirst { it.contains(x, y) }
                 if (gai >= 0) { Settings.gameAccountAsk = gai == 0; invalidate(); return }
+                val wii = segWinId.indexOfFirst { it.contains(x, y) }
+                if (wii >= 0) { Settings.windowsId = WindowsId.VALUES[wii]; requestLayout(); invalidate(); return }   // the restart row may come or go
                 val lgx = segLowGfx.indexOfFirst { it.contains(x, y) }
                 if (lgx >= 0) { Settings.lowMemGraphics = lgx == 0; invalidate(); return }
                 val thi = segTheme.indexOfFirst { it.contains(x, y) }
@@ -543,10 +575,12 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             }
             y = when (b) {
                 SettingsTabs.Block.LANGUAGE -> drawLanguage(c, y)
+                SettingsTabs.Block.SCREENS -> drawScreens(c, y)
                 SettingsTabs.Block.THEME -> drawTheme(c, y)
                 SettingsTabs.Block.LIGHTER -> drawLighter(c, y)
                 SettingsTabs.Block.ACCOUNT -> drawAccount(c, y)
                 SettingsTabs.Block.GAME_ACCOUNT -> drawGameAccount(c, y)
+                SettingsTabs.Block.WINDOWS_ID -> drawWindowsId(c, y)
                 SettingsTabs.Block.HELP -> drawHelp(c, y)
                 SettingsTabs.Block.STREAMING -> drawStreaming(c, y)
                 SettingsTabs.Block.MAP -> drawMap(c, y)
@@ -556,6 +590,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 SettingsTabs.Block.CONTROLLER -> drawController(c, y)
                 SettingsTabs.Block.PAUSE_WHEEL -> drawWheel(c, y, "Pause menu", "Press Start to open; it stays until B.",
                     "Hold Start; letting go closes it.", HomeSettings.pauseTap, HomeSettings.pausePickA, segPauseOpen, segPausePick)
+                    .let { bottom -> drawPauseOver(c, bottom + 10f) }
                 SettingsTabs.Block.ITEM_WHEEL -> drawWheel(c, y, "Item wheel", "Press D-pad Up to open; it stays until B.",
                     "Hold D-pad Up; letting go closes it.", HomeSettings.radialTap, HomeSettings.radialPickA, segOpen, segPick)
                 SettingsTabs.Block.SPELL_WHEEL -> drawWheel(c, y, "Spell wheel", "Press its button to open; it stays until B.",
@@ -671,6 +706,37 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         return top + ROW_H
     }
 
+    /** #232: the Restart row's state now (ScreenSwap.pending: the saved choice against the one this run uses) */
+    private fun swapPending(): ScreenSwap.Pending =
+        ScreenSwap.pending(Settings.swapScreens, ScreenSwap.inUseNow, gameRunning(), ScreenSwap.restart != null)
+
+    /**
+     * GitHub #232 SWAP SCREENS (the user, 2026-11-14: "build it"): On / Off (Off, the default = the Thor's arrangement). Shown only
+     * with a second screen ([ScreenSwap.offered]). The choice applies from a start, so a change brings "Restart DS Forever" under it:
+     * its Restart button with no game, only "After the game closes" while the game runs (a restart would end it)
+     */
+    private fun drawScreens(c: Canvas, top: Float): Float {
+        btnSwapRestart = RectF()
+        if (!ScreenSwap.offered) { for (r in segSwap) r.setEmpty(); return top }
+        val segW = segW()
+        row(c, top, "Swap screens", "The game and DS Forever trade screens", enabled = true) { box ->
+            val b = RectF(box.right - 16f - segW * 2, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, listOf(Tr.t("On"), Tr.t("Off")), if (Settings.swapScreens) 0 else 1, segSwap)
+            b
+        }
+        val pending = swapPending()
+        if (pending == ScreenSwap.Pending.NONE) return top + ROW_H
+        val t2 = top + ROW_H + 10f
+        val now = pending == ScreenSwap.Pending.RESTART
+        val hit = row(c, t2, "Restart DS Forever", if (now) "To swap the screens" else "After the game closes", enabled = now) { box ->
+            val b = RectF(box.right - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            UiKit.button(c, b, "Restart", if (now) UiKit.Button.UP else UiKit.Button.DISABLED)
+            b
+        }
+        if (now) btnSwapRestart = hit
+        return t2 + ROW_H
+    }
+
     /** 1.0.17: Lighter mode On / Off (off by default; the 8 / 12 GB Thors are always lighter: DeviceTier) */
     private fun drawLighter(c: Canvas, top: Float): Float {
         val segW = segW()
@@ -723,6 +789,35 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             b
         }
         return top + ROW_H
+    }
+
+    /**
+     * General > Account > Windows ID (the user, 2026-11-14: "build it"; the BLZ51914400 wave): Per install (the default) / Original
+     * (Settings.windowsId; WindowsId says what differs), from the next game start. While the running game started with the other one,
+     * "Restart the game" under it (the launcher's restart, as Frames' row). Never an identity value on the page.
+     */
+    private fun drawWindowsId(c: Canvas, top: Float): Float {
+        val restart = winIdRestart()
+        if (restart != measuredWinIdRestart) requestLayout()       // the restart row came or went: the room's scroll needs the new height
+        val labels = WindowsId.SEGMENTS.map { Tr.t(it) }
+        val sw = segW()
+        pBtn.textSize = SEG_TEXT
+        val w = maxOf(sw, labels.maxOf { pBtn.measureText(it) } + SEG_PAD)
+        pBtn.textSize = 27f
+        row(c, top, WindowsId.ROW_ID, Tr.t("From the next game start"), enabled = true) { box ->
+            val b = RectF(box.right - 16f - w * 2, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, labels, WindowsId.VALUES.indexOf(Settings.windowsId), segWinId)
+            b
+        }
+        btnWinIdRestart = RectF()
+        if (!restart) return top + ROW_H
+        val t2 = top + ROW_H + 10f
+        btnWinIdRestart = row(c, t2, "Restart the game", Tr.t(WindowsId.RESTART_LINE), enabled = true) { box ->
+            val b = RectF(box.right - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            UiKit.button(c, b, "Restart", UiKit.Button.UP)
+            b
+        }
+        return t2 + ROW_H
     }
 
     /** General > Help: the problem report, then Reload game UI (the companion's status under them is GameUiSection's) */
@@ -936,6 +1031,18 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             b
         }
         return y + ROW_H
+    }
+
+    /** the user's pick 2026-11-13 ("Make it a setting toggle defaulted to our wheel"): Start with a game window open */
+    private fun drawPauseOver(c: Canvas, top: Float): Float {
+        val game = HomeSettings.pauseOverGame
+        val segW = segW()
+        row(c, top, PauseOver.ROW_ID, PauseOver.line(game), enabled = true) { box ->
+            val b = RectF(box.right - 16f - segW * 2, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, PauseOver.SEGMENTS, if (game) 1 else 0, segPauseOver)
+            b
+        }
+        return top + ROW_H
     }
 
     // ---- SMART Y (Spells' PadMap m62; the user: "logic rows, with the bottom row being an Add button ... on a single row I need to be
