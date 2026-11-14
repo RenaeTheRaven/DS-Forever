@@ -18,7 +18,7 @@ uses uinput); no self-update (the official zip is the Windows build).
 
 ## Build and install
 
-    desktop/linux/build.sh 0.2.27 DsForeverDesktop-0.2.27-win-x64.zip <extracted Sunshine AppImage> ~/Applications/DSForeverDesktop-linux
+    desktop/linux/build.sh 0.2.29 DsForeverDesktop-0.2.29-win-x64.zip <extracted Sunshine AppImage> ~/Applications/DSForeverDesktop-linux
     ~/Applications/DSForeverDesktop-linux/ds-forever-desktop
 
 Needs a .NET SDK (`~/.dotnet/dotnet`, or `DOTNET=`), `umu-run`, `python3`, `openssl`, and read/write access to `/dev/uinput`.

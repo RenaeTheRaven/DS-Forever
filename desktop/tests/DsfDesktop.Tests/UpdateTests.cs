@@ -165,6 +165,7 @@ namespace DsfDesktop.Tests
         [Test]
         public static void TheSwapReplacesFilesInUse()
         {
+            if (DsfDesktop.Host.Wine) throw new SkipException("custom-thor: no self-update on a Linux PC (and Wine does not lock a running exe's folder)");
             using (var t = new Tmp())
             {
                 var app = t.P("my unzip", "DS Forever Desktop"); var next = t.P("next");
