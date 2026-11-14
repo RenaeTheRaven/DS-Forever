@@ -49,7 +49,12 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
 
     /** the module in this view's own px: the view's left is the screen's edge (the tab's place, m134) */
     fun module(): PartyLayout.Module =
-        PartyLayout.module(mode, live.party?.n ?: 1, pet = live.party?.pet == true, top = 0f, left = 0f, right = width.toFloat())
+        PartyLayout.module(mode, live.party?.view?.size ?: 1, pet = live.party?.viewPet == true, top = 0f, left = 0f, right = width.toFloat())
+
+    /** m150: a short word over the module (Smart Res refused in a fight), [NOTE_MS] */
+    fun note(s: String) { noteText = s; noteUntil = SystemClock.uptimeMillis() + NOTE_MS; invalidate() }
+    private var noteText: String? = null
+    private var noteUntil = 0L
 
     /** a Select press the app's reader saw: the pressed look for 120 ms */
     fun selectPressed() { tab.press(SystemClock.uptimeMillis()); invalidate() }
@@ -70,19 +75,34 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
         val m = module()
         UiKit.module(c, RectF().of(m.well))
         val on = p.onLive
-        val boxed = if (on) live.box.coerceIn(1, p.n) - 1 else -1
+        // m150: the box is counted over the add-on's entries; drawn over the view (a dead pet entry moves the party one on)
+        val boxed = if (on) p.viewIndex(live.box.coerceIn(1, p.n) - 1) else -1
         tab.setLook(SelectTab.lookOf(p), now)
         tab.setNotch(if (on) PartyLayout.notchY(m, boxed + 1) else null, now)
         tab.groupSeen(p.grp, p.fight, now)
-        val resOn = live.cfg?.slots?.values?.any { it != null && it.res && it.k } == true
+        // m150: Smart Res armed counts as a res to cast (the soft green edge on a dead member)
+        val resOn = p.res || live.cfg?.slots?.values?.any { it != null && it.res && it.k } == true
+        val view = p.view
+        var pressing = false
         for ((k, cell) in m.cells.withIndex()) {
-            val mem = p.m.getOrNull(k) ?: continue
-            val save = if (mem.dim) c.saveLayerAlpha(cell.l, cell.t, cell.r, cell.b, (255 * PartyModel.DIM).toInt()) else -1
-            drawPlate(c, cell, mem, k == boxed, resOn)
+            val mem = view.getOrNull(k) ?: continue
+            // m150 THE PRESS: the touched plate dips and wears a gold outline while held, easing back out when let go
+            val depth = if (k == pressCell) PartyLayout.pressDepth(now, pressDownAt, pressUpAt) else 0f
+            // animating only while it eases in or out (a held plate at full depth draws once)
+            if (k == pressCell && ((pressUpAt == null && depth < 1f) || (pressUpAt != null && depth > 0f))) pressing = true
+            // THE HOLD FILL: a held plate whose hold opens the radial fills over PartyLayout.HOLD_MS, draining when let go early
+            val fill = if (k == pressCell) fillAt(now) else 0f
+            if (k == pressCell && pressFills && ((pressUpAt == null && fill < 1f) || (pressUpAt != null && fill > 0f))) pressing = true
+            val at = if (depth > 0f) PartyLayout.pressed(cell, depth) else cell
+            val save = if (mem.dim) c.saveLayerAlpha(at.l, at.t, at.r, at.b, (255 * PartyModel.DIM).toInt()) else -1
+            drawPlate(c, at, mem, k == boxed, resOn, fill)
             if (save >= 0) c.restoreToCount(save)
+            if (depth > 0f) pressEdge(c, at, depth)
         }
+        if (pressUpAt != null && PartyLayout.pressDepth(now, pressDownAt, pressUpAt) <= 0f && fillAt(now) <= 0f) pressCell = -1
         drawTab(c, m.tag, now)
-        if (tab.moving(now)) postInvalidateOnAnimation()
+        noteText?.let { t -> if (now < noteUntil) drawNote(c, m, t) else noteText = null }
+        if (tab.moving(now) || pressing || noteText != null) postInvalidateOnAnimation()
     }
 
     private fun classColour(m: PartyModel.Member): Int {
@@ -90,13 +110,54 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
         return Theme.classColourOf(m.c)
     }
 
+    private val pEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
+    /** m150: the press's gold outline (the game's gold, 255 209 0), [depth] its strength */
+    private fun pressEdge(c: Canvas, b: Box, depth: Float) {
+        val a = (255 * depth).toInt().coerceIn(0, 255)
+        pEdge.strokeWidth = 6f; pEdge.color = Color.argb(a * 80 / 255, 255, 190, 0)
+        c.drawRoundRect(RectF(b.l - 1f, b.t - 1f, b.r + 1f, b.b + 1f), 7f, 7f, pEdge)
+        pEdge.strokeWidth = 2.5f; pEdge.color = Color.argb(a, 255, 209, 0)
+        c.drawRoundRect(RectF(b.l + 1f, b.t + 1f, b.r - 1f, b.b - 1f), 6f, 6f, pEdge)
+    }
+    private val pSweep = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val clip = Path()
+    /** THE HOLD FILL: the plate's filled part in the theme's accent (soft), a brighter leading edge, clipped to the plate's round */
+    private fun holdFill(c: Canvas, p: Box, f: Float) {
+        val fb = PartyLayout.fillBox(p, f)
+        if (fb.w <= 0f) return
+        val acc = Theme.gold
+        val rr = Color.red(acc); val gg = Color.green(acc); val bb = Color.blue(acc)
+        c.save()
+        clip.reset(); clip.addRoundRect(r.of(p), 6f, 6f, Path.Direction.CW); c.clipPath(clip)
+        pSweep.shader = null; pSweep.style = Paint.Style.FILL; pSweep.color = Color.argb(64, rr, gg, bb)
+        c.drawRect(fb.l, fb.t, fb.r, fb.b, pSweep)
+        val edge = minOf(FILL_EDGE, fb.w)
+        pSweep.shader = android.graphics.LinearGradient(fb.r - edge, 0f, fb.r, 0f, Color.argb(0, rr, gg, bb), Color.argb(150, rr, gg, bb),
+            android.graphics.Shader.TileMode.CLAMP)
+        c.drawRect(fb.r - edge, fb.t, fb.r, fb.b, pSweep)
+        pSweep.shader = null
+        c.restore()
+    }
+
+    private val noteP by lazy { UiKit.bodyPaint(22f, Color.WHITE).apply { textAlign = Paint.Align.CENTER } }
+    /** m150: the note, a dark pill over the well's foot */
+    private fun drawNote(c: Canvas, m: PartyLayout.Module, t: String) {
+        val s = Tr.t(t)
+        val w = noteP.measureText(s) + 36f
+        val cx = m.well.cx; val y = m.well.b - 30f
+        pFill.shader = null; pFill.colorFilter = null; pFill.style = Paint.Style.FILL; pFill.color = Color.argb(225, 10, 8, 6)
+        c.drawRoundRect(RectF(cx - w / 2f, y - 22f, cx + w / 2f, y + 22f), 10f, 10f, pFill)
+        c.drawText(s, cx, y - (noteP.ascent() + noteP.descent()) / 2f, noteP)
+    }
+
     private val nameP by lazy { UiKit.bodyPaint(24f, Color.WHITE) }
     private val lvP by lazy { UiKit.bodyPaint(18f, Theme.dim) }
 
-    private fun drawPlate(c: Canvas, p: Box, mem: PartyModel.Member, picked: Boolean, resOn: Boolean) {
+    private fun drawPlate(c: Canvas, p: Box, mem: PartyModel.Member, picked: Boolean, resOn: Boolean, fill: Float = 0f) {
         pFill.shader = null; pFill.colorFilter = null; pFill.style = Paint.Style.FILL
         pFill.color = Color.argb(230, 14, 12, 10)
         c.drawRoundRect(r.of(p), 6f, 6f, pFill)
+        if (fill > 0f) holdFill(c, p, fill)                             // under the stripe, icon and name
         // m134 (the user, 2026-11-11: "the pet should ... not have the green dot"): a person's plate has the class stripe, the pet's none
         val col = if (mem.isPet) Theme.text else classColour(mem)
         if (!mem.isPet) {
@@ -198,10 +259,28 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
     private var longFired = false
     private val longPress = Runnable {
         val k = downCell
-        if (k >= 0) { longFired = true; unitOf(k)?.let { onCellLong?.invoke(it) } }
+        // m157: only a plate whose hold opens a wheel asks for one (a dead pet's long hold: nothing, as before)
+        if (k >= 0) { longFired = true; if (pressFills && pressCell == k) unitOf(k)?.let { onCellLong?.invoke(it) } }
     }
 
-    private fun unitOf(k: Int): Int? = live.party?.m?.getOrNull(k)?.i
+    /** m150: the drawn entry [k]'s unit index (the dead pet entry: the pet's, 5) */
+    private fun unitOf(k: Int): Int? = live.party?.view?.getOrNull(k)?.i
+
+    /** m150 THE PRESS: the plate under the finger (drawn index), since when, and when it was let go (null = still held) */
+    private var pressCell = -1
+    private var pressDownAt = 0L
+    private var pressUpAt: Long? = null
+    /** the held plate's hold opens a radial (it fills); set with the press */
+    private var pressFills = false
+    private fun pressStart(k: Int) {
+        pressCell = k; pressDownAt = SystemClock.uptimeMillis(); pressUpAt = null
+        val mem = live.party?.view?.getOrNull(k)
+        pressFills = PartyLayout.holdOpens(mem?.i, mem?.dead == true, live.cfg?.pad?.pmenu != null); invalidate()
+    }
+    /** THE HOLD FILL of the pressed plate at [now] (0 = none): JVM-tested with the touch route (PartyHoldFillTest) */
+    fun fillAt(now: Long = SystemClock.uptimeMillis()): Float =
+        if (pressCell < 0 || !pressFills) 0f else PartyLayout.holdFill(now, pressDownAt, pressUpAt)
+    private fun pressEnd() { if (pressCell >= 0 && pressUpAt == null) { pressUpAt = SystemClock.uptimeMillis(); invalidate() } }
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -213,11 +292,11 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
                 downCell = if (downTag) -1 else PartyLayout.hit(m, e.x, e.y)
                 if (!downTag && downCell < 0) return false                 // the rest of the box: the page under it
                 downX = e.x; downY = e.y; longFired = false
-                if (downCell >= 0) postDelayed(longPress, LONG_MS)
+                if (downCell >= 0) { postDelayed(longPress, LONG_MS); pressStart(downCell) }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                if (abs(e.x - downX) > SLOP || abs(e.y - downY) > SLOP) { removeCallbacks(longPress); downCell = -1; downTag = false }
+                if (abs(e.x - downX) > SLOP || abs(e.y - downY) > SLOP) { removeCallbacks(longPress); downCell = -1; downTag = false; pressEnd() }
             }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(longPress)
@@ -226,9 +305,9 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
                 // only suspended by a prompt out of combat, a harmless `on`), drawn on = `off`; in a fight onLive is `on` alone (m132)
                 if (downTag && PartyLayout.hitTag(m, e.x, e.y)) onTag?.invoke(PartyModel.tabWants(live.party))
                 else if (downCell >= 0 && !longFired && PartyLayout.hit(m, e.x, e.y) == downCell) unitOf(downCell)?.let { onCellTap?.invoke(it) }
-                downCell = -1; downTag = false
+                downCell = -1; downTag = false; pressEnd()
             }
-            MotionEvent.ACTION_CANCEL -> { removeCallbacks(longPress); downCell = -1; downTag = false }
+            MotionEvent.ACTION_CANCEL -> { removeCallbacks(longPress); downCell = -1; downTag = false; pressEnd() }
         }
         return true
     }
@@ -239,10 +318,14 @@ class PartyModuleView(context: Context, private val live: PartyModel.State) : Vi
     companion object {
         /** the view's top is the well's (the tab stands inside it now) */
         const val RISE = 0f
-        /** a long press: the class wheel's CLASS_LONG_MS */
-        const val LONG_MS = 450L
+        /** a long press: the class wheel's CLASS_LONG_MS; the hold fill runs over the same time */
+        const val LONG_MS = PartyLayout.HOLD_MS
+        /** the fill's bright leading edge, px */
+        const val FILL_EDGE = 22f
         /** a tap moves no more than this */
         const val SLOP = 24f
+        /** m150: the note's time on screen */
+        const val NOTE_MS = 1600L
     }
 }
 

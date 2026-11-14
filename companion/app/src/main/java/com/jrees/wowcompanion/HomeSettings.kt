@@ -25,6 +25,9 @@ object HomeSettings {
         if (prefs == null) prefs = c.applicationContext.getSharedPreferences("home", Context.MODE_PRIVATE)
     }
 
+    /** the off-device tests: these prefs (null = none, as before any init) */
+    internal fun startForTest(p: SharedPreferences?) { prefs = p }
+
     var rest: HomeRest
         get() = prefs?.getString(KEY, null)?.let { runCatching { HomeRest.valueOf(it) }.getOrNull() } ?: HomeRest.DIAMONDS
         set(v) {
@@ -162,9 +165,67 @@ object HomeSettings {
             for (l in listeners) l()
         }
 
+    /** GitHub #43 cb3: THE TAP-TO-CAST BAR's place (Settings > Bottom screen > Tap-to-cast bar; the user 2026-11-13: "left right or both
+     *  ... or off by default"): OFF, LEFT (under the chat), RIGHT (under the minimap), BOTH. Never chosen: the old Home row's On
+     *  ("castStrip" true) reads as LEFT, anything else OFF ([CastStripModel.sideOf]); the first change writes the new key and drops the old */
+    var castBarSide: CastStripModel.Side
+        get() = CastStripModel.sideOf(prefs?.getString(KEY_CAST_SIDE, null),
+            prefs?.takeIf { it.contains(KEY_CAST_STRIP) }?.getBoolean(KEY_CAST_STRIP, false))
+        set(v) {
+            if (v == castBarSide && prefs?.contains(KEY_CAST_SIDE) == true) return
+            prefs?.edit()?.putString(KEY_CAST_SIDE, v.name)?.remove(KEY_CAST_STRIP)?.apply()
+            for (l in listeners) l()
+        }
+    /** THE TAP-TO-CAST BAR IN A FIGHT (the user, 2026-11-13: "there should be a settings toggle to make them Hide/stay in combat"; the
+     *  picks: its own section's row, "Hide in combat" by default): HIDE fades the bar out while Home shows a fight, STAY keeps it */
+    var castBarCombat: CastStripModel.Combat
+        get() = CastStripModel.combatOf(prefs?.getString(KEY_CAST_COMBAT, null))
+        set(v) {
+            if (v == castBarCombat && prefs?.contains(KEY_CAST_COMBAT) == true) return
+            prefs?.edit()?.putString(KEY_CAST_COMBAT, v.name)?.apply()
+            for (l in listeners) l()
+        }
+    /** THE ONE-TIME "TRY THE TAP-TO-CAST BAR?" QUESTION (the user, 2026-11-13: "For this new install, I want it to have a one time pop
+     *  up asking people if they want to try the new touch input bar"): true once it was answered (or never owed); app-wide, per
+     *  install. [CastBarAsk] decides; the host shows it on Home */
+    var castBarAsked: Boolean
+        get() = prefs?.getBoolean(KEY_CAST_ASKED, false) ?: false
+        set(v) { if (v != castBarAsked) prefs?.edit()?.putBoolean(KEY_CAST_ASKED, v)?.apply() }
+    /** the player has set the bar's side in Settings at least once (or the old Home row's On): their own choice, nothing to ask */
+    val castBarChosen: Boolean
+        get() = prefs?.let { it.contains(KEY_CAST_SIDE) || it.contains(KEY_CAST_STRIP) } ?: false
+    /** THE CLOCK EXTRAS (the user's picks 2026-11-13: "clock extras beside the time/battery on Home, each with its own on/off row in
+     *  Bottom > Home"): the Hearthstone, the class teleport (once known), gold, free bag slots; each on by default (true = shown) */
+    var clockHearth: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_HEARTH, true) ?: true
+        set(v) { if (v != clockHearth) { prefs?.edit()?.putBoolean(KEY_CLOCK_HEARTH, v)?.apply(); for (l in listeners) l() } }
+    var clockTeleport: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_TELEPORT, true) ?: true
+        set(v) { if (v != clockTeleport) { prefs?.edit()?.putBoolean(KEY_CLOCK_TELEPORT, v)?.apply(); for (l in listeners) l() } }
+    var clockGold: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_GOLD, true) ?: true
+        set(v) { if (v != clockGold) { prefs?.edit()?.putBoolean(KEY_CLOCK_GOLD, v)?.apply(); for (l in listeners) l() } }
+    var clockBags: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_BAGS, true) ?: true
+        set(v) { if (v != clockBags) { prefs?.edit()?.putBoolean(KEY_CLOCK_BAGS, v)?.apply(); for (l in listeners) l() } }
+    /** feat/clock-extras-v2 (the user: "there should also be an ammo option"): the equipped ammo's icon + count (shown only with ammo) */
+    var clockAmmo: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_AMMO, true) ?: true
+        set(v) { if (v != clockAmmo) { prefs?.edit()?.putBoolean(KEY_CLOCK_AMMO, v)?.apply(); for (l in listeners) l() } }
+
     fun onChange(l: () -> Unit) { listeners.add(l) }
 
+    /** cb2's On / Off Home row (read once for cb3's migration, then removed) */
+    private const val KEY_CAST_STRIP = "castStrip"
+    private const val KEY_CAST_SIDE = "castBarSide"
+    private const val KEY_CAST_COMBAT = "castBarCombat"
+    private const val KEY_CAST_ASKED = "castBarAsked"
     private const val KEY = "rest"
+    private const val KEY_CLOCK_HEARTH = "clockHearth"
+    private const val KEY_CLOCK_TELEPORT = "clockTeleport"
+    private const val KEY_CLOCK_GOLD = "clockGold"
+    private const val KEY_CLOCK_BAGS = "clockBags"
+    private const val KEY_CLOCK_AMMO = "clockAmmo"
     private const val KEY_COMBAT_GROW = "combatGrow"
     private const val KEY_SWING = "swingTimer"
     private const val KEY_PAUSE_TAP = "pauseTap"
@@ -504,11 +565,31 @@ class HomeSettingsSection(context: Context,
             y = row(c, y + GAP, GameBars.petTitle ?: "Pet bar", listOf("$v. Change it in the game's Controller settings."),
                 emptyList(), -1, null)
         }
+        // GitHub #43 cb3: the tap-to-cast bar's place, its own group (Settings > Bottom screen > Tap-to-cast bar): Off (the default),
+        // Left (under the chat), Right (under the minimap), Both
+        val sides = CastStripModel.Side.values()
+        y = row(c, y + GAP, "Tap-to-cast bar", listOf("Eight spells, one tap each."),
+            sides.map { it.label }, sides.indexOf(HomeSettings.castBarSide), sides.map { sd -> { HomeSettings.castBarSide = sd } })
+        // the bar in a fight (the user 2026-11-13: "a settings toggle to make them Hide/stay in combat"): Hide (the default) / Stay
+        val modes = CastStripModel.Combat.values()
+        y = row(c, y + GAP, "In combat", listOf("Hide: the bar slides away in a fight."),
+            modes.map { it.label }, modes.indexOf(HomeSettings.castBarCombat), modes.map { m -> { HomeSettings.castBarCombat = m } })
         // the focused quest's place (the user 2026-10-09): over the minimap (today's) or at the top of the chat
         y = row(c, y + GAP, "Focused quest", listOf("Where Home shows the quest you focus. Tap it to fold it."),
             // the user 2026-10-09: "Above Chat" first; the default stays Above Minimap
             listOf("Above Chat", "Above Minimap"), if (HomeSettings.questOverMap) 1 else 0,
             listOf({ HomeSettings.questOverMap = false }, { HomeSettings.questOverMap = true }))
+        // THE CLOCK EXTRAS (the user's picks 2026-11-13): one On / Off row each, in the row under the clock on Home (the ZL / ZR spot)
+        y = row(c, y + GAP, "Hearthstone", listOf("In the row under the clock."), listOf("On", "Off"), if (HomeSettings.clockHearth) 0 else 1,
+            listOf({ HomeSettings.clockHearth = true }, { HomeSettings.clockHearth = false }))
+        y = row(c, y + GAP, "Class teleport", listOf("In the row under the clock, once known."), listOf("On", "Off"), if (HomeSettings.clockTeleport) 0 else 1,
+            listOf({ HomeSettings.clockTeleport = true }, { HomeSettings.clockTeleport = false }))
+        y = row(c, y + GAP, "Gold", listOf("Total gold under the battery."), listOf("On", "Off"), if (HomeSettings.clockGold) 0 else 1,
+            listOf({ HomeSettings.clockGold = true }, { HomeSettings.clockGold = false }))
+        y = row(c, y + GAP, "Free bag slots", listOf("In the row under the clock."), listOf("On", "Off"), if (HomeSettings.clockBags) 0 else 1,
+            listOf({ HomeSettings.clockBags = true }, { HomeSettings.clockBags = false }))
+        y = row(c, y + GAP, "Ammo", listOf("In the row under the clock."), listOf("On", "Off"), if (HomeSettings.clockAmmo) 0 else 1,
+            listOf({ HomeSettings.clockAmmo = true }, { HomeSettings.clockAmmo = false }))
         // START ATTACK ON CAST (Spells' m13): Off / On, from the add-on's word (null = an older add-on: no row); its notes under it
         HomeAttackSwitch.state?.let { s ->
             y = row(c, y + GAP, "Start the attack when a spell is cast",

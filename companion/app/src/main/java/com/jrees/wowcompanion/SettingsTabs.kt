@@ -27,7 +27,8 @@ object SettingsTabs {
     /** a heading that folds (the user's pick: a tab opens with its FIRST group open, the rest folded) */
     enum class Group(val tab: Tab, val heading: String) {
         LOOK(Tab.GENERAL, "Look"), ACCOUNT(Tab.GENERAL, "Account"), HELP(Tab.GENERAL, "Help"),
-        HOME(Tab.BOTTOM, "Home"), MAP(Tab.BOTTOM, "Map"), CHAT(Tab.BOTTOM, "Chat"),
+        // GitHub #43 cb3 (the user, 2026-11-13: "the tap to cast bar should get its own bottom screen section"): its own group
+        HOME(Tab.BOTTOM, "Home"), CAST_BAR(Tab.BOTTOM, "Tap-to-cast bar"), MAP(Tab.BOTTOM, "Map"), CHAT(Tab.BOTTOM, "Chat"),
         HUD(Tab.TOP, "Your HUD"), TARGET(Tab.TOP, "Target"), PARTY(Tab.TOP, "Party"), NAVIGATION(Tab.TOP, "Navigation"),
         WINDOWS(Tab.TOP, "Game windows"),
         BUTTONS(Tab.CONTROLLER, "Buttons"), WHEELS(Tab.CONTROLLER, "Wheels"), SMART_Y(Tab.CONTROLLER, "Smart Y"),
@@ -48,17 +49,24 @@ object SettingsTabs {
         THEME(Group.LOOK, "Theme", listOf("Theme")),
         LANGUAGE(Group.LOOK, "Language", listOf("Language")),
         ACCOUNT(Group.ACCOUNT, "Battle.net login", listOf("Battle.net login")),
+        // #47: several game accounts on one Battle.net login - the game's own picker each time, or its remembered pick
+        GAME_ACCOUNT(Group.ACCOUNT, "Game account", listOf("Game account")),
         HELP(Group.HELP, "Help", listOf("Problem report", "Reload game UI")),
         COMPANION(Group.HELP, "Companion", listOf("Status"), Drawer.GAME_UI),
         // ---- Bottom screen (the old Home tab)
         HOME_SECTION(Group.HOME, "Home", listOf("Controller on Home", "Combat layout", "Swing timer",
             // "Stance bar", "Pet bar": hidden for now (test40, the user: "hide the settings that don't do anything for now")
-            "Focused quest", "DS WoW toolbar"), Drawer.HOME),
+            "Focused quest",
+            // the clock extras (the user's picks 2026-11-13): one row each
+            "Hearthstone", "Class teleport", "Gold", "Free bag slots", "Ammo", "DS WoW toolbar"), Drawer.HOME),
+        // GitHub #43 cb3: Off / Left / Right / Both (Home's section draws it, as it drew the old Home row)
+        // the bar in a fight (the user 2026-11-13: "a settings toggle to make them Hide/stay in combat"): Hide (the default) / Stay
+        CAST_BAR(Group.CAST_BAR, "Tap-to-cast bar", listOf("Tap-to-cast bar", "In combat"), Drawer.HOME),
         MAP(Group.MAP, "Map", listOf("Minimap zoom outdoors", "Minimap zoom indoors", "World map")),
         CHAT(Group.CHAT, "Chat", listOf("Message input")),
         // ---- Top screen (GameUiSection's parts: the same rows, ids, taps and channels as on QOL / Top screen before)
         HUD(Group.HUD, "Your HUD", listOf("Resource bar", "Pet bar", "HUD height", "HUD width", "HUD scale"), Drawer.GAME_UI),
-        TARGET(Group.TARGET, "Target", listOf("Target bar", "Target health text", "Target of target", "Aggro tint", "Enemy nameplates"),
+        TARGET(Group.TARGET, "Target", listOf("Target bar", "Target health text", "Target of target", "Aggro tint", "Enemy nameplates", "Friendly plates"),
             Drawer.GAME_UI),
         PARTY(Group.PARTY, "Party", listOf("DS party frames", "Party frames"), Drawer.GAME_UI),
         NAVIGATION(Group.NAVIGATION, "Navigation", listOf("Compass bar", "Compass follows the camera", "World markers"), Drawer.GAME_UI),
@@ -79,7 +87,7 @@ object SettingsTabs {
         SMART_Y(Group.SMART_Y, "Smart Y (out of combat, nothing targeted)", listOf("Smart Y")),
         // Combat helpers: Party mode, Start attack on hostile target, Start the attack when a spell is cast (Home's section's row),
         // Combat Auto Shot - in that order, so three blocks by two views
-        COMBAT(Group.COMBAT, "Combat", listOf("Party mode", "Start attack on hostile target"), Drawer.GAME_UI),
+        COMBAT(Group.COMBAT, "Combat", listOf("Party mode", "Smart Res", "Start attack on hostile target"), Drawer.GAME_UI),
         ATTACK_CAST(Group.COMBAT, "Start the attack when a spell is cast", listOf("Start the attack when a spell is cast"), Drawer.HOME),
         AUTO_SHOT(Group.COMBAT, "Combat Auto Shot", listOf("Combat Auto Shot"), Drawer.GAME_UI),
         // ---- Add-ons: one group per third-party add-on (ThirdPartyAddons); Polestar's carries Quest tracking (it was under Map)

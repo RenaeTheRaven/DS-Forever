@@ -73,6 +73,10 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
     }
     private val state = State()
     /** the bags' armor kits / stones / enchants (Bags.lua's `kit` flag): (bag, slot, row), for the Character room's Apply */
+    /** char-more: every bag item, (bag, slot, row) in the bags' order (the Character room's Replace list) */
+    fun bagItems(): List<Triple<Int, Int, JSONObject>> = state.items.entries
+        .map { Triple((it.key shr 16).toInt(), (it.key and 0xFFFF).toInt(), it.value) }
+        .sortedWith(compareBy({ it.first }, { it.second }))
     fun kitItems(): List<Triple<Int, Int, JSONObject>> = state.items.entries
         .filter { it.value.optBoolean("kit") }
         .map { Triple((it.key shr 16).toInt(), (it.key and 0xFFFF).toInt(), it.value) }
@@ -164,9 +168,10 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         val d = state.drag ?: return
         dragMove(rx, ry)
         val pad = state.pad
-        if (state.hoverBag >= 0 && state.canDropBag(state.hoverBag, state.hoverSlot) &&
-            GameInput.tap(context, pad, "bmv${d.fromBag}", d.fromSlot - 1))
-            GameInput.tap(context, pad, "bmv${state.hoverBag}", state.hoverSlot - 1)
+        // bags-onerow1: the pick and the drop, each with its bag's name tap, in ONE spaced batch (all or nothing)
+        if (state.hoverBag >= 0 && state.canDropBag(state.hoverBag, state.hoverSlot))
+            BagsMoveRoute.drag(pad, d.fromBag, d.fromSlot, state.hoverBag, state.hoverSlot)
+                ?.let { GameInput.taps(context, pad, it, BagsMoveRoute.GAP_MS) }
         state.endDrag()
         dragLayer.invalidate(); layoutAll()
     }
@@ -195,16 +200,9 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
     private class CtlLayer(c: Context, private val st: State, private val grid: Grid, private val scroll: View,
                            private val bar: BagBar, private val searchBox: () -> View) : View(c) {
         private val at = IntArray(2); private val gat = IntArray(2); private val sat = IntArray(2)
-        private var bindAt = -1L; private var unbindAt = -1L
-        private var lastBind: JSONObject? = null; private var lastBindItem: JSONObject? = null
         private val warm = BagsCursor.WarmFade()           // the quarter second before the FIRST tooltip only (d)
 
         companion object {
-            const val OPEN_MS = 220L; const val CLOSE_MS = 160L
-            /** the bindable buttons: glyph + the name the sheet's line uses (Nintendo layout, as the NPC windows). NOT Start / Plus: the
-             *  user's ruling 2026-10-09, Start opens the pause wheel from every room (Bags.lua no longer offers it) */
-            val KEY_GLYPH = mapOf("PADRSHOULDER" to "rev_rshoulder", "PADRTRIGGER" to "rev_rtrigger",
-                "PADLSTICK" to "gen_lstickin", "PADRSTICK" to "gen_rstickin", "PADBACK" to "rev_minus")
             fun word(s: String) = s.lowercase().replaceFirstChar { it.uppercase() }
             const val USE = -1           // a finger's Use / Equip: the slot's own secure cell (the game's right-click)
             const val MOVE = -2          // a finger's Move: the cursor to the shown slot, then A
@@ -214,8 +212,15 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             const val KIT_CANCEL = -6    // "Choose an item": Cancel (binv 19: the game's /stopspelltarget)
             const val KIT_STOP_COL = 19
             const val KIT_ROW = -100     // "Choose an item": row i = KIT_ROW - i (its item's secure cell)
-            const val MIN_CMP_W = 300f                          // Currently Equipped narrowed to a side's room, never under this
+            const val COMPARE_TAP = -7   // bags-act1: the menu's Compare row: bmvq 27, then column 8 (Bags.lua ACT.COMPARE_COL)
+            const val COMPARE_COL = 8
+            const val COMPARE_STEP = 120f // bags-act1: one D-pad press on the compare sheet (about four lines)
+            const val DPICK_ROW = -1000  // bags-act1: the Destroy picker's row i = DPICK_ROW - i (36 + its bmv cell; again = A)
+            /** the Y menu's rows: the add-on's names -> their words, and a finger's tap (bmvq 19 / 20 / 21; Compare by its prefix) */
+            val MENU_WORDS = linkedMapOf("split" to "Split Stack", "bind" to "Bind to a Button", "compare" to "Compare", "destroy" to "Destroy")
+            val MENU_TAP = mapOf("split" to 19, "bind" to 20, "compare" to COMPARE_TAP, "destroy" to 21)
             const val PRESS_MIN_MS = 160L                       // a press stays visibly in at least this long (Interact's recipe)
+            const val HOLD_REDRAW_MS = 50L                      // bags-tip1: a held card draws again this often until its hold ends
             val PRESS_KEYS = setOf("PAD1", "PAD2", "PAD3", "PAD4")
         }
 
@@ -288,7 +293,8 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         override fun onTouchEvent(e: MotionEvent): Boolean {
             val m = mode()
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
-                val blocking = m == "destroy" || m == "split" || m == "bind" || m == "target" || unbindAt >= 0
+                // bags-bindbox1: "bindbox" = the Spellbook's Bind box over everything (SpellsOverlay takes the touches)
+                val blocking = m == "destroy" || m == "split" || m == "target" || m == "dpick" || m == "compare"
                 owning = blocking || zones.any { it.contains(e.x, e.y) }
                 if (owning) { pressX = e.x; pressY = e.y; invalidate() }
             }
@@ -321,7 +327,20 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
                 EQUIP -> st.onCard(22)
                 EQUIP_OFF -> {}
                 KIT_CANCEL -> GameInput.tap(context, st.pad, "binv", KIT_STOP_COL)
-                else -> if (what <= KIT_ROW) {
+                // bags-act1: the menu's Compare row (bmvq 27, then column 8: Bags.lua's prefix, no game action)
+                COMPARE_TAP -> if (GameInput.tap(context, st.pad, "bmvq", 27)) GameInput.tap(context, st.pad, "bmvq", COMPARE_COL)
+                else -> if (what <= DPICK_ROW) {
+                    // bags-act1: a Destroy picker row: the gold row there (36 + its bmv cell, no game action); the gold row again = A
+                    val i = DPICK_ROW - what
+                    val pick = st.ctl?.optJSONObject("dpick") ?: return
+                    val e = pick.optJSONArray("list")?.optJSONObject(i) ?: return
+                    if (pick.optInt("sel", 1) - 1 == i) GameInput.tap(context, st.pad, "bmvq", 31)
+                    else {
+                        val bag = e.optInt("bag", -1); val slot = e.optInt("slot", 0)
+                        val cells = if (bag >= 0 && slot >= 1) BagsMoveRoute.cells(st.pad, bag, slot) else null    // bags-onerow1
+                        if (cells != null) GameInput.taps(context, st.pad, listOf("bmvq" to 36) + cells)
+                    }
+                } else if (what <= KIT_ROW) {
                     // a finger on a row of "Choose an item": that item, at once (its secure cell: the pick's target)
                     val e = st.ctl?.optJSONObject("target")?.optJSONArray("list")?.optJSONObject(KIT_ROW - what) ?: return
                     if (!e.optBoolean("ok")) return
@@ -338,11 +357,6 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             hits.clear(); zones.clear(); useAt = null
             val m = mode()
             val now = android.os.SystemClock.uptimeMillis()
-            // the bind sheet's slide: in over 220 ms, out over 160 ms (drawn from its last state)
-            if (m == "bind") {
-                if (bindAt < 0) { bindAt = now; unbindAt = -1 }
-                lastBind = st.ctl; lastBindItem = curItem()
-            } else if (bindAt >= 0) { bindAt = -1; unbindAt = now }
             getLocationOnScreen(at); grid.getLocationOnScreen(gat); scroll.getLocationOnScreen(sat)
             val gx = (gat[0] - at[0]).toFloat(); val gy = (gat[1] - at[1]).toFloat()
             // the tooltip's room: the grid's visible part
@@ -359,19 +373,11 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
                 "equip", "equipping", "bindask" -> equip(c, m ?: "")
                 "barmenu" -> barMenu(c)
                 "destroy" -> destroy(c, screen)
+                "dpick" -> dpick(c, screen)
+                "compare" -> compare(c, screen)
                 "split" -> split(c, screen)
                 "target" -> target(c, screen)
-            }
-            val f = when {
-                bindAt >= 0 -> { val t = ((now - bindAt) / OPEN_MS.toFloat()).coerceIn(0f, 1f); 1f - (1f - t) * (1f - t) * (1f - t) }
-                unbindAt >= 0 -> { val t = ((now - unbindAt) / CLOSE_MS.toFloat()).coerceIn(0f, 1f); (1f - t) * (1f - t) }
-                else -> 0f
-            }
-            if (bindAt >= 0 || unbindAt >= 0) {
-                lastBind?.let { bind(c, screen, it, lastBindItem, f) }
-                val moving = (bindAt >= 0 && now - bindAt < OPEN_MS) || (unbindAt >= 0 && now - unbindAt < CLOSE_MS)
-                if (moving) postInvalidateOnAnimation()
-                else if (unbindAt >= 0) { unbindAt = -1; lastBind = null }
+                // bags-bindbox1: "bindbox" draws nothing here: the Spellbook's Bind box (SpellsOverlay) lies over the room
             }
         }
 
@@ -399,8 +405,33 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             return Triple(x, tw, cmpX.coerceIn(16f, maxOf(16f, width - cw - 16f)))
         }
 
-        /** the game's tooltip only for the slot shown: one for a slot the cursor has left is stale (dropped by its key) */
-        private fun tipFor(t: JSONObject?, key: String): JSONObject? = tipOfSlot(t, key)
+        /**
+         * bags-act1: WHAT THE ITEM WOULD REPLACE, as cards (BagsCompare.cards: the game's compare, the app's own count where the game gave
+         * none, an empty slot's all gains, a two-hander against both hands). Kept while the same tooltip, item and worn gear are drawn.
+         */
+        private var cardsKey: Triple<Any?, Any?, Any?>? = null
+        private var cardsVal = JSONArray()
+        private var hoverVal: List<UiKit.TipLine> = emptyList()
+        private fun cardsOf(tip: JSONObject?, row: JSONObject?): JSONArray {
+            val k = Triple(tip, row, st.equippedDoc)
+            if (k == cardsKey) return cardsVal
+            cardsKey = k
+            cardsVal = BagsCompare.cards(tip, row, st.equipped, st.equippedDoc?.optBoolean("dw") == true,
+                BagsCompare.Words(empty = Tr.t("Empty"), changes = Tr.t("Stat changes")))
+            hoverVal = TipStack.lines(JSONArray(BagsCompare.hover(cardsVal)), false)
+            return cardsVal
+        }
+        /** bags-nocmp1: the hover card's stat changes (BagsCompare.hover), the lines that go at the foot of the item's own tooltip */
+        private fun changesOf(tip: JSONObject?, row: JSONObject?): List<UiKit.TipLine> { cardsOf(tip, row); return hoverVal }
+        /** one card as the kit draws it: its first line the name; "Currently Equipped" over a worn piece, nothing over an empty slot */
+        private data class Eq(val name: String, val colour: Int, val lines: List<UiKit.TipLine>, val head: String?)
+        private fun eqCards(cmp: JSONArray?): List<Eq> = if (cmp == null) emptyList() else (0 until cmp.length()).mapNotNull { n ->
+            val e = cmp.optJSONObject(n) ?: return@mapNotNull null
+            val el = e.optJSONArray("lines") ?: return@mapNotNull null
+            val head = el.optJSONObject(0) ?: return@mapNotNull null
+            Eq(TipStack.strip(head.optString("t")), TipStack.colour(head.optString("c").takeIf { s -> s.isNotEmpty() }, Color.WHITE),
+                TipStack.lines(el, true), if (e.optBoolean("empty")) null else "Currently Equipped")
+        }
 
         /** an addon without Interact's WC.tipOf: the item's own name and type, so the tooltip is never empty */
         private fun fallbackTip(key: String, it: JSONObject): JSONObject {
@@ -449,7 +480,7 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             return cells
         }
 
-        /** the highlighted item's tooltip and its actions under it; gear also shows what it would replace, always */
+        /** the highlighted item's tooltip and its actions under it; gear also shows its stat changes at the tooltip's foot, always (bags-nocmp1) */
         private fun tooltip(c: Canvas, gx: Float, gy: Float, top: Float, bottom: Float) {
             // THE HOVER WAIT ONCE (d, tracking 2026-10-22): the game's quarter second before the first tooltip only; moving on shows
             // each next item at once (BagsCursor.WarmFade)
@@ -480,11 +511,14 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             val name = it.optString("name").takeIf { s -> real(s) } ?: "Loading…"
             val q = if (it.has("quality")) it.optInt("quality") else 1
             val key = "bag $bag $slot ${it.optInt("id")}"
-            // (c) the detail at once from the bags already here (the item's own name and type); the game's full tooltip replaces it
-            // when ITS key is this slot's: a late one for a slot the cursor has left is dropped
-            val tip = tipFor(st.ctl?.optJSONObject("tip")?.takeIf { st.ctlOn }, key) ?: fallbackTip(key, it)
+            // (c) the game's full tooltip when ITS key is this slot's (a late one for a slot the cursor has left is dropped).
+            // bags-tip1: else this item's last full one (kept per item: a refresh never drops it), else the card shown a moment ago
+            // (held, warm), and the stand-in (the item's own name and type) only when nothing ever came for it (BagsCursor.TipMemory)
+            val live = st.ctl?.optJSONObject("tip")?.takeIf { st.ctlOn }
+            val shown = st.tips.pick(key, it.optInt("count", 1), live, name, q, clock()) { fallbackTip(key, it) }
+            if (shown.held) postInvalidateDelayed(HOLD_REDRAW_MS)       // the hold ends by itself: draw again
             val (acts, what) = actions(it, bag, slot)
-            card(c, cur, name, q, tip, tip.optJSONArray("cmp"), acts, what, top, bottom)
+            card(c, cur, shown.name, shown.quality, shown.tip, changesOf(shown.tip, it), acts, what, top, bottom)
             return true
         }
 
@@ -496,62 +530,31 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         private var dragY = -1f
 
         /**
-         * THE ITEM BY THE CURSOR (the user, 2026-10-09: "tooltip should stay by the cursor"), its cells under it, and for GEAR each worn
-         * item it would replace ("Currently Equipped", the game's stat-change lines last; the user: "it should just always auto compare"):
-         * beside the item's tooltip on the side AWAY from the cursor (Thor batch2: "I dont want it to cover the cursor"), or under the
-         * item's cells where that side has no room. Currently Equipped at the game's compare size ([UiKit.COMPARE_SCALE]).
+         * THE ITEM BY THE CURSOR (the user, 2026-10-09: "tooltip should stay by the cursor"), its cells under it. GEAR: what equipping it
+         * would change, at the FOOT of its own tooltip (bags-nocmp1, the user 2026-11-13: "the bag items are still showing currently
+         * equipped, I dont want to see that, but I do want to see the stat changes at the bottom of that weapon if I equip it"): no
+         * "Currently Equipped" card beside it any more, only the changes ([changes], BagsCompare.hover: the game's lines, the app's own
+         * count where the game gave none, an empty slot's gains, a two-hander against both hands). The Compare sheet keeps the cards.
          *
          * THE ROW OF GLYPHS ALWAYS SHOWS (the user, 2026-10-22: "the tooltip on some of the gear in my bag is too big, so I can't see
          * the button glyph options"): [BagsCursor.fit] keeps the tooltip and its row inside the room. A tall one shrinks; one still too
          * tall is cut at the room's foot with its row pinned there under it, never over it, and a finger scrolls it in its box.
          */
-        private fun card(c: Canvas, cur: RectF, name: String, q: Int, tip: JSONObject, cmp: JSONArray?,
+        private fun card(c: Canvas, cur: RectF, name: String, q: Int, tip: JSONObject, changes: List<UiKit.TipLine>,
                          acts: List<Pair<String?, String>>, what: List<Int>, top: Float, bottom: Float) {
             val key = tip.optString("key")
             val fade = warm.alpha(key, clock())
             if (warm.animating) postInvalidateOnAnimation()
             val lines = tip.optJSONArray("lines")
             val first = lines?.optJSONObject(0)
-            val body = TipStack.lines(lines, first != null && first.optString("t") == name)
-            data class Eq(val name: String, val colour: Int, val lines: List<UiKit.TipLine>)
-            val eq = if (cmp == null) emptyList() else (0 until cmp.length()).mapNotNull { n ->
-                val el = cmp.optJSONObject(n)?.optJSONArray("lines") ?: return@mapNotNull null
-                val head = el.optJSONObject(0) ?: return@mapNotNull null
-                Eq(TipStack.strip(head.optString("t")), TipStack.colour(head.optString("c").takeIf { s -> s.isNotEmpty() }, Color.WHITE),
-                    TipStack.lines(el, true))
-            }
-            val sc = UiKit.COMPARE_SCALE
+            val body = TipStack.lines(lines, first != null && first.optString("t") == name) + changes
             val plateH = if (acts.isEmpty()) 0f else 62f
-            val (x, tw, _) = place(cur, sc)
-            val itemRight = x >= cur.right
-            // beside the item on the side away from the cursor; where that has no room, beside the cursor on its other side (never
-            // over it), narrowed to that side's room if it must (not under MIN_CMP_W); else under the item's row
-            val awayX = if (itemRight) x + tw + 6f else x - 6f - tw * sc
-            val awayRoom = if (itemRight) width - 16f - (x + tw + 6f) else x - 6f - 16f
-            val otherRoom = if (itemRight) cur.left - 18f - 16f else width - 16f - (cur.right + 18f)
-            val cwFull = tw * sc
-            val cw = when {
-                eq.isEmpty() || awayRoom >= cwFull || otherRoom >= cwFull -> cwFull
-                maxOf(awayRoom, otherRoom) >= MIN_CMP_W -> maxOf(awayRoom, otherRoom)
-                else -> cwFull
-            }
-            val besideX = when {
-                awayRoom >= cw -> if (itemRight) awayX else x - 6f - cw
-                otherRoom >= cw -> if (itemRight) cur.left - 18f - cw else cur.right + 18f
-                else -> -1f
-            }
-            val beside = eq.isEmpty() || besideX >= 16f
-            val cmpX = if (beside) besideX else x
+            val (x, tw, _) = place(cur)
             val colour = Theme.quality(q)
             fun itemH(s: Float) = UiKit.tooltip(c, 0f, -9999f, tw, name, colour, body, alpha = 0, scale = s).height()
-            fun eqH(s: Float) = eq.sumOf { e ->
-                UiKit.tooltip(c, 0f, -9999f, cw, e.name, e.colour, e.lines, header = "Currently Equipped", alpha = 0, scale = sc * s).height().toDouble() + 6.0
-            }.toFloat()
-            // up over the bag bar only if it must. The item and its row decide; a compare beside is cut at the room's foot if it is
-            // taller. Stacked under the row: the whole stack if it fits, else the item and its row alone (the compare then cut)
+            // up over the bag bar only if it must; the item and its row decide
             val roomTop = top - 90f; val rowY = maxOf(top, cur.top)
-            val whole = BagsCursor.fit(roomTop, bottom, rowY, plateH) { s -> if (beside) itemH(s) else itemH(s) + 6f + eqH(s) }
-            val f = if (whole.scrollMax <= 0f || beside) whole else BagsCursor.fit(roomTop, bottom, rowY, plateH) { s -> itemH(s) }
+            val f = BagsCursor.fit(roomTop, bottom, rowY, plateH) { s -> itemH(s) }
             val s = f.scale
             // the scroll belongs to one item; a new item starts at its top
             if (key != cutKey) { cutKey = key; scrolled = 0f }
@@ -580,11 +583,6 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             }
             plate(c, boxNow, acts, what, a)
             if (f.scrollMax > 0f) moreMark(c, boxNow, scrolled > 0f, scrolled < f.scrollMax, a)
-            var y = if (beside) f.y else boxNow.bottom + plateH + 6f
-            c.save(); c.clipRect(0f, roomTop, width.toFloat(), bottom)
-            for (e in eq) y = UiKit.tooltip(c, cmpX, y, cw, e.name, e.colour, e.lines, header = "Currently Equipped", alpha = a,
-                scale = sc * s).bottom + 6f
-            c.restore()
         }
 
         private val pMore = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -796,7 +794,10 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             val (bag, slot) = st.ctlCur() ?: return
             val cur = slotBox(bag, slot, gx, gy) ?: return
             val (tx, tw, _) = place(cur)
-            val rows = listOf("split" to "Split Stack", "bind" to "Bind to a Button", "destroy" to "Destroy")
+            // bags-act1: the add-on's rows by name (ctl.menus; Compare before Destroy), an older add-on's three without it
+            val names = st.ctl?.optJSONArray("menus")?.let { a -> (0 until a.length()).map { i -> a.optString(i) } }
+                ?: listOf("split", "bind", "destroy")
+            val rows = names.mapNotNull { n -> MENU_WORDS[n]?.let { w -> n to w } }
             val h = 56f + rows.size * 96f + 24f
             val y0 = minOf(maxOf(top, cur.top), bottom - h - 64f)
             val box = RectF(tx, y0, tx + tw, y0 + h)
@@ -811,7 +812,7 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             for ((i, row) in rows.withIndex()) {
                 val r = RectF(inner.left, inner.top + 56f + i * 96f, inner.right, inner.top + 56f + i * 96f + 92f)
                 val on = usable?.optBoolean(i, true) ?: true
-                if (on) hits.add(RectF(r) to (19 + i))
+                if (on) hits.add(RectF(r) to MENU_TAP.getValue(row.first))
                 UiKit.pressed(c, r, on && pressedIn(listOf(r)) == 0) {
                     UiKit.menuRow(c, r, row.second, sel == row.first, if (row.first == "destroy") Theme.unusable else Theme.text,
                         enabled = on, size = 28f)
@@ -887,11 +888,136 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             hits.add(back to KIT_CANCEL); zones.add(back)
         }
 
+        /**
+         * bags-act1: THE COMPARE SHEET (the user's pick 2026-11-13: "SIDE BY SIDE: bag item left, worn item(s) right (both rings /
+         * trinkets / one-handers), the game's GetItemComparisonDelta lines under each, scrolls, B back one step"). The game's own
+         * shopping-tooltip layout at full size: the bag item's tooltip left, every piece it would replace right (BagsCompare.cards:
+         * the game's changes under each, the app's count where the game gave none, an empty slot's gains). It scrolls as one: the
+         * D-pad up / down ([comparePad]), the right stick, a finger. B = Back (the add-on's). Nothing happens in the game.
+         */
+        private fun compare(c: Canvas, screen: RectF) {
+            UiKit.cover(c, screen)
+            val (bag, slot) = st.ctlCur() ?: return
+            val it = st.items[st.key(bag, slot)] ?: return
+            val key = "bag $bag $slot ${it.optInt("id")}"
+            val name = it.optString("name").takeIf { s -> real(s) } ?: "Loading…"
+            val q = if (it.has("quality")) it.optInt("quality") else 1
+            val live = st.ctl?.optJSONObject("tip")?.takeIf { st.ctlOn }
+            val shown = st.tips.pick(key, it.optInt("count", 1), live, name, q, clock()) { fallbackTip(key, it) }
+            if (shown.held) postInvalidateDelayed(HOLD_REDRAW_MS)
+            val lines = shown.tip.optJSONArray("lines")
+            val first = lines?.optJSONObject(0)
+            val body = TipStack.lines(lines, first != null && first.optString("t") == shown.name)
+            val eq = eqCards(cardsOf(shown.tip, it))
+            val box = RectF(40f, 30f, screen.right - 40f, screen.bottom - 110f)
+            val inner = UiKit.menu(c, box, solid = true)
+            c.drawText(Tr.t("Compare"), inner.left + 16f, inner.top + 40f, UiKit.bodyPaint(30f, Theme.gold))
+            val view = RectF(inner.left + 12f, inner.top + 60f, inner.right - 12f, inner.bottom - 8f)
+            val gap = 18f
+            val colW = (view.width() - gap) / 2f
+            val leftX = view.left; val rightX = view.left + colW + gap
+            val colour = Theme.quality(shown.quality)
+            val leftH = UiKit.tooltip(c, 0f, -9999f, colW, shown.name, colour, body, alpha = 0).height()
+            val rightH = eq.sumOf { e -> UiKit.tooltip(c, 0f, -9999f, colW, e.name, e.colour, e.lines, header = e.head, alpha = 0).height().toDouble() + 10.0 }.toFloat()
+            val max = maxOf(0f, maxOf(leftH, rightH) - view.height())
+            // the scroll belongs to this item's sheet; a new one starts at its top
+            if ("cmp $key" != cutKey) { cutKey = "cmp $key"; scrolled = 0f }
+            if (max > 0f && kotlin.math.abs(stickY) > BagsCursor.STICK_DEADZONE) {
+                val now = clock()
+                scrolled = BagsCursor.stickScroll(scrolled, max, stickY, (now - stickAt).coerceIn(0L, 50L))
+                stickAt = now
+                postInvalidateOnAnimation()
+            }
+            scrolled = scrolled.coerceIn(0f, max)
+            c.save(); c.clipRect(view)
+            UiKit.tooltip(c, leftX, view.top - scrolled, colW, shown.name, colour, body)
+            var y = view.top - scrolled
+            for (e in eq) y = UiKit.tooltip(c, rightX, y, colW, e.name, e.colour, e.lines, header = e.head).bottom + 10f
+            if (eq.isEmpty()) c.drawText(Tr.t("Nothing to compare"), rightX + 16f, view.top + 40f, UiKit.bodyPaint(26f, Theme.dim))
+            c.restore()
+            if (max > 0f) moreMark(c, view, scrolled > 0f, scrolled < max, 255)
+            cut = RectF(view); cutMax = max
+            stickWanted(max > 0f)
+            zones.add(RectF(box))
+            val hy = box.bottom + 46f
+            val hs = UiKit.hints(c, box.right - 16f, hy, UiKit.backGlyph() to "Back")
+            val back = RectF(hs - 20f, hy - 36f, box.right, hy + 36f)
+            hits.add(back to 33); zones.add(back)
+        }
+
+        /** bags-act1: the D-pad's up / down on the compare sheet (Home's reader; the add-on ignores them there): one step of the scroll */
+        fun comparePad(k: String, down: Boolean): Boolean {
+            if (mode() != "compare") return false
+            if (k != "PADDUP" && k != "PADDDOWN") return false
+            if (down) { scrolled = (scrolled + if (k == "PADDUP") -COMPARE_STEP else COMPARE_STEP).coerceIn(0f, maxOf(0f, cutMax)); invalidate() }
+            return true
+        }
+
+        /**
+         * bags-act1: THE DESTROY PICKER (the user's pick 2026-11-13: "'Suggested' section at the top of the Destroy picker, RANKED MIX";
+         * "select then A -> the same single confirm"): the add-on's ranked list (ctl.dpick: grey / no-value first, then worse or unusable
+         * gear, then the cheapest whites) under "Suggested", the cursor's own item under "This item"; each row its stack's sell value.
+         * The add-on's cursor is the gold row; A = that item's confirm, B = Back. A finger: a row = the gold row there, again = A.
+         */
+        private fun dpick(c: Canvas, screen: RectF) {
+            val p = st.ctl?.optJSONObject("dpick") ?: return
+            val list = p.optJSONArray("list") ?: JSONArray()
+            val sel = p.optInt("sel", 1) - 1
+            val w = minOf(820f, screen.width() - 80f)
+            val box = RectF(screen.centerX() - w / 2f, 40f, screen.centerX() + w / 2f, screen.height() - 110f)
+            val inner = UiKit.menu(c, box, solid = true)
+            c.drawText(Tr.t("Destroy"), inner.left + 16f, inner.top + 40f, UiKit.bodyPaint(30f, Theme.gold))
+            data class Line(val head: String?, val i: Int)
+            val lines = ArrayList<Line>()
+            var lastSec = ""
+            for (i in 0 until list.length()) {
+                val sec = list.optJSONObject(i)?.optString("sec") ?: continue
+                if (sec != lastSec) { lines += Line(if (sec == "i") "This item" else "Suggested", -1); lastSec = sec }
+                lines += Line(null, i)
+            }
+            val rowH = 104f; val headH = 42f
+            val top0 = inner.top + 64f; val bottom0 = inner.bottom - 8f
+            val heights = lines.map { if (it.head != null) headH else rowH }
+            val selLine = lines.indexOfFirst { it.i == sel }.coerceAtLeast(0)
+            var first = 0
+            fun spanFrom(a: Int, b: Int) = (a..b).sumOf { heights[it].toDouble() }.toFloat()
+            while (first < selLine && spanFrom(first, selLine) > bottom0 - top0) first++
+            // a heading stays with its first row
+            if (first > 0 && lines[first].head == null && lines[first - 1].head != null) first--
+            var y = top0
+            for (k in first until lines.size) {
+                val l = lines[k]
+                val h = heights[k]
+                if (y + h > bottom0) break
+                if (l.head != null) {
+                    c.drawText(Tr.t(l.head), inner.left + 16f, y + 30f, UiKit.bodyPaint(23f, Theme.dim))
+                } else {
+                    val o = list.optJSONObject(l.i)
+                    val item = st.items[st.key(o.optInt("bag", -1), o.optInt("slot", -1))]
+                    val r = RectF(inner.left + 8f, y, inner.right - 8f, y + rowH - 6f)
+                    UiKit.itemPlate(c, r, iconOf(item), item?.optString("name")?.takeIf { s -> real(s) } ?: "…", colourOf(item),
+                        count = item?.optInt("count", 1) ?: 0, price = if (o.has("v")) o.optLong("v") else -1L)
+                    if (l.i == sel) UiKit.focus(c, r)
+                    hits.add(RectF(r) to (DPICK_ROW - l.i))
+                }
+                y += h
+            }
+            zones.add(RectF(box))
+            val hy = box.bottom + 46f
+            val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Destroy", UiKit.backGlyph() to "Back")
+            val back = RectF((hs + box.right) / 2f, hy - 36f, box.right, hy + 36f)
+            hits.add(back to 33); zones.add(back)
+        }
+
+        /** the item a confirm is about: the picker's choice (ctl.dest), else the cursor's */
+        private fun destItem(): JSONObject? = st.ctl?.optJSONObject("dest")?.let { d -> st.items[st.key(d.optInt("bag", -1), d.optInt("slot", -1))] }
+            ?: curItem()
+
         /** THE game dialog: Yes (A) left, No (B) right, as the game has it; for rare and better, why not, and Okay */
         private fun destroy(c: Canvas, screen: RectF) {
             UiKit.cover(c, screen)
             val w = screen.width(); val cx = w / 2f
-            val it = curItem()
+            val it = destItem()
             val rare = st.ctl?.optBoolean("rare") == true
             val bh = if (rare) 500f else 440f
             val r = RectF(cx - 520f, (screen.height() - bh) / 2f, cx + 520f, (screen.height() + bh) / 2f)
@@ -899,8 +1025,9 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             UiKit.tex("alert")?.let { c.drawBitmap(it, null, RectF(r.left + 66f, r.top + 60f, r.left + 186f, r.top + 180f), null) }
             val text = UiKit.bodyPaint(if (rare) 36f else 42f, Color.WHITE).apply { textAlign = Paint.Align.CENTER }
             if (rare) {
+                // bags-act1 (the user's pick 2026-11-13: rare and better stay refused, "the box says delete it in the game")
                 c.drawText(Tr.t("This item cannot be destroyed"), cx + 70f, r.top + 104f, text)
-                c.drawText(Tr.t("with the controller."), cx + 70f, r.top + 152f, text)
+                c.drawText(Tr.t("here. Delete it in the game."), cx + 70f, r.top + 152f, text)
             } else c.drawText(Tr.t("Do you want to destroy"), cx + 70f, r.top + 118f, text)
             val py = r.top + if (rare) 184f else 150f
             UiKit.itemPlate(c, RectF(cx - 200f, py, cx + 340f, py + 108f),
@@ -960,52 +1087,6 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             button(c, okay, "Okay", "rev_a", "PAD1"); button(c, cancel, "Cancel", "rev_b", "PAD2")
             hits.add(okay to 31); hits.add(cancel to 33)
         }
-
-        /** the bind sheet, hanging from the top edge; [f] 0..1 = how far it has slid in (and how dark the cover is) */
-        private fun bind(c: Canvas, screen: RectF, ctl: JSONObject, it: JSONObject?, f: Float) {
-            UiKit.cover(c, screen, 0.70f * f)
-            val w = screen.width(); val cx = w / 2f
-            val top = -800f + (740f * f)                          // -800 (out of sight) .. -60 (at rest)
-            c.save(); c.translate(0f, top + 60f)                  // everything below is drawn at its resting place
-            val r = RectF(cx - 550f, -60f, cx + 550f, 740f)
-            UiKit.dialog(c, r)
-            c.drawText(Tr.t("Bind a Button"), cx, 56f, UiKit.titlePaint(46f).apply { textAlign = Paint.Align.CENTER })
-            UiKit.slot(c, iconOf(it), cx - 170f, 94f, 84f)
-            c.drawText(Tr.t(it?.optString("name") ?: ""), cx - 66f, 150f, UiKit.bodyPaint(38f, colourOf(it)))
-            val note = ctl.optString("note").takeIf { n -> n.isNotEmpty() }
-            val chord = ctl.optString("chord").takeIf { n -> n.isNotEmpty() }
-            val keyName = chord?.let { k -> bindKeyName(k) ?: k }
-            val line = when (note) {
-                "bind-taken" -> "$keyName is taken by " + (ctl.optString("takenByName").takeIf { n -> n.isNotEmpty() } ?: ctl.optString("takenBy"))
-                "bind-modifier" -> "Combinations cannot be bound yet"
-                "bind-unheard" -> "That button cannot be bound"
-                "bind-notready", "bind-failed" -> "Not ready yet, press it again"
-                "bound" -> "Bound to " + (bindKeyName(ctl.optString("bound")) ?: ctl.optString("bound"))
-                else -> "Press the button you want for this item"
-            }
-            val colour = when (note) { null -> Color.WHITE; "bound" -> Theme.questGreen; else -> Theme.unusable }
-            c.drawText(Tr.t(line), cx, 232f, UiKit.bodyPaint(36f, colour).apply { textAlign = Paint.Align.CENTER })
-            val keys = ctl.optJSONArray("keys")
-            val bound = ctl.optString("bound")
-            for (i in 0 until (keys?.length() ?: 0)) {
-                val k = keys!!.optJSONObject(i) ?: continue
-                val name = k.optString("k")
-                val x = cx - 512f + (i % 2) * 524f
-                val y = 276f + (i / 2) * 118f
-                val a = k.optString("a").takeIf { s -> s.isNotEmpty() }
-                val label = k.optString("n").takeIf { s -> s.isNotEmpty() } ?: a ?: "Free"
-                val mark = when {
-                    note == "bound" && name == bound -> 2
-                    note != null && note.startsWith("bind-") && name == chord -> 1
-                    else -> 0
-                }
-                UiKit.keyChip(c, RectF(x, y, x + 500f, y + 104f), KEY_GLYPH[name] ?: "gen_rstickin", label, a == null, mark)
-            }
-            c.drawText(Tr.t("A, B, X and Y cannot be bound."), cx, 660f, UiKit.bodyPaint(26f, Theme.dim).apply { textAlign = Paint.Align.CENTER })
-            val hs = UiKit.hints(c, r.right - 70f, 654f, "rev_b" to if (note == "bound") "Close" else "Cancel")
-            c.restore()
-            if (f >= 1f) hits.add(RectF(hs - 20f, 654f - 44f + top + 60f, r.right - 50f, 654f + 44f + top + 60f) to 33)
-        }
     }
 
     /**
@@ -1014,6 +1095,9 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
      * toward a tap, and the cursor is not drawn from it. The "tap once per use request" baseline is taken on the first
      * CURRENT document, so a request served before an app restart is never tapped again.
      */
+    /** r20: an `itemcd` document came (ItemCd): the slots' cooldowns redraw */
+    fun cooldowns() { grid.invalidate() }
+
     fun update(bags: JSONObject, current: Boolean = true) {
         head.set(bags.optInt("free", 0), bags.optInt("total", 0),
             if (bags.has("money")) bags.optLong("money") else null)
@@ -1022,6 +1106,7 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         val c = if (current && bags.has("ctl")) bags.optJSONObject("ctl") else state.ctl
         state.ctl = c
         val changed = state.set(bags)
+        if (current) state.noteTip(bags)
         if (current) state.feed(android.os.SystemClock.uptimeMillis())
         if (state.ctlOn) state.follow()          // the item panel shows what the cursor is on
         if (changed) layoutAll()
@@ -1035,6 +1120,7 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
     fun updateCtl(c: JSONObject, current: Boolean) {
         if (!current) return
         state.ctl = c
+        state.noteTip(null)
         state.feed(android.os.SystemClock.uptimeMillis())
         if (state.ctlOn) state.follow()
         layoutAll()
@@ -1059,8 +1145,9 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
 
     private fun cursorTo(bag: Int, slot: Int): Boolean {
         if (state.ctlCur() == (bag to slot)) return true
-        if (!rowsHave("bmvq", "bmv$bag")) return false
-        return GameInput.tap(context, state.pad, "bmvq", 36) && GameInput.tap(context, state.pad, "bmv$bag", slot - 1)
+        if (!rowsHave("bmvq")) return false
+        val cells = BagsMoveRoute.cells(state.pad, bag, slot) ?: return false      // bags-onerow1: the bag's name, then the shared row
+        return GameInput.taps(context, state.pad, listOf("bmvq" to 36) + cells)
     }
 
     private fun touchSlot(bag: Int, slot: Int) {
@@ -1102,6 +1189,7 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
             state.follow(); grid.invalidate(); ctlLayer.invalidate()
             removeCallbacks(staleTick); postDelayed(staleTick, BagsCursor.STALE_MS + 20L)
         }
+        if (ctlLayer.comparePad(k, down)) return          // bags-act1: the compare sheet's D-pad scrolls it (the add-on ignores it there)
         ctlLayer.padKey(k, down)
     }
     /** no answer from the game: its own cursor shows again */
@@ -1195,6 +1283,13 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
     override fun bLeadsHome(): Boolean =
         state.ctlOn && !kbOpen && state.drag == null && state.ctl?.optString("mode") == "grid" && state.ctlPick() == null
 
+    /** bags-bindbox1: a finger's A ("a") / B ("b") for the Spellbook's Bind box this room hosts (SpellsOverlay): Bags' own touch
+     *  A / B (bmvq 31 / 33), which Bags hands to the box. Only while the room holds and the box is up (mode "bindbox") */
+    fun boxKey(k: String) {
+        if (!state.ctlOn || state.ctl?.optString("mode") != "bindbox") return
+        GameInput.tap(context, state.pad, "bmvq", if (k == "a") 31 else 33)
+    }
+
     fun touchedOut() {
         state.holdAskedAt = 0L
         removeCallbacks(takeCheck)
@@ -1256,10 +1351,6 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
     }
 
     companion object {
-        /** a bindable button's word in the chosen glyph set (Glyphs.name); null = not one the sheet binds */
-        private val KEY_ACTION = mapOf("PADRSHOULDER" to "rshoulder", "PADRTRIGGER" to "rtrigger", "PADLSTICK" to "lstick",
-            "PADRSTICK" to "rstick", "PADBACK" to "select")
-        fun bindKeyName(k: String): String? = KEY_ACTION[k]?.let { Glyphs.name(it) }
         private fun rule(colour: Int, c: Context) = View(c).apply { setBackgroundColor(colour) }
         const val TAKE_CHECK_MS = 1500L          // touchedIn's take, checked against bags.ctl this long after
         const val KB_REPEAT_FIRST_MS = 280L      // the search keyboard's D-pad repeat, as DirectPad's rooms (DirectPadKeys)
@@ -1322,6 +1413,14 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
                 if (it.optString("itype") == "Quest") Icons.ui("ui-icon-questborder")?.let { b ->
                     cv.drawBitmap(b, null, box, bmpPaint)
                 }
+            }
+            // r20 (the user 2026-11-13: "cooldowns on radial slices AND bag slots: dark pie sweep + seconds ... bags always on"): the item's
+            // cooldown from the `itemcd` document (ItemCd), the radial's own look clipped to the square slot; held / length unknown = dim
+            if (!dimmed && it != null && iconOverride == null) {
+                val id = it.optInt("id", 0)
+                val left = if (id > 0) ItemCd.left(id) else 0.0
+                if (left > 0.0) UiKit.radialCd(cv, inset, left.toFloat(), ItemCd.len(id).toFloat(), 255, inset.width() / 100f)
+                else if (id > 0 && ItemCd.dim(id)) UiKit.radialCdDim(cv, inset, 255)
             }
             if (selected) drawGlow(cv, box, p)
             val n = it?.optInt("count", 1) ?: 1
@@ -1438,11 +1537,11 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         private fun hasRow(name: String) = pad?.optJSONObject("rows")?.has(name) == true
 
         /** a drag can only start when the addon has published the rows it needs */
-        fun canDragBag(bag: Int) = !clean && hasRow("bmv$bag") && hasRow("bmvq")
+        fun canDragBag(bag: Int) = !clean && BagsMoveRoute.reaches(pad, bag) && hasRow("bmvq")
 
         fun canDropBag(bag: Int, slot: Int): Boolean {
             val d = drag ?: return false
-            if (!hasRow("bmv$bag")) return false
+            if (!BagsMoveRoute.reaches(pad, bag)) return false
             return !(d.fromBag == bag && d.fromSlot == slot)
         }
 
@@ -1482,6 +1581,25 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         fun ctlCur(): Pair<Int, Int>? = if (ctlOn && !equipping && !onBar) predict.shown ?: at(ctl?.optJSONObject("cur")) else null
         /** (b) the app's copy of the cursor, ahead of the game's documents (BagsCursor) */
         val predict = BagsCursor.Predictor()
+        /** bags-tip1: each item's last full tooltip, so no document ever drops a card back to its stand-in (BagsCursor.TipMemory) */
+        val tips = BagsCursor.TipMemory()
+        /**
+         * A document arrived: what is worn ([bags].equipped, when it is a full one) and the game's tooltip in ctl to the memory, while
+         * its item is still in its slot (the key's id against the bags here).
+         */
+        fun noteTip(bags: JSONObject?) {
+            bags?.optJSONObject("equipped")?.optJSONArray("slots")?.let { a ->
+                tips.worn((0 until a.length()).joinToString(",") { i -> a.optJSONObject(i)?.optInt("id", 0)?.toString() ?: "0" })
+            }
+            val t = ctl?.optJSONObject("tip") ?: return
+            val k = t.optString("key")
+            val p = k.split(" ")
+            if (p.size != 4 || p[0] != "bag") return
+            val b = p[1].toIntOrNull() ?: return; val s = p[2].toIntOrNull() ?: return
+            val it = items[key(b, s)] ?: return
+            if (it.optInt("id") != p[3].toIntOrNull()) return
+            tips.offer(t, k, it.optInt("count", 1))
+        }
         /** the game's bags.ctl to the copy: its seq, its cursor, the open bags in order, something in the hand */
         fun feed(now: Long) {
             val c = ctl
@@ -1816,6 +1934,8 @@ class BagsView(c: Context) : FrameLayout(c), BLeadsHome {
         override fun onDraw(cv: Canvas) {
             fonts()
             tiles.clear()
+            // r20: a cooldown counting on a slot: the seconds move (a redraw a few times a second while any runs; nothing ticks otherwise)
+            if (ItemCd.anyRunning()) postInvalidateDelayed(250L)
             val cur = st.ctlCur(); val pick = st.ctlPick()
             val inHand = st.ctlEq()?.let { it.optInt("bag", -1) to it.optInt("slot", -1) }     // a bag being equipped
             var curBox: RectF? = null

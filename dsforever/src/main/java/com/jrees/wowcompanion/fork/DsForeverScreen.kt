@@ -179,15 +179,11 @@ class DsForeverScreen(private val context: Context) {
      * the same lines kept in a small file of our own (/sdcard/WowCompanion/logs/dsnet.log, one rotation at 1 MB): logcat's ring buffer
      * had already dropped the sign-in part of the first measured session (2026-10-08 21:25)
      */
-    private val netLog = java.io.File("/sdcard/WowCompanion/logs/dsnet.log")
+    // 1.0.29 key-lag review: this ran on the MAIN thread every second the game had traffic (every 10 s when quiet), an append through
+    // FUSE in the same queue as the game's key presses; now queued and written by the background log writer (BgAppend)
+    private val netLog = com.jrees.wowcompanion.BgAppend({ java.io.File("/sdcard/WowCompanion/logs/dsnet.log") })
     private val stamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.ROOT)
-    private fun note(line: String) {
-        try {
-            netLog.parentFile?.mkdirs()
-            if (netLog.length() > 1_000_000L) netLog.renameTo(java.io.File(netLog.path + ".1"))
-            netLog.appendText("${stamp.format(java.util.Date())} $line\n")
-        } catch (_: Throwable) {}
-    }
+    private fun note(line: String) { runCatching { netLog.add("${stamp.format(java.util.Date())} $line") } }
 
     private fun gameDisplay(): Int = (context as? Activity)?.display?.displayId ?: Display.DEFAULT_DISPLAY
 
@@ -355,6 +351,8 @@ private class HostPresentation(outer: Context, display: Display, private val onR
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
         )
+        // #230: named, so an input ANR line says which window stopped answering (untitled = the package name, like the others)
+        com.jrees.wowcompanion.WinTitle.apply(window, com.jrees.wowcompanion.WinTitle.BOTTOM)
         host = CompanionHost(context, this).also { it.onCreate(savedInstanceState); it.onStart() }
     }
 
@@ -367,6 +365,15 @@ private class HostPresentation(outer: Context, display: Display, private val onR
         private set
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // #230: this window's touches timed like the top screen's (age on arrival, handling time)
+        val start = android.os.SystemClock.uptimeMillis()
+        try { return dispatchTouchEventTimed(ev) }
+        finally {
+            runCatching { com.jrees.wowcompanion.TouchLag.note(com.jrees.wowcompanion.TouchLag.BOTTOM, ev.actionMasked, ev.eventTime, start, android.os.SystemClock.uptimeMillis()) }
+        }
+    }
+
+    private fun dispatchTouchEventTimed(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             // only a field that takes typing (Chat's bar is display-only: its own keyboard, and the game keeps the pad)
             val field = (window?.decorView?.let { hit(it, ev.rawX, ev.rawY) } as? EditText)?.takeIf { it.isFocusable && it.isEnabled }
@@ -396,6 +403,8 @@ private class HostPresentation(outer: Context, display: Display, private val onR
 
     private fun focusable(on: Boolean) {
         typing = on
+        // #230 open lead: the ANR came ~6-11 s after this window gave the focus back (sign-in board); the switches are logged
+        runCatching { com.jrees.wowcompanion.DiagLog.event("touch", "bottom window focusable ${if (on) "on" else "off"}") }
         val w = window ?: return
         if (on) w.clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         else {

@@ -49,7 +49,8 @@ class SettingsTabsTest {
     /** every group in its tab, in the approved order (QuestTrail's only while a copy is installed, as before) */
     @Test fun groupsInTheApprovedOrder() {
         assertEquals(listOf("Look", "Account", "Help"), SettingsTabs.groups(T.GENERAL).map { it.heading })
-        assertEquals(listOf("Home", "Map", "Chat"), SettingsTabs.groups(T.BOTTOM).map { it.heading })
+        // GitHub #43 cb3 (the user: "the tap to cast bar should get its own bottom screen section")
+        assertEquals(listOf("Home", "Tap-to-cast bar", "Map", "Chat"), SettingsTabs.groups(T.BOTTOM).map { it.heading })
         assertEquals(listOf("Your HUD", "Target", "Party", "Navigation", "Game windows"), SettingsTabs.groups(T.TOP).map { it.heading })
         assertEquals(listOf("Buttons", "Wheels", "Smart Y", "Combat helpers"), SettingsTabs.groups(T.CONTROLLER).map { it.heading })
         assertEquals(listOf("Polestar", "Spoken", "Manners"), SettingsTabs.groups(T.ADDONS).map { it.heading })   // QuestTrail: not installed
@@ -61,13 +62,16 @@ class SettingsTabsTest {
     @Test fun everyRowInItsApprovedGroup() {
         val want: Map<G, List<String>> = mapOf(
             G.LOOK to listOf("Theme", "Language"),
-            G.ACCOUNT to listOf("Battle.net login"),
+            G.ACCOUNT to listOf("Battle.net login", "Game account"),
             G.HELP to listOf("Problem report", "Reload game UI", "Status"),
-            G.HOME to listOf("Controller on Home", "Combat layout", "Swing timer", "Focused quest", "DS WoW toolbar"),
+            // the clock extras (the user's picks 2026-11-13, feat/item-cooldowns): one row each, before the toolbar
+            G.HOME to listOf("Controller on Home", "Combat layout", "Swing timer", "Focused quest", "Hearthstone", "Class teleport", "Gold",
+                "Free bag slots", "Ammo", "DS WoW toolbar"),          // feat/clock-extras-v2: Ammo
+            G.CAST_BAR to listOf("Tap-to-cast bar", "In combat"),
             G.MAP to listOf("Minimap zoom outdoors", "Minimap zoom indoors", "World map"),
             G.CHAT to listOf("Message input"),
             G.HUD to listOf("Resource bar", "Pet bar", "HUD height", "HUD width", "HUD scale"),
-            G.TARGET to listOf("Target bar", "Target health text", "Target of target", "Aggro tint", "Enemy nameplates"),
+            G.TARGET to listOf("Target bar", "Target health text", "Target of target", "Aggro tint", "Enemy nameplates", "Friendly plates"),
             G.PARTY to listOf("DS party frames", "Party frames"),
             G.NAVIGATION to listOf("Compass bar", "Compass follows the camera", "World markers", "Polestar on the top screen"),
             G.WINDOWS to listOf("Minimap", "Quest tracker", "Chat window", "NPC windows", "Loot window", "Game tooltips", "Cast bar",
@@ -76,7 +80,7 @@ class SettingsTabsTest {
             G.WHEELS to listOf("Pause menu: open", "Pause menu: pick", "Item wheel: open", "Item wheel: pick", "Spell wheel: open",
                 "Spell wheel: pick", "Left class radial: open", "Left class radial: pick", "Right class radial: open", "Right class radial: pick"),
             G.SMART_Y to listOf("Smart Y"),
-            G.COMBAT to listOf("Party mode", "Start attack on hostile target", "Start the attack when a spell is cast", "Combat Auto Shot"),
+            G.COMBAT to listOf("Party mode", "Smart Res", "Start attack on hostile target", "Start the attack when a spell is cast", "Combat Auto Shot"),
             G.POLESTAR to ThirdPartyAddons.POLESTAR.rowWords() + "Quest tracking",
             G.SPOKEN to ThirdPartyAddons.SPOKEN.rowWords(),
             G.QUESTTRAIL to ThirdPartyAddons.QUESTTRAIL.rowWords(),
@@ -87,12 +91,13 @@ class SettingsTabsTest {
             G.STREAMING to listOf("Stream settings"))
         for (g in G.values()) assertEquals(g.heading, want[g], B.values().filter { it.group == g }.flatMap { it.rows })
         // and each group's tab
-        val tabOf = mapOf(T.GENERAL to listOf(G.LOOK, G.ACCOUNT, G.HELP), T.BOTTOM to listOf(G.HOME, G.MAP, G.CHAT),
+        val tabOf = mapOf(T.GENERAL to listOf(G.LOOK, G.ACCOUNT, G.HELP), T.BOTTOM to listOf(G.HOME, G.CAST_BAR, G.MAP, G.CHAT),
             T.TOP to listOf(G.HUD, G.TARGET, G.PARTY, G.NAVIGATION, G.WINDOWS), T.CONTROLLER to listOf(G.BUTTONS, G.WHEELS, G.SMART_Y, G.COMBAT),
             T.ADDONS to listOf(G.POLESTAR, G.SPOKEN, G.QUESTTRAIL, G.MANNERS), T.PERFORMANCE to listOf(G.FRAMES, G.MEMORY, G.INDOOR, G.STREAMING))
         for ((t, gs) in tabOf) assertEquals(t.label, gs, G.values().filter { it.tab == t })
         // who draws the rows that left their old view: Home's section still draws its attack row, GameUiSection the Top screen rows
         assertEquals(SettingsTabs.Drawer.HOME, B.ATTACK_CAST.drawer)
+        assertEquals(SettingsTabs.Drawer.HOME, B.CAST_BAR.drawer)
         assertEquals(SettingsTabs.Drawer.GAME_UI, B.COMPANION.drawer)
         assertEquals(SettingsTabs.Drawer.VIEW, B.POLESTAR_TOP.drawer)
         assertEquals(SettingsTabs.Drawer.VIEW, B.QUEST_TRACKING.drawer)
@@ -117,7 +122,21 @@ class SettingsTabsTest {
                 "Build in the background", "Progress", "Route data", "Language", "Reload game UI", "Battle.net login", "Problem report",
                 "Lighter mode", "Low-memory graphics", "Stream settings", "Status") +
             // drawn before but in no block's list: GameUiSection's QOL Combat / Party groups, Add-ons > Polestar's top-screen row
-            listOf("Start attack on hostile target", "Combat Auto Shot", "Party mode", "Polestar on the top screen")
+            listOf("Start attack on hostile target", "Combat Auto Shot", "Party mode", "Polestar on the top screen") +
+            // m150 / hub47 (the user, 2026-11-13): Smart Res, new under Party mode
+            listOf("Smart Res") +
+            // added since: GitHub #43's tap-to-cast bar (Bottom screen > Home; cb3: its own group, Bottom screen > Tap-to-cast bar)
+            listOf("Tap-to-cast bar") +
+            // the user 2026-11-13 ("a settings toggle to make them Hide/stay in combat"): Bottom screen > Tap-to-cast bar > In combat
+            listOf("In combat") +
+            // new since the six tabs: General > Account > Game account (#47)
+            listOf("Game account") +
+            // added since: the clock extras (feat/item-cooldowns)
+            listOf("Hearthstone", "Class teleport", "Gold", "Free bag slots") +
+            // hub52 (the user, 2026-11-13: "maybe we should set this as a toggle defaulted to off"): Top > Target
+            listOf("Friendly plates") +
+            // added since: the clock band's ammo (feat/clock-extras-v2)
+            listOf("Ammo")
         val now = B.values().flatMap { it.rows }
         assertEquals(before.toSet(), now.toSet())
         assertEquals("a row in two places", now.size, now.toSet().size)
@@ -191,7 +210,7 @@ class SettingsTabsTest {
     }
 
     @Test fun settingsViewDrawsItsOwnBlocksOnly() {
-        assertEquals(listOf(B.THEME, B.LANGUAGE, B.ACCOUNT, B.HELP), SettingsTabs.viewBlocks(T.GENERAL))   // + the status (GameUiSection)
+        assertEquals(listOf(B.THEME, B.LANGUAGE, B.ACCOUNT, B.GAME_ACCOUNT, B.HELP), SettingsTabs.viewBlocks(T.GENERAL))   // + the status (GameUiSection)
         assertEquals(listOf(B.MAP, B.CHAT), SettingsTabs.viewBlocks(T.BOTTOM))                            // under Home's section
         assertEquals(listOf(B.POLESTAR_TOP), SettingsTabs.viewBlocks(T.TOP))                              // the rest: GameUiSection
         assertEquals(listOf(B.CONTROLLER, B.PAUSE_WHEEL, B.ITEM_WHEEL, B.SPELL_WHEEL, B.CLASS_LEFT, B.CLASS_RIGHT, B.SMART_Y),
@@ -239,6 +258,41 @@ class SettingsPreviewRowsTest {
     @Test fun noPictureOnTheTopScreensShowHide() =
         assertTrue(SettingsTabs.Block.values().filter { it.tab == SettingsTabs.Tab.TOP }.flatMap { it.rows }.none { SettingsPreview.has(it) })
 
+    /** 2026-11-13 (the user: "a lot of these new options and settings need visuals to accompany them in the settings menus"): every
+     *  Bottom screen row has its picture (a new row there needs one), and the Controller tab's combat helpers have theirs */
+    @Test fun everyBottomScreenRowHasAPicture() {
+        val missing = SettingsTabs.Block.values().filter { it.tab == SettingsTabs.Tab.BOTTOM }.flatMap { it.rows }.filter { !SettingsPreview.has(it) }
+        assertTrue("Bottom screen rows with no picture: $missing", missing.isEmpty())
+        for (r in listOf("Smart Y", "Party mode", "Smart Res", "Start attack on hostile target", "Combat Auto Shot"))
+            assertTrue("$r has a picture", SettingsPreview.has(r))
+    }
+
+    /** every value of the new rows has its title and words (the panel shows the one chosen) */
+    @Test fun theNewRowsWordsFollowTheValue() {
+        for (side in 0..3) assertTrue(SettingsPreview.caption("Tap-to-cast bar", SettingsPreview.State(castBar = side)).isNotEmpty())
+        assertEquals("Tap-to-cast bar: Both", SettingsPreview.title("Tap-to-cast bar", SettingsPreview.State(castBar = 3)))
+        // the bar in a fight: Hide (the default) / Stay, each with its own words
+        assertEquals("Cast bar in combat: Hide", SettingsPreview.title("In combat", SettingsPreview.State()))
+        assertEquals("Cast bar in combat: Stay", SettingsPreview.title("In combat", SettingsPreview.State(castCombatHide = false)))
+        assertTrue(SettingsPreview.caption("In combat", SettingsPreview.State()) != SettingsPreview.caption("In combat", SettingsPreview.State(castCombatHide = false)))
+        assertEquals("Ammo: Off", SettingsPreview.title("Ammo", SettingsPreview.State(clockAmmo = false)))
+        // 2026-11-13 (the user: "just list our total gold under the battery (still give it a toggle)"): the Gold row's picture is the gold line
+        assertEquals("Gold: On", SettingsPreview.title("Gold", SettingsPreview.State(clockGold = true)))
+        assertEquals("Gold: Off", SettingsPreview.title("Gold", SettingsPreview.State(clockGold = false)))
+        assertTrue(SettingsPreview.caption("Gold", SettingsPreview.State(clockGold = true)).first().contains("under the battery"))
+        assertEquals(listOf("No gold under the battery."), SettingsPreview.caption("Gold", SettingsPreview.State(clockGold = false)))
+        assertEquals("Combat Auto Shot: Smart", SettingsPreview.title("Combat Auto Shot", SettingsPreview.State(autoShot = 2)))
+        assertEquals("Smart Y: -", SettingsPreview.title("Smart Y", SettingsPreview.State()))
+        for (y in listOf(null, true, false)) for (sh in 0..2) for (b in listOf(true, false)) {
+            val s = SettingsPreview.State(smartY = y, autoShot = sh, clockHearth = b, clockTeleport = b, clockGold = b, clockBags = b,
+                clockAmmo = b, worldMapAll = b, partyMode = b, smartRes = b, attackHostile = b, castCombatHide = b)
+            for (id in SettingsPreview.ROWS.keys) {
+                assertTrue(id, SettingsPreview.title(id, s).length in 3..40)
+                assertTrue(id, SettingsPreview.caption(id, s).isNotEmpty() && SettingsPreview.caption(id, s).all { it.length <= 46 })
+            }
+        }
+    }
+
     @Test fun everyPictureHasATitleAndWords() {
         val s = SettingsPreview.State(startAttack = true, toolbar = true)
         for (id in SettingsPreview.ROWS.keys) {
@@ -247,9 +301,10 @@ class SettingsPreviewRowsTest {
         }
     }
 
-    @Test fun twentyTwoRowsAndTheMovingOnes() {          // f-radial-settings: + the spell wheel's own pair
-        assertEquals(26, SettingsPreview.ROWS.size)
+    @Test fun twentyTwoRowsAndTheMovingOnes() {          // f-radial-settings: + the spell wheel's own pair; 2026-11-13: + 12, + the cast bar's In combat
+        assertEquals(39, SettingsPreview.ROWS.size)
         assertTrue(SettingsPreview.animated("Swing timer") && SettingsPreview.animated("Frame limit") && !SettingsPreview.animated("Button glyphs"))
+        assertTrue(SettingsPreview.animated("In combat"))                // the bar fading out in a fight
     }
 }
 

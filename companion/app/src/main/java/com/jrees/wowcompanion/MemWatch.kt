@@ -71,11 +71,21 @@ object MemWatch {
         val fast = object : Runnable {
             override fun run() {
                 runCatching { sampleFree() }
-                runCatching { checkStall(main) }
                 h.postDelayed(this, FAST_MS)
             }
         }
         h.postDelayed(fast, FAST_MS)
+        // issue #230 (1.0.28): the beat shared this thread with the line's own work (Debug.getMemoryInfo, the game's /proc walk, the
+        // FUSE write), so a slow line could hide a stall. Now its own thread, every [BEAT_MS]; the stall line is written by this one
+        val b = Handler(HandlerThread("WCBEAT").also { it.start() }.looper)
+        val beatTick = object : Runnable {
+            override fun run() {
+                runCatching { checkStall(main, h) }
+                b.postDelayed(this, BEAT_MS)
+            }
+        }
+        b.postDelayed(beatTick, BEAT_MS)
+        TouchLag.beatAge = { if (beat == 0L) -1L else SystemClock.uptimeMillis() - beat }
         ctx?.applicationContext?.registerComponentCallbacks(object : ComponentCallbacks2 {
             override fun onTrimMemory(level: Int) { trimmed(level) }
             override fun onConfigurationChanged(newConfig: Configuration) {}
@@ -139,17 +149,32 @@ object MemWatch {
     @Volatile private var beat = 0L
     @Volatile private var stallOf = -1L
     @Volatile private var beatPosted = false
-    private fun checkStall(main: Handler) {
+    /** issue #230: the beat's checks run every [BEAT_MS] on their own thread (WCBEAT) */
+    const val BEAT_MS = 250L
+    /** issue #230: a second stack of the same stall at this age, just before Android's 5 s (what it was doing when the ANR fired) */
+    const val STALL2_MS = 4_250L
+    @Volatile private var stall2Of = -1L
+    /** the longest beat gap since the last line (issue #230: a stall under [STALL_MS] said nothing at all) */
+    @Volatile private var beatMax = 0L
+    private fun checkStall(main: Handler, writer: Handler) {
         val now = SystemClock.uptimeMillis()
         if (beat == 0L) beat = now
         if (!beatPosted) { beatPosted = true; main.post { beat = SystemClock.uptimeMillis(); beatPosted = false } }
         val blocked = now - beat
-        if (stalled(blocked, beat, stallOf)) {
-            stallOf = beat
+        if (blocked > beatMax) beatMax = blocked
+        val first = stalled(blocked, beat, stallOf)
+        val second = !first && blocked >= STALL2_MS && stall2Of != beat
+        if (first || second) {
+            if (first) stallOf = beat else stall2Of = beat
             val l = stallLine(blocked, Looper.getMainLooper().thread.stackTrace.map { it.toString() })
-            Log.w(TAG, l); keep(l)
+            Log.w(TAG, l)
+            runCatching { DiagLog.event("stall", l.take(1500)) }          // queued (the report's log), never waits here
+            writer.post { keep(l) }                                       // mem.log is WCMEM's to write
         }
     }
+    /** "main beat max 1.4 s" when the main thread was [BEAT_NOTE_MS] or more late to its beat since the last line, else "" (pure) */
+    fun beatNote(maxMs: Long): String = if (maxMs >= BEAT_NOTE_MS) "main beat max ${maxMs / 100 / 10.0} s" else ""
+    const val BEAT_NOTE_MS = 1_000L
     /** a stall worth its one line: blocked [STALL_MS] or more, and not this beat's stall again */
     fun stalled(blockedMs: Long, beat: Long, reportedBeat: Long): Boolean = blockedMs >= STALL_MS && reportedBeat != beat
     /** "stall: the main thread blocked 3.0 s: at a.b(F.kt:1) <- at c.d(...)": [frames] innermost first, at most [max] */
@@ -157,14 +182,27 @@ object MemWatch {
         "stall: the main thread blocked ${blockedMs / 100 / 10.0} s: " +
             frames.take(max).joinToString(" <- ") { "at $it" } + if (frames.size > max) " <- ..." else ""
 
-    /** the GPU driver's own total (Adreno's kgsl), bytes; null when this device does not let us read it */
-    @Volatile private var gpuReadable = true
-    private fun gpuBytes(): Long? {
-        if (!gpuReadable) return null
-        val v = runCatching { java.io.File("/sys/class/kgsl/kgsl/page_alloc").readText().trim().toLong() }.getOrNull()
-        if (v == null) gpuReadable = false
+    /**
+     * the GPU driver's own total (Adreno's kgsl), bytes; null when this device does not let us read it. 1.0.29 key-lag review: the
+     * Thor logged an SELinux denial for this file every 5 s. ONE failed read and it is never read again this process ([gpuDead]); a
+     * read that works is taken at most every [GPU_EVERY_MS] (a permissive device logs its denial even when the read works).
+     */
+    internal var gpuRead: () -> Long? = { runCatching { java.io.File("/sys/class/kgsl/kgsl/page_alloc").readText().trim().toLong() }.getOrNull() }
+    @Volatile internal var gpuDead = false
+    @Volatile private var gpuAt = Long.MIN_VALUE / 2
+    @Volatile private var gpuLast: Long? = null
+    const val GPU_EVERY_MS = 60_000L
+    internal fun gpuBytes(now: Long = SystemClock.uptimeMillis()): Long? {
+        if (gpuDead) return null
+        if (now - gpuAt < GPU_EVERY_MS) return gpuLast
+        gpuAt = now
+        val v = runCatching { gpuRead() }.getOrNull()
+        if (v == null) gpuDead = true
+        gpuLast = v
         return v
     }
+    /** tests: the GPU read as at the process's start */
+    internal fun gpuReset() { gpuDead = false; gpuAt = Long.MIN_VALUE / 2; gpuLast = null }
 
     /** the line's last part: "low 317 MB, jheap 133/512 MB, gpu 880 MB, trim running-low 12 s ago" (pure: the tests) */
     fun extras(lowKb: Long, jUsed: Long, jMax: Long, gpu: Long?, trimLevel: Int, trimAgoMs: Long): String = buildList {
@@ -178,13 +216,15 @@ object MemWatch {
      *  log), newest last, at most [KEEP] lines; crash reports attach it (ProblemReport's memory.txt) */
     private const val KEEP = 720                                    // an hour at 5 s
     val file = java.io.File("/sdcard/WowCompanion/logs/mem.log")
+    // 1.0.29 key-lag review: the whole 720-line file was read and rewritten every 5 s through FUSE (/sdcard). Now one appended line per
+    // sample, cut back to KEEP lines only every 10 minutes or past twice KEEP (CappedLog); on this watch's own thread
+    private val memLog by lazy { CappedLog(file, KEEP) }
     private fun keep(l: String) = runCatching {
-        file.parentFile?.mkdirs()
         val stamp = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())
-        val lines = (if (file.isFile) file.readLines() else emptyList()) + "$stamp $l"
-        file.writeText(lines.takeLast(KEEP).joinToString("\n") + "\n")
+        memLog.append("$stamp $l", SystemClock.uptimeMillis())
     }
-    fun history(): String = runCatching { if (file.isFile) file.readText() else "" }.getOrDefault("")
+    /** the newest [KEEP] lines (the file may hold up to twice that between its trims) */
+    fun history(): String = runCatching { CappedLog.lastLines(file, KEEP) }.getOrDefault("")
 
     /**
      * THE KILLED RUN'S OWN LINES (review of the 1.0.28 crash cluster: #164 #167 #171 #182 were reported 8 min - 4 h after the restart,
@@ -232,6 +272,9 @@ object MemWatch {
         val low = lowKb; lowKb = -1L                                  // the low since the last line, then the next window
         val more = extras(low, rt.totalMemory() - rt.freeMemory(), rt.maxMemory(), gpuBytes(), trimLevel,
             if (trimAt > 0L) SystemClock.uptimeMillis() - trimAt else 0L)
+        val bm = beatMax; beatMax = 0L                                // issue #230: the main thread's worst beat and touch since the last line
+        val lag = listOf(beatNote(bm), runCatching { TouchLag.take() }.getOrDefault("")).filter { it.isNotEmpty() }.joinToString(", ")
+        if (lag.isNotEmpty()) return "pss ${mb(pss)} MB ($parts) $heap | ${device()} | $caches | $doing | $more, $lag"
         return "pss ${mb(pss)} MB ($parts) $heap | ${device()} | $caches | $doing | $more"
     }
 
@@ -271,5 +314,42 @@ object MemWatch {
             kb += pss; n++
         }
         gameMb = mb(kb); gameN = n
+    }
+}
+
+/**
+ * A LOG FILE OF AT MOST ABOUT [keep] LINES THAT IS ONLY APPENDED TO (MemWatch's mem.log, 1.0.29): one line per [append]; the file is cut
+ * back to its newest [keep] lines (temp + rename: a crash never leaves it half written) only when it passes twice [keep] or every
+ * [trimEveryMs] while it is over [keep]. Pure java.io (the tests).
+ */
+class CappedLog(private val file: java.io.File, private val keep: Int, private val trimEveryMs: Long = 10 * 60_000L) {
+    private var lines = -1
+    private var trimmedAt = 0L
+    /** the trims done (tests) */
+    var trims = 0; private set
+
+    @Synchronized fun append(line: String, now: Long) {
+        file.parentFile?.let { if (!it.isDirectory) it.mkdirs() }
+        if (lines < 0) { lines = if (file.isFile) file.useLines { it.count() } else 0; trimmedAt = now }
+        java.io.FileOutputStream(file, true).use { it.write((line.replace('\n', ' ') + "\n").toByteArray()) }
+        lines++
+        if (lines > 2 * keep || (lines > keep && now - trimmedAt >= trimEveryMs)) trim(now)
+    }
+
+    private fun trim(now: Long) {
+        val kept = file.readLines().takeLast(keep)
+        val tmp = java.io.File(file.path + ".part")
+        tmp.writeText(kept.joinToString("\n", postfix = "\n"))
+        if (!tmp.renameTo(file)) { file.delete(); tmp.renameTo(file) }
+        lines = kept.size; trimmedAt = now; trims++
+    }
+
+    companion object {
+        /** the newest [max] lines of [f], newline-ended; "" = none */
+        fun lastLines(f: java.io.File, max: Int): String {
+            if (!f.isFile) return ""
+            val ls = f.readLines().filter { it.isNotEmpty() }.takeLast(max)
+            return if (ls.isEmpty()) "" else ls.joinToString("\n", postfix = "\n")
+        }
     }
 }

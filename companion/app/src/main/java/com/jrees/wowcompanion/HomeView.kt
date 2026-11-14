@@ -71,7 +71,7 @@ class HomeView(
     /** the controller layout has come at least once: until then the Cast view says "Waiting" where the clock would stand */
     private var barsSeen = false
 
-    private enum class Part { BARS, QUESTS, CHAT, PARTY, MAP, AURAS, CHAT_FULL }
+    private enum class Part { BARS, QUESTS, CHAT, PARTY, MAP, AURAS, STRIP, CHAT_FULL }
 
     private val questPane = QuestPane(context)
     private val chatPane = ChatPane(context)
@@ -93,10 +93,15 @@ class HomeView(
      * requestLayout every frame was what made the combat switch lag the game).
      */
     private val chatGlideBox = RectF()
+    /** THE TAP-TO-CAST BAR (GitHub #43 cb3, [CastStripModel]): 8 slots (cb6), under the chat (Left) or under the minimap (Right) a
+     *  strip with 4 in view that scrolls freely (cb5: no pages; edge arrows where slots are hidden), (cb8: Right resting on 5-8), ONE bar of all 8 across under both columns (Both), by
+     *  Settings > Bottom screen > Tap-to-cast bar (Off by default); a tap = ONE pad tap on the add-on's "castbar" row (the scroll never
+     *  moves the bar). cb7: Hide in combat slides it down behind Home's bottom bar and gives its room back to the column(s) */
+    private val castStrip = CastStripView(context) { i -> castStripTap(i) }
     // CLOSE is added last, so it is drawn above the module it closes
     private val views: Map<Part, View> = linkedMapOf(
         Part.BARS to barsSlot, Part.QUESTS to questPane, Part.CHAT to chatPane, Part.PARTY to partyView, Part.MAP to mapSlot,
-        Part.AURAS to auraPane, Part.CHAT_FULL to chatSlot,
+        Part.AURAS to auraPane, Part.STRIP to castStrip, Part.CHAT_FULL to chatSlot,
     )
 
     /** where each part is now, in px of the frame; animated towards the state's places */
@@ -109,7 +114,9 @@ class HomeView(
         applyHideRuling(context)
         // the thin row or the diamonds at rest: the user's switch in Settings (HomeSettings; the diamonds until changed)
         HomeSettings.init(context)
+        RadialMeta.init(context)
         flow.setRest(HomeSettings.rest)
+        HomeSettings.onChange { post { castStripRelay(); castStripFight() } }  // GitHub #43: the tap-to-cast bar's own choices
         HomeSettings.onChange { post {
             if (flow.setRest(HomeSettings.rest)) changed()
             // the focused quest moved (Settings > Home): the parts go to their new places
@@ -118,13 +125,14 @@ class HomeView(
             else if (lent(castView) && castView.swingOn != HomeSettings.swingTimer)
                 castView.swingOn = HomeSettings.swingTimer                                     // p-swing-timer: switched in a fight
             else if (laidGrow != HomeSettings.combatGrow) { laidGrow = HomeSettings.combatGrow; shown?.let { if (it.takeover) apply(it, animate = isShown) } }
+            invalidate()                                                     // r20: a clock extra switched on / off
         } }
         ThemeLive.bg(this, Tok.INK)
         setWillNotDraw(false)
         for ((_, v) in views) { addView(v); v.visibility = View.GONE }
         addView(partyMenu); partyMenu.visibility = View.GONE; partyMenu.translationZ = PARTY_MENU_Z
         addView(targetMenu); targetMenu.visibility = View.GONE; targetMenu.translationZ = PARTY_MENU_Z
-        mapView.onCompactTap = { if (flow.tapMap()) changed() }
+        mapView.onCompactTap = { touchOpen(HomeModule.MAP) }      // combat-touch: the first touch opens it, in a fight too
         partyView.onCellTap = { i -> onPartyCell?.invoke(i) }
         partyView.onCellLong = { i -> onPartyLong?.invoke(i) }
         partyView.onTag = { on -> onPartyTag?.invoke(on) }
@@ -167,6 +175,18 @@ class HomeView(
 
     /** f-settings-previews: where the map module lies now (Home's px), for the stage's minimap pictures */
     internal fun previewMapRect(): RectF? = now[Part.MAP]?.let { RectF(it) }
+
+    /** the cast bar question's picture (PreviewStage.castAsk): the boxes as laid now, by part name */
+    internal fun previewBoxes(): Map<String, RectF> = now.entries.associate { it.key.name to RectF(it.value) }
+    /** ... and the page's one motion at [k] between two of them ([a] at 0, [b] at 1): every box on one progress, the bar sliding */
+    internal fun previewBetween(a: Map<String, RectF>, b: Map<String, RectF>, k: Float) {
+        for (p in Part.values()) {
+            val f = a[p.name] ?: continue; val t = b[p.name] ?: f
+            now[p] = RectF(f.left + (t.left - f.left) * k, f.top + (t.top - f.top) * k, f.right + (t.right - f.right) * k, f.bottom + (t.bottom - f.bottom) * k)
+        }
+        castStrip.sliding = k > 0f && k < 1f
+        placeFrame()
+    }
 
     /** f-settings-previews: the offscreen stage's own Home at [look] (never the live one): its rest, then its places, no motion */
     internal fun previewSettle(look: Companion.Look) {
@@ -215,6 +235,7 @@ class HomeView(
         castView.onPadButtons = { held -> onPadHeld(held) }
         castView.onClassRadial = { open -> classLayerShow(open) }             // f-class-radial: the mirror over Home
         castView.onClassStick = { if (classOpen) classLayer.invalidate() }      // b-class-radial-stick: the pointed slice follows
+        castView.onTriggers = { lt, rt -> trigHold(lt || rt) }                  // feat/clock-extras-v2: the clock band fades under a trigger
         // ARRIVING MID-FIGHT (the user, 2026-10-01: "going back home by what ever means, engages the combat transition at that time"):
         // the takeover was already on while Home was hidden, so Home lands at its rest and the combat transition PLAYS from there
         if (flow.takeover) {
@@ -234,6 +255,7 @@ class HomeView(
         if (lent(castView)) {
             castView.layout = CastView.Layout.FULL; castView.bottomLine = false; castView.onPadButtons = null
             castView.onClassRadial = null; castView.onClassStick = null; classLayerShow(false)   // the Cast room draws its own radial
+            castView.onTriggers = null; trigHold(false)
             castView.groundPainter = null; castView.triggerStrip = false; redShown = false
             castView.partyStrip = false
         }
@@ -258,8 +280,9 @@ class HomeView(
      * The Home button shows B: when B would return Home (interact's `bnext`), and while one of Home's modules is full
      * screen (user, 15:08: "use the B glyph on the home button to go back to home").
      */
-    /** a fight is on (Home's combat takeover): the self-setup never closes the game then */
-    fun inFight(): Boolean = flow.takeover
+    /** a fight is on: the self-setup never closes the game then. combat-touch: the takeover OR the fight word, since a module opened
+     *  by touch in a fight drops the takeover while the fight goes on (the setup, CombatKeep's taps and the map's hold retry wait) */
+    fun inFight(): Boolean = fightShown()
     /** m132: the game is fighting as Home shows it - the takeover (Party mode off) or the grow (Party mode on, no takeover) */
     fun fightShown(): Boolean = flow.takeover || grow.fighting(System.currentTimeMillis())
 
@@ -879,12 +902,73 @@ class HomeView(
             if (t.isNotEmpty() && (t != zoneText || pvp != zonePvp)) { zoneText = t; zonePvp = pvp; invalidate() }
         }
         val now = System.currentTimeMillis()
+        // r20 THE CLOCK EXTRAS' gold and free bag slots (the user's picks 2026-11-13): from the bags the app already gets
+        msg.optJSONObject("bags")?.let { bg ->
+            val g = if (bg.has("money")) bg.optLong("money") else null
+            val f = if (bg.has("freeGeneral")) bg.optInt("freeGeneral") else if (bg.has("free")) bg.optInt("free") else -1
+            if (g != goldCopper || f != bagFree) { goldCopper = g; bagFree = f; invalidate() }
+            // feat/clock-extras-v2: the equipped ammo (slot 0's icon + count, plain data); a bags doc without `equipped` keeps what was said
+            bg.optJSONObject("equipped")?.let { eq ->
+                val a = ClockBand.ammo(eq)
+                if (a?.icon != ammo?.icon || a?.count != ammo?.count) { ammo = a; invalidate() }
+            }
+        }
         val fight = HomeCombat.fromFull(msg)?.also { grow.noteFight(it, current, now) }
         val attack = HomeGrow.fromFull(msg)?.also { grow.noteAttack(it, current, now) }
         if (fight != null || attack != null) tick()
     }
 
     fun onChat(c: JSONObject) { if (chat.update(c)) chatPane.refresh() }
+
+    /** r20: the purse in copper (null = not said yet) and the free slots in the bags that take anything (-1 = not said yet) */
+    private var goldCopper: Long? = null
+    private var bagFree = -1
+    /** feat/clock-extras-v2: the equipped ammo (null = none in the slot / not said) */
+    private var ammo: ClockBand.Ammo? = null
+
+    /**
+     * THE EXTRAS ROW's items (feat/clock-extras-v2; the user's picks 2026-11-13, each by its own Bottom > Home row), in ClockBand's
+     * order: the Hearthstone ("shows ALWAYS: bright icon when ready, icon + mm:ss while cooling"; ready = its soft glow), the class
+     * teleport (once known), the free bag slots, the equipped ammo. The clock + battery are NOT in it: the top clock chip, as before
+     * (the user: "the time and Battery still needs to be centered at the top like it was before"); nor the purse: the chip's gold line
+     * under the battery ([chipGold]; the user, 2026-11-13: "lets ditch the Icon for the gold and just list our total gold under the battery").
+     */
+    private fun bandItems(): List<UiKit.BandItem> {
+        val hs = HomeSettings.clockHearth && ItemCd.hearthHave != false
+        val tp = ItemCd.teleport.takeIf { HomeSettings.clockTeleport }
+        val bags = HomeSettings.clockBags && bagFree >= 0
+        val am = ammo.takeIf { HomeSettings.clockAmmo }
+        return ClockBand.kinds(hs, tp != null, bags, am != null).map { k ->
+            when (k) {
+                ClockBand.Kind.HEARTH -> {
+                    val l = ItemCd.left(ItemCd.HEARTH); val dim = ItemCd.dim(ItemCd.HEARTH)
+                    UiKit.BandItem.Icon(Icons.get(ItemCd.hearthIcon), if (l > 0.0) ItemCd.mmss(l) else "", cooling = l > 0.0 || dim,
+                        glow = ClockBand.hearthGlow(ItemCd.hearthHave, l, dim))
+                }
+                ClockBand.Kind.TELEPORT -> {
+                    val l = ItemCd.teleportLeft()
+                    UiKit.BandItem.Icon(Icons.get(tp!!.icon), if (l > 0.0) ItemCd.mmss(l) else "", cooling = l > 0.0 || ItemCd.teleportDim())
+                }
+                ClockBand.Kind.BAGS -> UiKit.BandItem.Icon(Icons.get(133633), bagFree.toString())        // the backpack's icon
+                ClockBand.Kind.AMMO -> UiKit.BandItem.Icon(Icons.get(am!!.icon), ClockBand.count(am.count))
+            }
+        }
+    }
+
+    /** the purse under the battery (the Gold row On and the bags said), else null: no line, the chip as before */
+    private fun chipGold(): Long? = goldCopper.takeIf { HomeSettings.clockGold }
+
+    /** feat/clock-extras-v2: the extras row under the triggers (ZL / ZR held = fading out, let go = back), Home's own fade; the clock chip keeps its own rules */
+    private var trigHeld = false
+    private var trigFrom = 1f
+    private var trigAt = 0L
+    private fun trigVis(now: Long): Float = ClockBand.fade(trigFrom, trigHeld, now - trigAt, FADE_MS)
+    private fun trigHold(held: Boolean) {
+        if (held == trigHeld) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        trigFrom = trigVis(now); trigHeld = held; trigAt = now
+        invalidate()
+    }
 
     /** THE WORLD NOTICE over the chat (the user's pick "A: system line"; Chat's chat21 `notice` documents, current only) */
     private var notice: NoticeModel.Notice? = null
@@ -939,9 +1023,10 @@ class HomeView(
         if (auras.expire(now)) auraPane.note("No answer from the game")
         if (auraPane.open != null) auraPane.invalidate()                 // time left counts down
         // v17: in a fight with Party mode on there is NO takeover (switched on mid-fight, the takeover shrinks back: COMBAT_SHRINK)
-        if (flow.combat(grow.shown(now) && !partyOnHere())) { if (flow.takeover) grewAt = System.currentTimeMillis(); changed() }
+        if (flow.combat(takeoverWanted(now))) { if (flow.takeover) grewAt = System.currentTimeMillis(); changed() }
         // a fight began / ended with Party mode on (only where the module is placed: not under a full-screen module)
         else if (party.party != null && (flow.full == null || flow.takeover) && partyModeNow(flow.screen) != laidPartyMode) changed()
+        castStripFight()                                                  // the tap-to-cast bar's Hide in combat follows the fight
         val red = grow.red(now) && !flow.takeover && flow.full == null
         if (red != redShown) {
             redShown = red
@@ -1128,7 +1213,31 @@ class HomeView(
 
     /** the D-pad layout's RIGHT (the user, 2026-10-05: "I want right to open that home map module"): the map module opens as a tap on
      *  the small map would (refused in a fight's takeover, as the tap is); false = nothing changed */
-    fun openMapModule(): Boolean = flow.tapMap().also { if (it) changed() }
+    fun openMapModule(): Boolean = touchOpen(HomeModule.MAP)
+
+    /** combat-touch: a module the player opened in this fight; the takeover never comes back over it ([HomeTouch.takeover]) */
+    private var openedInFight = false
+
+    /**
+     * combat-touch (the user, 2026-11-13: "I JUST WANT TOUCHING IT OR CHAT or any of the rooms and elements TO BEHAVE THAT SAME
+     * WAY"): every route that opens a Home module, in a fight too. The takeover shrinks first, B's own change ([HomeTouch.open]); the
+     * guest hold / PadOwnerSync's ENTER follow from apply() and padOwnerStep() exactly as after B. False = nothing changed.
+     */
+    private fun touchOpen(m: HomeModule): Boolean {
+        val now = System.currentTimeMillis()
+        val fighting = flow.takeover || grow.fighting(now)
+        if (!HomeTouch.open(flow, grow, m, now)) return false
+        if (fighting && flow.full != null) openedInFight = true
+        Log.i("WCLOG", "home: $m opened by touch${if (fighting) " (in a fight)" else ""}")
+        changed()
+        return true
+    }
+
+    /** the takeover's word for [now]: the grow, Party mode, and never over a module opened in this fight */
+    private fun takeoverWanted(now: Long): Boolean {
+        openedInFight = HomeTouch.keepOpened(openedInFight, flow.full, grow.fighting(now) || grow.shown(now))
+        return HomeTouch.takeover(grow.shown(now), partyOnHere(), flow.full, openedInFight)
+    }
 
     // ---------------------------------------------------------------- PARTY MODE (PARTY_BUILD.md 4.2)
 
@@ -1164,14 +1273,14 @@ class HomeView(
     /** a party document (or a box) changed what Home draws: re-placed when the module's size changed, else redrawn */
     fun partyChanged() {
         val p = party.party
-        val n = p?.n ?: 0
+        val n = p?.view?.size ?: 0                                       // m150: the drawn entries (a dead pet entry too)
         val on = p?.onLive == true
         val now = System.currentTimeMillis()
         // Party mode on in a fight: the takeover goes (v17); off again: it comes back
-        val combat = flow.combat(grow.shown(now) && !partyOnHere())
+        val combat = flow.combat(takeoverWanted(now))
         if (combat && flow.takeover) grewAt = now
         val placed = flow.full == null || flow.takeover
-        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || (p?.pet == true) != laidPartyPet || partyModeNow(flow.screen) != laidPartyMode
+        if (shown != null && (combat || placed && (n != laidPartyN || on != laidPartyOn || (p?.viewPet == true) != laidPartyPet || partyModeNow(flow.screen) != laidPartyMode
                 || PARTY_MODULE != laidPartyModule))) changed()
         partyView.invalidate()
         shown?.let { partyStripSync(it) }
@@ -1193,6 +1302,8 @@ class HomeView(
     private var partySelWas = false
     /** Home's rest page shown (back from a room / the background): grouped, the Select tab's edge pulses (party_design.md E) */
     fun partyHomeOpened() { if (PARTY_MODULE) partyView.homeOpened() }
+    /** m150: a short word over the party module (Smart Res refused in a fight) */
+    fun partyNote(t: String) { if (PARTY_MODULE) partyView.note(t) }
     private fun partyPad(held: Int) {
         val dirs = listOf(PadInput.SLOT_DPAD_UP to PartyModel.Dir.UP, PadInput.SLOT_DPAD_DOWN to PartyModel.Dir.DOWN,
             PadInput.SLOT_DPAD_LEFT to PartyModel.Dir.LEFT, PadInput.SLOT_DPAD_RIGHT to PartyModel.Dir.RIGHT)
@@ -1224,11 +1335,11 @@ class HomeView(
         val p = party.party ?: return base
         val chat = base[Part.CHAT] ?: return base
         val mode = partyModeNow(s)
-        laidPartyMode = mode; laidPartyN = p.n; laidPartyOn = p.onLive; laidPartyPet = p.pet
+        laidPartyMode = mode; laidPartyN = p.view.size; laidPartyOn = p.onLive; laidPartyPet = p.viewPet
         val right = w / 2f - 5f
         // m134 (the user, 2026-11-11: the Select tab "attached to the side of the screen"): the module's view starts at the screen's
         // left edge, where the tab stands; the member band (the well) starts right of it
-        val m = PartyLayout.module(mode, p.n, pet = p.pet, top = chat.top, left = PartyLayout.EDGE, right = right)
+        val m = PartyLayout.module(mode, p.view.size, pet = p.viewPet, top = chat.top, left = PartyLayout.EDGE, right = right)
         partyView.mode = mode
         val out = LinkedHashMap(base)
         out[Part.PARTY] = RectF(PartyLayout.EDGE, chat.top - PartyModuleView.RISE, right, m.well.b)
@@ -1238,8 +1349,96 @@ class HomeView(
 
     private fun places(s: HomeScreen, w: Float, h: Float): Map<Part, RectF> {
         val base = placesBase(s, w, h)
-        if (s.full != null && !s.takeover) return base
-        return withParty(base, s, w)
+        if (s.full != null && !s.takeover) { laidSide = CastStripModel.Side.OFF; return base }
+        return withStrip(withParty(base, s, w), w, h)
+    }
+
+    /** the tap-to-cast bar's place laid by the last [places] (a change of the choice lays the page again) */
+    private var laidSide = CastStripModel.Side.OFF
+    /** cb7: the last [places] laid the bar slid away (Hide in combat, a fight shown); a change lays the page again with the one motion */
+    private var laidHidden = false
+
+    /**
+     * GitHub #43 cb3: THE TAP-TO-CAST BAR's place, at rest and in a fight alike (the bar is most use in one), above the page's foot:
+     * LEFT under the chat (the chat, the quest card above it and the party module end a gap above it), RIGHT under the minimap (the map,
+     * its auras and the card over it end above it), BOTH one bar under both columns ([CastStripModel.place]). A module full screen has
+     * no bar (its own page). cb7 (the user, 2026-11-13: "it should slide down behind the home bar out of view, not fade out and give
+     * that space back to the map or chat"): with Hide in combat and a fight shown, the bar's box lies below the page (behind Home's
+     * bottom bar, [CastStripModel.hiddenBox]) and no column is cut; [apply]'s one motion carries the bar and the columns together.
+     */
+    private fun withStrip(base: Map<Part, RectF>, w: Float, h: Float): Map<Part, RectF> {
+        val side = castSideNow()
+        laidSide = side
+        val b0 = CastStripModel.place(side, w, h, UiKit.MODULE_GAP) ?: return base.also { laidHidden = false }
+        castStrip.side = side
+        val hidden = castHiddenNow()
+        laidHidden = hidden
+        val b = if (hidden) CastStripModel.hiddenBox(b0, h) else b0
+        val g = UiKit.MODULE_GAP
+        val top = b0.t
+        val out = LinkedHashMap(base)
+        out[Part.STRIP] = RectF(b.l, b.t, b.r, b.b)
+        fun cut(p: Part) { base[p]?.let { r -> if (r.bottom > top - g)
+            out[p] = RectF(r.left, r.top, r.right, CastStripModel.columnBottom(maxOf(r.top + 1f, top - g), r.bottom, hidden)) } }
+        val c = w / 2f
+        for (p in listOf(Part.CHAT, Part.QUESTS, Part.PARTY, Part.MAP, Part.AURAS)) {
+            val r = out[p] ?: continue
+            val leftCol = r.centerX() < c
+            if ((leftCol && CastStripModel.cutsLeft(side)) || (!leftCol && CastStripModel.cutsRight(side))) cut(p)
+        }
+        return out
+    }
+
+    /** a finger on slot [i]: the slot's cell on the "castbar" row (nothing for an empty / waiting slot) */
+    private fun castStripTap(i: Int) {
+        val cell = CastStripModel.tapCell(CastStripModel.Live.bar, i) ?: return
+        val sent = pad != null && TapBridge.tap(context, pad, cell.first, cell.second) { }
+        Log.i(TAG, "cast bar: slot ${i + 1} -> ${cell.first} ${cell.second} ${if (sent) "tapped" else "not sent"}")
+    }
+
+    /** every `castbar` document (the host keeps [CastStripModel.Live]): the slots, and the page again when the strip comes or goes */
+    fun onCastBar(b: CastStripModel.Bar) {
+        castStrip.update(b)
+        castStripRelay()
+    }
+
+    /** every CURRENT `castcd` (ActionBar cb1, the whole state): the slots' sweeps on the app's clock */
+    fun onCastCd(m: Map<Int, PadMapModel.FaceCd>) = castStrip.onCd(m)
+
+    /**
+     * THE BAR IN A FIGHT (Settings > Tap-to-cast bar > In combat; the user 2026-11-13: "a settings toggle to make them Hide/stay in
+     * combat", Hide the default): the fight is Home's own ([fightShown]: the takeover with Party mode off, the grow's fight with it on).
+     * cb7: Hide slides the bar down behind Home's bottom bar (no touches while hidden or on its way) and its column(s) take the room,
+     * both back at the fight's end, on the page's one motion ([withStrip], [apply]); Stay keeps it, laid and tappable as at rest.
+     */
+    private fun castStripFight() {
+        castStripGate()
+        // cb7: hidden changed: the page again with the one motion (the bar slides down / up, its column(s) grow / shrink with it)
+        val s = shown ?: return
+        if (s.full != null && !s.takeover) return
+        if (laidSide == CastStripModel.Side.OFF || castHiddenNow() == laidHidden) return
+        apply(s, animate = isShown)
+    }
+
+    /** the bar's touch gate for Home's fight now (no re-lay: [apply] calls this before it lays the page) */
+    private fun castStripGate() { castStrip.fight(castCombatNow(), fightShown()) }
+
+    /** the bar's side and its fight rule now: the player's, or a preview look's (Hide with it) */
+    private fun castSideNow(): CastStripModel.Side = renderLook?.castSide ?: HomeSettings.castBarSide
+    private fun castCombatNow(): CastStripModel.Combat = if (renderLook?.castSide != null) CastStripModel.Combat.HIDE else HomeSettings.castBarCombat
+
+    /** cb7: the bar is slid away now (Hide in combat and Home shows a fight) */
+    private fun castHiddenNow(): Boolean = CastStripModel.hiddenIn(castCombatNow(), fightShown())
+
+    private fun castStripRelay() {
+        val s = shown ?: return
+        if (s.full != null && !s.takeover) return
+        val side = castSideNow()
+        if (side == laidSide) return
+        // cb3: Left <-> Right slides the bar over with the page's one motion (the columns make room); coming or going is laid at once
+        val slide = (side == CastStripModel.Side.LEFT || side == CastStripModel.Side.RIGHT) &&
+            (laidSide == CastStripModel.Side.LEFT || laidSide == CastStripModel.Side.RIGHT)
+        apply(s, animate = slide && isShown)
     }
 
     private fun placesBase(s: HomeScreen, w: Float, h: Float): Map<Part, RectF> {
@@ -1371,6 +1570,7 @@ class HomeView(
             castView.triggerStrip = true
         }
         partyStripSync(s)
+        castStripGate()
         if (lent(mapView)) {
             mapView.compact = !(s.full == HomeModule.MAP && !s.takeover)
             // the small map's + and - step Settings' "Minimap zoom" itself (user, 09-29 16:35: "these buttons should directly
@@ -1402,6 +1602,7 @@ class HomeView(
             chatReturn()
             now.clear(); for ((p, r) in to) now[p] = RectF(r)
             for ((p, v) in views) if (!to.containsKey(p)) v.visibility = View.GONE
+            castStrip.sliding = false
             settled = true
             requestLayout(); invalidate(); return
         }
@@ -1450,6 +1651,8 @@ class HomeView(
         }
         // only a part whose box changes needs a layout per frame (a fade alone does not)
         val moving = from.any { (p, f) -> to[p]?.let { t -> t != f } == true }
+        // cb7: the bar on its way (slid down / up with the page's motion): no touch until it lands
+        castStrip.sliding = from[Part.STRIP]?.let { f -> to[Part.STRIP]?.let { t -> t.top != f.top } } == true
         questPane.cardHidden = card != null
         // the zone band and the clock fade with the page (Map's recording: they vanished at frame 0 on open, popped back at a close's end)
         overlayFrom = overlayOf(before); overlayTo = overlayOf(s); overlayOut = 1f; overlayIn = 0f
@@ -1491,6 +1694,7 @@ class HomeView(
                     overlayFrom = overlayTo; overlayOut = 1f; overlayIn = 1f
                     for (p in coming) views[p]?.alpha = 1f
                     for (p in gone) { views[p]?.visibility = View.GONE; views[p]?.alpha = 1f; now.remove(p) }
+                    castStrip.sliding = false
                     settled = true
                     requestLayout()                                  // one full pass where it lands
                     invalidate()
@@ -1711,6 +1915,7 @@ class HomeView(
             val o = when (p) {
                 Part.BARS -> pauseTop
                 Part.CHAT, Part.CHAT_FULL, Part.PARTY -> left
+                Part.STRIP -> if (laidSide == CastStripModel.Side.RIGHT) pauseMap else left       // cb3: under the minimap, it goes with it
                 Part.QUESTS -> if (cardOverMap()) pauseMap else left
                 Part.MAP, Part.AURAS -> pauseMap
             }
@@ -1776,8 +1981,25 @@ class HomeView(
         if (pauseSave >= 0) { c.restoreToCount(pauseSave); c.save(); c.translate(pauseTop[0], pauseTop[1]) }
         if (clockA > 0.01f && barsSeen && clockText.isNotEmpty() && batteryPct >= 0) now[Part.BARS]?.let { b ->
             val save = if (clockA < 0.99f) c.saveLayerAlpha(b.left, b.top, b.right, b.bottom, (clockA * 255).toInt()) else -1
-            UiKit.clockChip(c, b.centerX(), b.top + 10f, clockText, batteryPct, charging)
+            UiKit.clockChip(c, b.centerX(), b.top + 10f, clockText, batteryPct, charging, gold = chipGold())
             if (save >= 0) c.restoreToCount(save)
+        }
+        // THE EXTRAS ROW (feat/clock-extras-v2): the extras turned on in ONE row where the ZL + ZR join shows (CastBarPlace.clockSpot),
+        // under the clock chip, faded out while a trigger is held (the chip is not), under the chip's own combat / pause fades too
+        val tNow = android.os.SystemClock.elapsedRealtime()
+        val trigA = trigVis(tNow)
+        if (trigA != (if (trigHeld) 0f else 1f)) postInvalidateOnAnimation()
+        val bandA = clockA * trigA
+        if (bandA > 0.01f && barsSeen && castView.parent === barsSlot) now[Part.BARS]?.let { b ->
+            val items = bandItems()
+            if (items.isNotEmpty()) castView.clockSpot()?.let { spot ->
+                for (i in 0 until spot.size - 1) spot[i] += if (i % 2 == 0) b.left else b.top
+                val save = if (bandA < 0.99f) c.saveLayerAlpha(b.left, b.top, b.right, b.bottom, (bandA * 255).toInt()) else -1
+                UiKit.clockBand(c, spot, items, b.top + ClockBand.chipBottom(chipGold() != null) + ClockBand.CHIP_PAD)
+                // the mm:ss counts (as the auras' times); nothing ticks otherwise
+                if (items.any { it is UiKit.BandItem.Icon && it.value.contains(':') }) postInvalidateDelayed(1000L)
+                if (save >= 0) c.restoreToCount(save)
+            }
         }
         if (pauseSave >= 0) c.restoreToCount(pauseSave)
     }
@@ -1987,8 +2209,8 @@ class HomeView(
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
             // a tap opens the full CHAT ROOM (the user, 2026-10-05: "Tap Home's chat panel", now that the Controller room has Chat's
-            // spot on the bar); refused in combat as the full-screen chat was (the fight's takeover owns the screen then)
-            if (e.actionMasked == MotionEvent.ACTION_UP && !flow.takeover) openRoom(Room.CHAT)
+            // spot on the bar). combat-touch (2026-11-13): in a fight too, as the D-pad's "chat" does; show() hands over fight-safe
+            if (e.actionMasked == MotionEvent.ACTION_UP) openRoom(Room.CHAT)
             return true
         }
     }
@@ -2635,7 +2857,10 @@ class HomeView(
          * setting). The stage sets this for the length of ONE synchronous render on the main thread and clears it; the live Home never
          * renders while it is set, and no setting is ever written. null = the player's settings
          */
-        data class Look(val rest: HomeRest, val grow: Boolean, val overMap: Boolean, val swing: Boolean)
+        data class Look(val rest: HomeRest, val grow: Boolean, val overMap: Boolean, val swing: Boolean,
+                        /** the one-time cast bar question's picture (the user, 2026-11-13: "make sure that this pop up uses realistic
+                         *  visuals"): the bar laid on this side, Hide in combat, whatever the player's own setting; null = theirs */
+                        val castSide: CastStripModel.Side? = null)
         internal var renderLook: Look? = null
         /** the Track Pad & Keyboard's own controller guest (Quests.lua's "tool": ZL / ZR kept from the game while it holds) */
         const val TOOL_GUEST = "tool"

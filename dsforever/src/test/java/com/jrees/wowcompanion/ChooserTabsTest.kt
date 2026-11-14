@@ -35,6 +35,30 @@ class ChooserTabsTest {
         assertNull("ZL + A (the toolbar only holds the bare D-pad)", ChooserTabs.bindBlock(2, 8, toolbar = true, form = false))
     }
 
+    @Test fun sticksTakeTheBindingsBareAndWithZl() {
+        // m150 / p49 (GitHub #78): L3 / R3 (9 / 10) - bare or ZL, never ZR / ZL + ZR; the toolbar and the fixed four's rules do not apply
+        for (p in PadMapModel.STICKS) {
+            assertNull("bare $p", ChooserTabs.bindBlock(1, p, toolbar = true, form = false))
+            assertNull("ZL + $p", ChooserTabs.bindBlock(2, p, toolbar = false, form = false))
+            assertEquals("ZR + $p", "layer", ChooserTabs.bindBlock(3, p, toolbar = false, form = false))
+            assertEquals("ZL + ZR + $p", "layer", ChooserTabs.bindBlock(4, p, toolbar = false, form = false))
+        }
+        // p52 / m157 (the user, 2026-11-13: "any of those 5 controller tabs should be able to bind here"): all five on a stick
+        assertEquals("a stick's chooser: all five tabs", five, ChooserTabs.keys(false, stick = true))
+        assertEquals("Spells, General, Professions, Extra, DS", listOf("spells", "general", "professions", "extra", "dstool"), ChooserTabs.STICK_TABS)
+        assertEquals("the eight as before", five, ChooserTabs.keys(false))
+    }
+
+    @Test fun sticksSitBetweenTheDiamondsInEveryLayout() {
+        for (swap in listOf(false, true)) {
+            // m155: a pair of their own, below and between the two diamonds (the user, 2026-11-13: "moved away from the other two cross's")
+            assertEquals(323f to 790f, PadDiamonds.centre(PadMapModel.POS_L3, swap))
+            assertEquals(423f to 790f, PadDiamonds.centre(PadMapModel.POS_R3, swap))
+        }
+        assertEquals("the stick's glyph in any pad style", "gen_lstickin",
+            SpellsModel.combo(SpellsModel.PadSlot(0, 1, 2, PadMapModel.POS_L3), SpellsModel.PadStyle.SHP).button)
+    }
+
     @Test fun wowDefaultsAndRadialAsBefore() {
         assertEquals("WoW Defaults, a plain button", five, tabs("normal"))
         assertEquals("WoW Defaults, a combat button (its Otherwise spell)", three, tabs("normal", combat = true))

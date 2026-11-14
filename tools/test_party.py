@@ -47,7 +47,7 @@ for k in ("tappad", "quests", "book", "padmap", "padtabctl"):
     check(e is None, "Lua 5.1 compiles %s (200 locals, 60 upvalues)" % os.path.basename(F[k]), e or '')
 
 # ================================================================ 10. TapPad pad11
-check('local PADV = "pad18"' in SRC["tappad"], "TapPad says pad18 (pad11's party row + the resting cursor hidden under the software cursor)")
+check('local PADV = "pad19"' in SRC["tappad"], "TapPad says pad19 (pad11's party row + the resting cursor hidden under the software cursor)")
 check(re.search(r'local ROWS_MAX = 56\b', SRC["tappad"]) is not None, "TapPad ROWS_MAX = 56")
 
 
@@ -70,7 +70,7 @@ L10, d, rows = pad_at(126.6)
 check(abs(float(d['popupTop']) - 126.6) < 0.06 and rows == list(range(56)), "pad11 at popupTop 126.6: rows 0..55 placed and described",
       (d['popupTop'], rows[-3:], len(rows)))
 check(L10.eval('rawget(_G, "X57")') is None, "a 57th row does not register (ROWS_MAX 56)")
-check(d['v'] == 'pad18', "describe() says pad18", d['v'])
+check(d['v'] == 'pad19', "describe() says pad19", d['v'])
 L10, d, rows = pad_at(121.5)
 check(abs(float(d['popupTop']) - 121.5) < 0.06 and rows == list(range(54)), "pad11 at popupTop 121.5 (smallest scale): rows 0..53 only",
       (d['popupTop'], rows[-3:], len(rows)))
@@ -830,7 +830,8 @@ for col in range(40):
     a = cell(col).a
     t, sp, un, cb = a['type'], a['spell'], a['unit'], a['clickbutton']
     if col <= 5: want = (None, None, None, None)                                            # m130: the pick cells (wrapped, no action at rest; m131 + 5 the pet's)
-    elif col <= 9: want = (None, None, None, None)                                          # m129: the old touch cells retired
+    elif col == 6: want = ("click", None, None, "WowCompanionPartyMenuHold")               # m157: MENU HOLD
+    elif col <= 9: want = (None, None, None, None)                                          # m129: the old touch cells retired (m157: 7 the pet's menu read)
     elif col == 10: want = ("click", None, None, "WowCompanionPartyOn")
     elif col == 11: want = ("click", None, None, "WowCompanionPartyOff")
     elif col <= 16: want = ("focus", None, U[col - 12], None)
@@ -840,7 +841,7 @@ for col in range(40):
     got = (t, sp, un, cb._name if cb is not None else None)
     if got != want:
         bad.append((col, got, want))
-check(not bad, "every party row cell (m130: PICK 0-4 = wrapped cells, m131: 5 the pet's, 6-9 spare, ON 10, OFF 11, FOCUS 12-16, MENU DONE 35)", bad[:3])
+check(not bad, "every party row cell (m130: PICK 0-4 = wrapped cells, m131: 5 the pet's, m157: 6 MENU HOLD, 7 the pet's menu, 8-9 spare, ON 10, OFF 11, FOCUS 12-16, MENU DONE 35)", bad[:3])
 pk = lambda i: cell(i)
 check(all(pk(i).a['wc-pu'] == U[i] and pk(i).a['wc-touch'] == "Lesser Healing Wave" and pk(i).refs['wc-pad'] is not None
           and len(pk(i).wraps['OnClick']) == 1 and len(pk(i).hooks['PostClick']) == 1 for i in range(6)),
@@ -970,6 +971,181 @@ n0 = nsent(W6)
 W6.execute('local c = WowCompanion.pad.rows.party.cells[37]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false)')
 ack = docs(W6, n0, 'partyack')
 check(len(ack) == 1 and ack[0]['ok'] is False and ack[0]['why'] == 'unknown column', "a spare column (37) is refused: unknown column", ack)
+# m157 (the user on build 1462: "pressing B in a player inspect radial opened from party mode does not close the radial as it should."):
+# col 6 = MENU HOLD, the hold's wheel takes the pad's presses while Party mode is on; col 7 = the pet's menu read ("holding on the pet
+# bar does not open the pet inspect")
+def cell6(col):
+    W6.execute('local c = WowCompanion.pad.rows.party.cells[%d]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); advance(0.3)' % col)
+
+
+W6.execute('rawget(_G, "WowCompanionPartyPad").a["wc-pmenu"] = nil')
+cell6(6)
+check(W6.eval('PADA("wc-pmenu")') is None and W6.eval('PADA("wc-party")') is None, "m157: MENU HOLD with Party mode OFF: no sub-state (the pad is not ours)")
+cell6(10)
+cell6(6)
+check(W6.eval('PADA("wc-pmenu")') is True and W6.eval('PADA("wc-party")') is True, "m157: MENU HOLD with Party mode ON: the menu sub-state (Party mode kept)")
+n0 = nsent(W6)
+a0 = nact(W6)
+W6.execute('hit(7)')
+pb = docs(W6, n0, 'partybox')
+check(W6.eval('PADA("wc-party")') is True and W6.eval('PADA("wc-k")') == "key" and acts(W6, a0) == [] and pb and pb[-1]['b']['k'] == 'key'
+      and pb[-1]['b']['key'] == 'PAD2' and pb[-1]['b']['pm'] is True,
+      "m157: B while the held wheel is open = its key PAD2 (partybox k key, pm), never Party mode off", (W6.eval('PADA("wc-k")'), pb and pb[-1]['b']))
+n0 = nsent(W6)
+cell6(35)
+check(W6.eval('PADA("wc-pmenu")') is None and W6.eval('PADA("wc-party")') is True and not docs(W6, n0, 'partyack'),
+      "m157: MENU DONE (the wheel closed) ends the sub-state, Party mode stays on")
+W6.execute('hit(7)')
+check(W6.eval('PADA("wc-party")') is None, "m157: B afterwards is Party mode off again")
+W6.execute('COMBAT = true')
+cell6(10)
+cell6(6)
+check(W6.eval('PADA("wc-pmenu")') is True, "m157: MENU HOLD in a fight (a secure click): the sub-state too")
+cell6(35)
+cell6(11)
+W6.execute('COMBAT = false')
+W6.execute('PMREAD = nil; PMKEEP = WowCompanion.pmenu; WowCompanion.pmenu = { read = function(u, s) PMREAD = { u = u, s = s } end }')
+n0 = nsent(W6)
+cell6(7)
+got = W6.eval('PMREAD and (PMREAD.u .. "/" .. PMREAD.s) or "none"')
+W6.execute('WowCompanion.pmenu = PMKEEP')
+check(got == "pet/party" and not docs(W6, n0, 'partyack'), "m157: col 7 reads the PET's menu (WC.pmenu.read(\"pet\", \"party\")), no unknown column", got)
+check(W6.eval('#SPY') == 0 and W6.eval('#VIOL') == 0 and W6.eval('#SNIPERR') == 0, "m157: no spied call, no lockdown breach, no snippet error",
+      (W6.eval('#VIOL'), W6.eval('#SNIPERR')))
+
+# ================================================================ m150 SMART RES (the user, 2026-11-13: "There should be an enable smart res
+# toggle setting for party mode to enable pressing dead team members on touch if they are dead and I am playing a class with a res.
+# Similarly a revive pet would be neat."; the pick "Tap the dead member")
+def sres_world(cls, book, on=True, extra=''):
+    L = world(pre=extra + 'CLASS = "%s"; SPELLNAME[2008] = "Ancestral Spirit"; SPELLNAME[2006] = "Resurrection"; SPELLNAME[20484] = "Rebirth"; '
+                  'SPELLNAME[982] = "Revive Pet"; SPELLNAME[883] = "Call Pet"; BOOK = { %s }; WowCompanion.smartRes = %s'
+                  % (cls, ", ".join(str(b) for b in book), "true" if on else "nil"))
+    L.eval('party')(L.table_from([L.table_from(m) for m in [["Brannoc", "WARRIOR", False, "TANK"], ["Iselle", "MAGE"]]]))
+    L.execute('fire("GROUP_ROSTER_UPDATE"); advance(1)')
+    return L
+
+
+def sres_tap(L, col):
+    a0 = nact(L)
+    n0 = nsent(L)
+    L.execute('local c = WowCompanion.pad.rows.party.cells[%d]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); NOW = NOW + 0.3' % col)
+    pb = docs(L, n0, 'partybox')
+    return acts(L, a0), (pb[-1]['b']['k'] if pb else None)
+
+
+def rcell(L, col, k):
+    return L.eval('WowCompanion.pad.rows.party.cells[%d].a["%s"]' % (col, k))
+
+
+SR = sres_world("SHAMAN", [403, 331, 2008])
+check([rcell(SR, i, "wc-res") for i in range(6)] == [None, "Ancestral Spirit", "Ancestral Spirit", "Ancestral Spirit", "Ancestral Spirit", None]
+      and all(rcell(SR, i, "wc-resc") is None for i in range(6)),
+      "m150: a Shaman with Smart Res on: party1..4's cells armed with Ancestral Spirit (not you, not the pet), none castable in a fight",
+      [rcell(SR, i, "wc-res") for i in range(6)])
+got, k = sres_tap(SR, 1)
+check(got == [("spell", "Ancestral Spirit", "party1")] and k == "res" and SR.eval('PADA("wc-box")') == 1,
+      "m150: Party mode OFF, a tap on dead party1: Ancestral Spirit on party1 (no Target, the pick stays), k res", (got, k))
+got, k = sres_tap(SR, 2)
+check(got == [("target", None, "party2")] and k == "target", "m150: a live member's tap is unchanged (Target)", (got, k))
+SR.execute('local c = WowCompanion.pad.rows.party.cells[10]; doClick(c, "LeftButton", true); doClick(c, "LeftButton", false); advance(0.3)')
+got, k = sres_tap(SR, 1)
+check(got == [("spell", "Ancestral Spirit", "party1")] and k == "res" and SR.eval('PADA("wc-box")') == 1,
+      "m150: Party mode ON, a tap on dead party1 (not the pick): the res, the pick does not move", (got, k, SR.eval('PADA("wc-box")')))
+SR.execute('COMBAT = true')
+got, k = sres_tap(SR, 1)
+check(got == [] and k == "nores" and SR.eval('#VIOL') == 0, "m150: in a fight a Shaman's tap on a dead member: nothing cast, k nores", (got, k))
+got, k = sres_tap(SR, 2)
+check(got == [("target", None, "party2")] and k == "pick", "m150: in a fight a live member's tap still picks", (got, k))
+SR.execute('COMBAT = false')
+pd = docs(SR, 0, 'party')[-1]['p']
+check(pd.get('res') is True and 'pd' not in pd, "m150: the party document says res (armed), no dead pet entry", sorted(pd))
+SR.execute('WowCompanion.smartRes = false; WowCompanion.smartResSet(false); advance(1)')
+check(all(rcell(SR, i, "wc-res") is None for i in range(6)), "m150: Smart Res off: every cell disarmed (out of combat)")
+got, k = sres_tap(SR, 1)
+check(got == [("target", None, "party1")], "m150: Smart Res off: a dead member's tap is today's (Target)", (got, k))
+check('res' not in docs(SR, 0, 'party')[-1]['p'], "m150: ... and the document drops res")
+SR.execute('COMBAT = true; WowCompanion.smartRes = true; WowCompanion.smartResSet(true)')
+check(rcell(SR, 1, "wc-res") is None and SR.eval('#VIOL') == 0, "m150: switched on IN a fight: no secure write in the lockdown")
+SR.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(1)')
+check(rcell(SR, 1, "wc-res") == "Ancestral Spirit", "m150: ... armed at the fight's end", rcell(SR, 1, "wc-res"))
+
+# a Shaman who has not learned the res: nothing armed
+SN = sres_world("SHAMAN", [403, 331])
+check(all(rcell(SN, i, "wc-res") is None for i in range(6)) and sres_tap(SN, 1)[0] == [("target", None, "party1")],
+      "m150: a Shaman without Ancestral Spirit learned: no res armed, a tap targets")
+# classes without a res: nothing changes
+SW_ = sres_world("WARRIOR", [6673])
+check(all(rcell(SW_, i, "wc-res") is None for i in range(6)), "m150: a Warrior: nothing armed")
+
+# a Druid: Rebirth, castable in a fight too
+SD = sres_world("DRUID", [20484])
+check(rcell(SD, 1, "wc-res") == "Rebirth" and rcell(SD, 1, "wc-resc") is True, "m150: a Druid: Rebirth, castable in a fight (wc-resc)")
+SD.execute('COMBAT = true')
+got, k = sres_tap(SD, 1)
+check(got == [("spell", "Rebirth", "party1")] and k == "res" and SD.eval('#VIOL') == 0, "m150: a Druid in a fight: Rebirth on dead party1", (got, k))
+SD.execute('COMBAT = false')
+# a Priest: Resurrection
+SP = sres_world("PRIEST", [2006])
+check(sres_tap(SP, 1)[0] == [("spell", "Resurrection", "party1")], "m150: a Priest: Resurrection")
+
+# a Hunter: Revive Pet on the pet's cell (dead and gone), the dead pet entry in the document
+SH = sres_world("HUNTER", [982, 883])
+check(rcell(SH, 5, "wc-res") == "Revive Pet" and rcell(SH, 5, "wc-resc") is True and rcell(SH, 1, "wc-res") is None,
+      "m150: a Hunter: the pet's cell armed with Revive Pet (any time), no party res")
+SH.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); advance(1)')
+got, k = sres_tap(SH, 5)
+check(got == [("target", None, "pet")], "m150: a live pet's tap is today's (Target)", (got, k))
+SH.execute('UNITS.pet.alive = false; fire("UNIT_HEALTH", "pet"); advance(1)')
+p = docs(SH, 0, 'party')[-1]['p']
+check([m['dead'] for m in p['m'] if m['u'] == 'pet'] == [True] and 'pd' not in p, "m150: the pet dead but still out: its own entry, dead", p.get('pd'))
+got, k = sres_tap(SH, 5)
+check(got == [("spell", "Revive Pet", "pet")] and k == "res", "m150: a tap on the dead pet: Revive Pet", (got, k))
+SH.execute('UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+p = docs(SH, 0, 'party')[-1]['p']
+check(p.get('pd') == {"n": "Wolf", "ic": None} or (p.get('pd') or {}).get('n') == "Wolf", "m150: the dead pet gone: the document's pd (its last name)", p.get('pd'))
+check(all(m['u'] != 'pet' for m in p['m']), "m150: ... and no pet member (the pick walk unchanged)")
+SH.execute('COMBAT = true')
+got, k = sres_tap(SH, 5)
+check(got == [("spell", "Revive Pet", None)] and k == "res" and SH.eval('#VIOL') == 0, "m150: a tap on the gone dead pet's cell, in a fight too: Revive Pet (no unit)", (got, k))
+SH.execute('COMBAT = false; UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); advance(1.5)')
+check('pd' not in docs(SH, 0, 'party')[-1]['p'], "m150: the pet back alive: no dead pet entry")
+SH.execute('UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+check('pd' not in docs(SH, 0, 'party')[-1]['p'], "m150: a pet dismissed alive: no dead pet entry")
+# m151 (review): the dead pet kept per character across a /reload / login; a pet that leaves in a fight counts as dead
+SK = sres_world("HUNTER", [982, 883])
+SK.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); advance(1)')
+SK.execute('UNITS.pet.alive = false; fire("UNIT_HEALTH", "pet"); advance(1)')
+check(SK.eval('WowCompanionSpellsDB.petDeadBy["Korvash-Realm"].n') == "Wolf", "m151: the pet seen dead: kept per character (petDeadBy[name-realm])",
+      SK.eval('WowCompanionSpellsDB.petDeadBy["Korvash-Realm"]'))
+SK.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); advance(1.5)')
+check(SK.eval('WowCompanionSpellsDB.petDeadBy["Korvash-Realm"]') is None, "m151: a live pet seen: the kept record cleared")
+SL = sres_world("HUNTER", [982, 883], extra='WowCompanionSpellsDB = { petDeadBy = { ["Korvash-Realm"] = { n = "Wolf", ic = 132 } } }; ')
+SL.execute('advance(1.5)')
+p = docs(SL, 0, 'party')[-1]['p']
+check((p.get('pd') or {}).get('n') == "Wolf" and (p.get('pd') or {}).get('ic') == 132, "m151: after a /reload / login with the pet dead and gone: pd from the kept record", p.get('pd'))
+got, k = sres_tap(SL, 5)
+check(got == [("spell", "Revive Pet", None)] and k == "res", "m151: ... and its cell casts Revive Pet", (got, k))
+SO = sres_world("HUNTER", [982, 883], extra='WowCompanionSpellsDB = { petDeadBy = { ["Alt-Realm"] = { n = "Cat" } } }; ')
+SO.execute('advance(1.5)')
+check('pd' not in docs(SO, 0, 'party')[-1]['p'], "m151: another character's dead pet never shows")
+SF = sres_world("HUNTER", [982, 883])
+SF.execute('UNITS.pet = { name = "Boar", alive = true }; fire("UNIT_PET", "player"); advance(1)')
+SF.execute('COMBAT = true; UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+p = docs(SF, 0, 'party')[-1]['p']
+check((p.get('pd') or {}).get('n') == "Boar" and SF.eval('WowCompanionSpellsDB.petDeadBy["Korvash-Realm"].n') == "Boar",
+      "m151: a live pet's unit gone IN a fight (never seen dead): the dead pet entry, kept", p.get('pd'))
+SF.execute('COMBAT = false; UNITS.pet = { name = "Boar", alive = true }; fire("UNIT_PET", "player"); advance(1.5)')
+check('pd' not in docs(SF, 0, 'party')[-1]['p'], "m151: ... the pet called back: gone")
+SF.execute('COMBAT = true; UNITS.player.alive = false; UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+check('pd' not in docs(SF, 0, 'party')[-1]['p'], "m151: the pet gone in a fight because YOU died: no dead pet entry")
+SF.execute('COMBAT = false; UNITS.player.alive = true')
+SG = sres_world("SHAMAN", [403, 331, 2008])
+SG.execute('UNITS.pet = { name = "Wolf", alive = true }; fire("UNIT_PET", "player"); advance(1); COMBAT = true; UNITS.pet = nil; fire("UNIT_PET", "player"); advance(1)')
+check('pd' not in docs(SG, 0, 'party')[-1]['p'] and SG.eval('(WowCompanionSpellsDB.petDeadBy or {})["Korvash-Realm"]') is None,
+      "m151: no Revive Pet (a Shaman's wolf gone in a fight): no dead pet entry")
+SG.execute('COMBAT = false')
+for L in (SR, SD, SP, SH, SK, SL, SO, SF, SG):
+    check(L.eval('#SNIPERR') == 0 and L.eval('#SPY') == 0, "m150: no snippet error, no spied call", L.eval('SNIPERR[1]'))
 
 # ================================================================ 5. THE COMBAT LOCKDOWN (secure work from insecure code in a fight errors)
 W5 = world()
@@ -1000,8 +1176,11 @@ check('PARTY-EST-BEGIN' not in PMSRC and 'function PM.readHp' not in PMSRC and '
 check('LoggingCombat' not in PMSRC and '"advancedCombatLogging", "1"' not in PMSRC and '"advancedCombatLogging", "0"' in PMSRC
       and 'aclReset1' in PMSRC and 'OV.hmF' in PMSRC, "m129: the combat log never started; the give-back and Smart Y's OV.hmF kept", "")
 ev = PMSRC[PMSRC.index('    PM.ev = CreateFrame("Frame")'):PMSRC.index('    PM.ev:SetScript("OnEvent"')]
-check('"UNIT_COMBAT"' not in ev and '"UNIT_HEALTH"' not in ev and '"UNIT_SPELLCAST_SUCCEEDED"' not in ev,
-      "m129: Party mode registers no UNIT_HEALTH / UNIT_COMBAT / cast events", "")
+# m150: the one UNIT_HEALTH left is the PET's own unit event for its death (Smart Res's Revive Pet: dead / alive only, no amount read)
+ev_list = ev[:ev.index('pcall(function() PM.ev:RegisterUnitEvent("UNIT_HEALTH", "pet") end)')]
+check('"UNIT_COMBAT"' not in ev and '"UNIT_HEALTH"' not in ev_list and '"UNIT_SPELLCAST_SUCCEEDED"' not in ev
+      and ev.count('UNIT_HEALTH') == 1 and 'UnitHealth(' not in PMSRC[PMSRC.index('function partyMode()'):PMSRC.index('\npartyMode()\n')],
+      "m129: Party mode registers no UNIT_HEALTH / UNIT_COMBAT / cast events (m150: only the pet's own death watch, no amount read)", "")
 # the give-back: ours (aclOurs), or once for 1.0.17 / 1.0.18 (aclReset1 unset); never a write when it was the player's own
 for db, adv, want in (('{ aclOurs = true, aclReset1 = true }', "1", "0"), ('{}', "1", "0"), ('{ aclReset1 = true }', "1", "1"), ('{ aclOurs = true }', "0", "0")):
     GB = boot(["safety", "tappad", "book", "padmap"], pre='WowCompanionSpellsDB = %s; CVS = { advancedCombatLogging = "%s" }; '
@@ -1014,10 +1193,10 @@ for db, adv, want in (('{ aclOurs = true, aclReset1 = true }', "1", "0"), ('{}',
 W7 = world()
 W7.eval('party')(W7.table_from([W7.table_from(["Brannoc", "WARRIOR", True, "TANK", "RAGE"])]))
 W7.execute('fire("GROUP_ROSTER_UPDATE")')
-P_KEYS = {"on", "aside", "box", "fight", "grp", "sel", "m"}
+P_KEYS = {"on", "aside", "box", "fight", "grp", "sel", "m", "res", "pd"}     # m150: Smart Res armed, a Hunter's dead pet
 M_KEYS = {"u", "i", "n", "c", "col", "role", "dead", "off", "pt", "lv", "rng", "ic"}   # m129: plain facts only (no hp / full / hs / g / hit counts); m134: the pet's ic
 d = docs(W7, 0, 'party')[-1]
-check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm149' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
+check(set(d) == {"type", "v", "rs", "p"} and d['v'] == 'm159' and set(d['p']) <= P_KEYS and {"on", "fight", "grp", "sel", "m"} <= set(d['p']),
       "party: type v rs p{on aside? box? fight grp sel m}", sorted(d['p']))
 check('box' not in d['p'] and d['p']['on'] is False and d['p']['grp'] is True and d['p']['sel'] == 'bound',
       "Party mode off: no box; grp true; sel bound (Select toggles)", (d['p']['on'], d['p'].get('box'), d['p']['sel']))
@@ -1096,7 +1275,7 @@ C_KEYS = {"slots", "yc", "touch", "spells", "sy", "pad"}
 check(set(c) == {"type", "v", "c"} and set(c['c']) <= C_KEYS and {"slots", "spells", "sy", "pad"} <= set(c['c']), "partycfg: c{slots yc? touch? spells sy pad}",
       sorted(c['c']))
 check(c['c']['pad'] == {"row": "party", "pick": 0, "on": 10, "off": 11, "focus": 12, "menu": 17, "resend": 22, "pbsel": 23,
-                        "pbops": {"remove": 31, "up": 32, "down": 33, "add": 34}, "mdone": 35,
+                        "pbops": {"remove": 31, "up": 32, "down": 33, "add": 34}, "mdone": 35, "mhold": 6, "pmenu": 7,
                         "ptab": {"row": "padtab", "tab": 26, "slot0": 27, "none": 37}}, "partycfg.pad = the contract's column map", c['c']['pad'])
 check(set(c['c']['sy']) <= {"on", "list", "known", "pick"} and c['c']['sy']['on'] is False and c['c']['sy']['list'] == [],
       "sy: on (Smart Y off), list (EMPTY at first), known, pick", c['c']['sy'])
@@ -1243,7 +1422,7 @@ check(picks(W9) == {"player": None, "party1": None, "party2": None}, "Smart Y of
 check(W9.eval('#SPY') == 0 and W9.eval('#VIOL') == 0, "no spied call, no lockdown breach")
 
 # ================================================================ THE PARTY TAB (PadTabCtl p33 + Book b47's padtab 26-37)
-check('local CV = "p48"' in SRC["padtabctl"] and 'local BV = "b52"' in SRC["book"] and 'local PV = "m149"' in SRC["padmap"],
+check('local CV = "p53"' in SRC["padtabctl"] and 'local BV = "b60"' in SRC["book"] and 'local PV = "m159"' in SRC["padmap"],
       "the versions: PadMap m146, PadTabCtl p46, Book b52 (b49 stance-bind #179, b50 toolbar D-pad #18/#20, b51 / m143 / m144 rank up, m146 / p46 / b52 Smart Range)")
 W8 = world(pre='BOOK = { 403, 331, 8004, 324, 131, 546 }')
 W8.execute('''
@@ -1378,7 +1557,7 @@ W8.execute('ptab(39)')
 pa = docs(W8, n0, 'padack')
 # Book b52 (PadMap m146 SMART RANGE): padtab 39 is the Smart Range pick now (its code 0-4 follows); alone it is no game action
 check(pa == [] and W8.eval('WowCompanion.padTabCtl.srWants()') is True, "padtab 39: the Smart Range pick (Book b52), no game action, no refusal", pa)
-W8.execute('ptab(29); COMBAT = true')
+W8.execute('NOW = NOW + 2.5; ptab(29); COMBAT = true')   # p53: 39 then 29 is the Cast bar tab now: the pick expires first
 n0 = nsent(W8)
 W8.execute('spellTaps(331)')
 ack = docs(W8, n0, 'partyack')
@@ -1397,7 +1576,9 @@ W8.execute('ptab(0)')
 check(W8.eval('#SPY') == 0 and W8.eval('#VIOL') == 0 and list(W8.eval('ERRS').values()) == [], "no spied call, no lockdown breach, no error")
 
 # ================================================================ 11. QUESTS: THE PLAYER MENU FOR A PARTY UNIT (q49)
-check('local QV = "q55"' in SRC["quests"], "Quests says q55")
+import re as _re
+_qv = _re.search(r'local QV = "q(\d+)"', SRC["quests"])
+check(_qv is not None and int(_qv.group(1)) >= 55, "Quests says q55 or later", _qv and _qv.group(0))
 MENU = r'''
 CALLS, CLICKED = {}, {}
 local function mixin(name, text, enabled)
@@ -1424,7 +1605,7 @@ n0 = nsent(Q)
 Q.eval('WowCompanion.pmenu.read')("party2", "party")
 pm = docs(Q, n0, 'pmenu')
 check(len(pm) == 1 and pm[0]['unit'] == 'party2' and pm[0]['which'] == 'PARTY' and pm[0]['src'] == 'party' and pm[0]['nm'] == 'Iselle'
-      and pm[0]['v'] == 'q55' and Q.eval('MENUWHICH') == 'PARTY', "read(\"party2\", \"party\"): the PARTY menu; doc unit, which PARTY, nm, src party",
+      and _re.match(r'^q(\d+)$', str(pm[0]['v'])) and int(str(pm[0]['v'])[1:]) >= 55 and Q.eval('MENUWHICH') == 'PARTY', "read(\"party2\", \"party\"): the PARTY menu; doc unit, which PARTY, nm, src party",
       pm and {k: pm[0].get(k) for k in ('unit', 'which', 'nm', 'src')})
 items = {x['t']: x for x in pm[0]['items']}
 check(items['Set Focus'].get('sc') == 14 and items['Set Focus'].get('scr') == 'party', "Set Focus = the PARTY row's focus cell for party2 (col 12 + 2)",
@@ -1681,6 +1862,17 @@ except Exception as e:                                                    # no g
     diff = ''
     print('NOTE no git diff: ' + str(e))
 added = [ln[1:] for ln in diff.splitlines() if ln.startswith('+') and not ln.startswith('+++')]
+# 1.0.30 test build merge (code 1453): the default diff can pair a merged file's lines differently and show an old line as "added"
+# with its twin "removed" elsewhere; a line the base already had as often is not new code (multiset: added minus removed)
+from collections import Counter
+_gone = Counter(ln[1:].strip() for ln in diff.splitlines() if ln.startswith('-') and not ln.startswith('---'))
+_kept = []
+for ln in added:
+    if _gone[ln.strip()] > 0:
+        _gone[ln.strip()] -= 1
+    else:
+        _kept.append(ln)
+added = _kept
 code = [re.sub(r'--.*$', '', ln) for ln in added]
 # m132 (the user, 2026-11-11: "Build a fight-only layer"): `self:SetBinding(` inside the header's own secure state snippet is the
 # restricted handle's OVERRIDE binding on that header (never saved, cleared with it), not the game's saved SetBinding; m133: the same
@@ -1700,6 +1892,11 @@ hits = [(p, ln) for (p, ln) in hits if not (p == r'\bSetCVar\b' and ('STYLE_CVAR
 # PadMap m143 RANK UP (the user, 2026-11-12, "Prompt, A upgrades all"): the player's own A on Home's prompt puts the new rank on the slots that
 # held a lower one - a player-approved bar write exactly like Book's Bind (tools/test_rankup.py proves it runs only after that A)
 hits = [(p, ln) for (p, ln) in hits if not (p == r'\bPlaceAction\b' and ln == 'CALL(function() return PlaceAction(c.s) end)')]
+# Book b59 (the user, 2026-11-13: "when doing bind to a button from bags it should open the normal spell binding menu"): the Bind box's
+# Normal tab puts a BAG ITEM on the slot the player's own press names (or takes it off a slot it is already on), exactly Book's spell Bind
+# (the same two lines, the same player press; tools/test_bags_bindbox.py proves it)
+hits = [(p, ln) for (p, ln) in hits if not ((p == r'\bPlaceAction\b' and ln == 'CALL(function() return PlaceAction(storage) end)')
+                                            or (p == r'\bPickupAction\b' and ln == 'CALL(function() return PickupAction(storage) end)'))]
 # PadMap m146 SMART RANGE (the user, 2026-11-12: "I am completely fine with saving macros for the addon"; "Hide text and sound"): OV.srSync
 # makes / rewrites / renames ONLY our own "DSF ..." character macros (name AND body), out of combat; DSF_SR0 / DSF_SR1 turn the error
 # speech off for the press and give the player's own value back (tools/test_smart_range.py proves both)

@@ -29,6 +29,7 @@ object ChooserTabs {
      *  add-on's reason ("form" a form's own set on show, "fixed" the base X / Y / A / B, "layer" ZR / ZL + ZR, "dpad bar" the bare
      *  D-pad while [toolbar] holds it), or null. The rows stay in the list (the "extra" row counts them), drawn dim with the reason */
     fun bindBlock(set: Int, pos: Int, toolbar: Boolean, form: Boolean): String? = when {
+        PadMapModel.isStick(pos) -> if (set == 1 || set == 2) null else "layer"      // m150: L3 / R3, bare or ZL (PadMap bindAllowed)
         form -> "form"
         set == 1 && pos >= 5 -> "fixed"
         set == 3 || set == 4 -> "layer"
@@ -36,7 +37,15 @@ object ChooserTabs {
         else -> null
     }
 
-    fun keys(spellsOnly: Boolean): List<String> = if (spellsOnly) SPELL_TABS else ALL_TABS
+    fun keys(spellsOnly: Boolean, stick: Boolean = false): List<String> = when {
+        stick -> STICK_TABS                                                 // p52: a stick takes what the eight take
+        spellsOnly -> SPELL_TABS
+        else -> ALL_TABS
+    }
+    /** PadTabCtl p52 / PadMap m157 (the user, 2026-11-13: "looking good, except people also want to be able to bind any of their spells
+     *  and stuff to these, so any of those 5 controller tabs should be able to bind here"): L3 / R3's chooser has all five tabs, as the
+     *  eight's (p49's Extra-alone list of the four game bindings is gone) */
+    val STICK_TABS = ALL_TABS
 
     /** PadTabCtl p41 / PadMap m132 THE FIGHT-ONLY LAYER (the user, 2026-11-11: "Build a fight-only layer"; p40's "replace both" box
      *  retired): a command / binding / mount / item from the In combat tab goes on [combo]'s FIGHT LAYER only - what the button does out of

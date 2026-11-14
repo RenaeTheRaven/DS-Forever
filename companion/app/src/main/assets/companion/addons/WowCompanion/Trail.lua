@@ -2099,7 +2099,7 @@ end
 --   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
 --   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 --   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-WC.live = { V = "ag8", MAX = 24, REUSE_S = 10, SCAN_S = 0.2, FULL_S = 5, STILL_S = 1, slot = {}, byTok = {}, toks = {}, freeAt = {},
+WC.live = { V = "ag11", MAX = 24, REUSE_S = 10, SCAN_S = 0.2, FULL_S = 5, STILL_S = 1, slot = {}, byTok = {}, toks = {}, freeAt = {},
             q = 0, bands = {}, ghosts = {}, pulls = {}, sent = { full = 0, same = 0, still = 0, off = 0 } }
 do
     local A = WC.live
@@ -2575,14 +2575,97 @@ do
         end
         WowCompanionDB.npFriends = nil
     end
+    -- ag9 FRIENDLY PLATES OFF AGAIN (the user, 2026-11-13: "I dont like the friendly Healthcare plates I want to turn those back off even
+    -- if it means losing our floating Y glyph"): a friendly target no longer switches anything on. What is left is the put-back: a
+    -- player who had them on from ag2..ag8 (WowCompanionDB.npFriends: the values ours replaced, test30's npFriendsSet too) gets the
+    -- own values back at the first moment out of a fight, and never again after. PadMap's Y glyph over a friend falls back to its
+    -- other places (beside the target bar / frame) with no plate to stand on.
+    -- ag10 FRIENDLY PLATES, A SWITCH (the user, 2026-11-13: "friendly plates off ... maybe we should set this as a toggle defaulted to
+    -- off"): Hub's "uisw" NPF_OFF / NPF_ON (Settings > Top > Target, "Friendly plates", per character, Off by default) -> A.friendsSet.
+    -- Off (the default, and with an app that never sends it) = ag9 above: nothing switched on, a value of ours put back once out of a
+    -- fight. On = the behaviour before ag9 (ag2..ag8): out of a fight a FRIENDLY target turns A.NP_FRIEND_CVARS on (the player's own
+    -- values kept in WowCompanionDB.npFriends.orig), no friendly target puts them back; a fight and log out put them back too (the
+    -- events below). Turning it Off puts ours back at the first moment out of a fight.
+    A.FRIENDS_ON = false
+    function A.friendsSet(on)
+        on = on == true
+        A.friendsChosen = true
+        if on == A.FRIENDS_ON then return end
+        A.FRIENDS_ON = on
+        A.friendWas = nil                       -- re-decided on the next step
+        A.offDeclined = {}                      -- ag11: a new choice: the player's own on (declined) is re-decided too
+    end
+    -- ag11 OFF HIDES THEM (the user on build 1462: "friendly name plates still show with the setting off"). THE CAUSE: ag9 / ag10's Off
+    -- only stopped US turning the friendly plates on; it never turned off what was already on in the player's game - the game's own
+    -- Friendly Player / Friendly NPC nameplate options (on in the game's menu or its FRIENDNAMEPLATES key, or a 1 an older build of
+    -- ours left behind whose saved record a killed game never wrote: SavedVariables are written only at a clean log out / reload).
+    -- Off now MEANS off while DS Forever runs: out of a fight (the options are refused in one; the next moment out of it otherwise)
+    -- every friendly-plate option in A.NP_FRIEND_OFF that is not 0 goes to 0, the player's own value kept in OUR saved data
+    -- (WowCompanionDB.npFriendsOff.orig, the npFriends / npEnemies / error-sound pattern). Given back exactly when: the switch goes On
+    -- (before On's own rule runs), and at log out (a disabled add-on or a closed game leaves the game as it was). A change of the
+    -- player's own in the game meanwhile (an option of ours back on) stands for this session: dropped from the record, not fought.
+    -- An option the client does not have reads nil and is skipped. Fights keep the 0 (nothing is put back at PLAYER_REGEN_DISABLED).
+    A.NP_FRIEND_OFF = { "nameplateShowFriendlyPlayers", "nameplateShowFriends", "nameplateShowFriendlyNPCs" }
+    A.offDeclined = {}
+    function A.friendsOffRestore(why)
+        local saved = type(WowCompanionDB) == "table" and WowCompanionDB.npFriendsOff or nil
+        if type(saved) ~= "table" then return end
+        if pv(InCombatLockdown) == true and why ~= "logout" then return end
+        -- a write the game refuses (a /reload in a fight) keeps its entry: given back at the next chance (On, the next log out)
+        local left = {}
+        for name, orig in pairs(saved.orig or {}) do
+            local cur = cvGet(name)
+            if cur ~= nil and tonumber(cur) == 0 and tonumber(orig) ~= 0 then
+                cvSet(name, orig)
+                if tonumber(cvGet(name)) == 0 then left[name] = orig end
+            end
+        end
+        WowCompanionDB.npFriendsOff = next(left) ~= nil and { orig = left } or nil
+        A.offWhy = why
+    end
+    function A.friendsOffStep()
+        if pv(InCombatLockdown) == true then return end
+        local saved = WowCompanionDB.npFriendsOff
+        if type(saved) == "table" and type(saved.orig) ~= "table" then saved.orig = {} end
+        for _, name in ipairs(A.NP_FRIEND_OFF) do
+            local cur = cvGet(name)
+            if cur ~= nil then
+                local mine = type(saved) == "table" and saved.orig[name] ~= nil
+                if tonumber(cur) ~= 0 then
+                    if mine then
+                        -- ours was 0: the player turned it back on in the game; their choice stands (this session)
+                        saved.orig[name] = nil
+                        A.offDeclined[name] = true
+                    elseif not A.offDeclined[name] then
+                        saved = saved or { orig = {} }
+                        saved.orig[name] = cur
+                        WowCompanionDB.npFriendsOff = saved
+                        cvSet(name, "0")
+                    end
+                end
+            end
+        end
+        if type(saved) == "table" and next(saved.orig) == nil then WowCompanionDB.npFriendsOff = nil end
+    end
     function A.friendsStep()
         if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
-        -- test30 set them on once (npFriendsSet): from now they follow the target, so test30's on is ours to put back (off)
+        -- test30 set them on once (npFriendsSet): that on is ours to put back (off)
         if WowCompanionDB.npFriendsSet then
             WowCompanionDB.npFriendsSet = nil
             WowCompanionDB.npFriends = WowCompanionDB.npFriends or { orig = { nameplateShowFriends = "0", nameplateShowFriendlyNPCs = "0" } }
         end
+        if not A.FRIENDS_ON then
+            A.friendWas = nil
+            if pv(InCombatLockdown) == true then return end
+            -- ON's values of ours first (the player's own back), then ag11: whatever is still on goes off
+            if type(WowCompanionDB.npFriends) == "table" then A.friendsRestore("friendly plates off") end
+            A.friendsOffStep()
+            return
+        end
+        -- ag10 On: the ag8 rule, as it was
         if pv(InCombatLockdown) == true then return end
+        -- ag11: Off's 0s go back to the player's own values first (On starts from the game as the player left it)
+        if type(WowCompanionDB.npFriendsOff) == "table" then A.friendsOffRestore("friendly plates on") end
         local friend = pv(function() return UnitExists("target") end) == true and pv(function() return UnitIsFriend("player", "target") end) == true
             and pv(function() return UnitIsUnit("target", "player") end) ~= true
         if friend == A.friendWas then return end
@@ -2594,6 +2677,7 @@ do
                 local cur = cvGet(name)
                 if cur and tonumber(cur) ~= tonumber(want) then
                     saved = saved or { orig = {} }
+                    saved.orig = saved.orig or {}
                     if saved.orig[name] == nil then saved.orig[name] = cur end
                     cvSet(name, want)
                 end
@@ -2772,17 +2856,25 @@ do
         if m.cb == 1 and not (m.om and m.om >= 2) and m.b and m.b <= 30 then return true end
         return false
     end
+    -- ag9 (the user, 2026-11-13: "the skull and !should be moving to the top as well"): what the TARGET's plate wears is kept for Hub's
+    -- target bar (A.tgtIcons = { av, q, tok }), and while Hub shows that target (WC.uf.ownsPlate: the plate itself hidden for it) the
+    -- plate's icons are at alpha 0 - they are on the bar now
     function A.iconsStep(list)
         local plv = pv(UnitLevel, "player")
         local want = {}
+        local tgt = nil
         for _, m in ipairs(list or {}) do
             if not m.dd and A.slot[m.s] then
                 local tok = A.slot[m.s].tok
                 local av, qq = A.avoidOf(m, plv), m.qi == 1 or A.qset[m.s] == tok
                 local pk = (A.pick[1] and A.pick[1].s == m.s and 1) or (A.pick[2] and A.pick[2].s == m.s and 2) or nil
                 if av or qq or pk then want[m.s] = { av = av and not pk, q = qq and not pk, pk = pk, tok = tok } end
+                if (av or qq) and pv(function() return UnitIsUnit(tok, "target") end) == true then tgt = { av = av, q = qq, tok = tok } end
             end
         end
+        A.tgtIcons = tgt
+        local uf = WC.uf
+        local owned = tgt and type(uf) == "table" and type(uf.ownsPlate) == "function" and pv(uf.ownsPlate) == true
         A.iconN = 0
         for s, o in pairs(A.icon) do
             local w = want[s]
@@ -2803,6 +2895,8 @@ do
                 if w.av then o.av:Show() else o.av:Hide() end
                 if w.q then o.q:Show() else o.q:Hide() end
                 if w.pk then o.pk:Show(); o.pn:SetText(tostring(w.pk)); o.pn:Show() else o.pk:Hide(); o.pn:Hide() end
+                local a = (owned and tgt.tok == w.tok) and 0 or 1
+                if o.alpha ~= a then o.f:SetAlpha(a); o.alpha = a end
                 if not o.f:IsShown() then o.f:Show() end
                 A.iconN = A.iconN + 1
             end
@@ -2811,6 +2905,7 @@ do
     function A.iconsClear()
         for _, o in pairs(A.icon) do o.f:Hide(); o.tok = nil end
         A.iconN = 0
+        A.tgtIcons = nil
     end
 
     -- ---------------------------------------------------------------- the probe line (as the compass's), every 5 s
@@ -2848,7 +2943,7 @@ do
         local ok, err = pcall(function()
             if e == "NAME_PLATE_UNIT_ADDED" then A.onAdded(a1)
             elseif e == "NAME_PLATE_UNIT_REMOVED" then A.onRemoved(a1)
-            elseif e == "PLAYER_LOGOUT" then A.npRestore("logout"); pcall(A.friendsRestore, "logout")
+            elseif e == "PLAYER_LOGOUT" then A.npRestore("logout"); pcall(A.friendsRestore, "logout"); pcall(A.friendsOffRestore, "logout")
             elseif e == "PLAYER_REGEN_DISABLED" then
                 -- a fight: the player's plate values back now (no friendly-target change sticks through a fight); re-decided after it
                 pcall(A.friendsRestore, "combat"); A.friendWas = nil
@@ -4674,7 +4769,7 @@ end
 -- Now R.barAnchor puts the art's outline ON the rim's visible edge (3 texels out on every side) and only round the health bar (the
 -- cast bar, pips and auras under it are never inside): the frame's outsets solved from the art's own geometry (its outline PAD - 3 in
 -- from the frame's sides and bottom, PAD - 4 from its top, of a 166 x 20 bar's frame), so the glow beyond it is the nameplate's.
-WC.rings = { V = "at8", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
+WC.rings = { V = "at9", BASE = 20, K_BELOW = 2.2, MIN = 5, MAX = 45, SKULL = 10, TAU = 0.4, VMAX = 10, FADE_S = 0.3, APPROACH = 10, NEAR = 5, HYST = 1,
              ALPHA = 0.95, OUTSET = 6, PAD = 9, TOP_IN = 4, TEX_V = 53 / 64, list = {}, est = {}, react = {}, why = {}, n = 0,
              COL = { far = { 0.32, 0.86, 0.36 }, approach = { 1, 0.84, 0.24 }, near = { 1, 0.55, 0.12 }, inside = { 0.93, 0.16, 0.12 } },
              TEX = "Interface\\AddOns\\WowCompanion\\Media\\tint_glow" }
@@ -4803,7 +4898,12 @@ do
                     -- TARGET's tint goes round Hub's target bar while it shows (the same HUD bar outline), never over its plate
                     local okT, isT = pcall(function() return UnitIsUnit(st.tok, "target") == true end)
                     local tbHp = nil
-                    if okT and isT then
+                    -- at9 (the user, 2026-11-13: the target's plate "transitions ... to the top of the screen"): while Hub's copy flies up
+                    -- (WC.uf.flying) the target's tint is down - on neither the hidden plate nor a bar not shown yet - and fades in on
+                    -- the bar once it lands
+                    local okF, fly = pcall(function() return okT and isT and type(WC.uf) == "table" and WC.uf.flying and WC.uf.flying() end)
+                    local held = okF and fly == true
+                    if okT and isT and not held then
                         local okH, hp = pcall(function()
                             local uf = WC.uf
                             return type(uf) == "table" and uf.target and uf.tb and uf.tb.f and uf.tb.f:IsShown() and uf.tb.f.hp or nil
@@ -4854,7 +4954,7 @@ do
                     local c = R.COL[e.st]
                     if c then o.t:SetVertexColor(c[1], c[2], c[3]); o.col = e.st end
                     -- the alpha: up in a tinted state out of combat, down far away or in combat
-                    local want = (m.cb ~= 1 and c) and R.ALPHA or 0
+                    local want = (m.cb ~= 1 and c and not held) and R.ALPHA or 0
                     local k = dt / R.FADE_S * R.ALPHA
                     if o.a < want then o.a = math.min(want, o.a + k) else o.a = math.max(want, o.a - k) end
                     o.f:SetAlpha(o.a)

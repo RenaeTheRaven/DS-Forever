@@ -22,8 +22,9 @@ import kotlin.math.min
  * THE CHARACTER ROOM (character session): the game's CharacterFrame as a room, arrangement C "the game's panes in a room"
  * (user pick 2026-09-28), built to UI Art's `wow-companion-design/character/SPEC.md` with kit calls only.
  *
- * FIRST BUILD = LOOK-ONLY (user ruling): nothing here reaches the game. Folding a heading and choosing an entry or a gear slot
- * are the room's own view; the game's check boxes are SHOWN, not pressed; a chosen piece's options come with the second step.
+ * FIRST BUILD = LOOK-ONLY (user ruling): folding a heading and choosing an entry or a gear slot are the room's own view; the game's
+ * check boxes are SHOWN, not pressed. What reaches the game since: the gear sets' Equip / Save, a worn piece's kits (X / Apply) and,
+ * uneq1, its More menu (Y / the card's More: Unequip, [WornMore]); char-more: Replace ([WornReplace]) and Enchant ([KitFit]) there too.
  *
  * Owned elsewhere and called here: the paper doll is Bags' (`Doll.kt`, one doll for both rooms) and so are the worn pieces'
  * data and tooltip lines (`bags.equipped`); tab 4's contents are the pvp session's ([pvpDrawer], set by the activity once
@@ -40,12 +41,35 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
      *  leave the cursor should take me back to the home by default for everything"). Set by the activity. */
     var onLeave: (() -> Unit)? = null
 
-    /** RC3: B always leaves this room (capture v2 passes it to the game, whose own B closes the window; older captures let go "back") */
-    override fun bLeadsHome(): Boolean = true
+    /** RC3: B leaves this room (capture v2 passes it to the game, whose own B closes the window; older captures let go "back").
+     *  b-fix (the user on 1462: "pressing B in the more menu closes the character page and leaves the menu open."): not while the More
+     *  menu, a list or the save question is open (B closes that, one step back) or the game's own question is up ([WornMore.bLeadsHome]) */
+    override fun bLeadsHome(): Boolean =
+        WornMore.bLeadsHome(ownOpen(), model.setPad?.gameAsks == true, model.setPad?.bToGame == true)
+
+    /** something of the room's own over it: the More menu, a list of it, the kit list, the save question */
+    private fun ownOpen(): Boolean = moreFor != null || kitFor != null || replFor != null || model.setPad?.ask != null
+
+    /** b-fix: a touch on the B disc (Home's swirl wearing B) is B: one step back while something of the room's own is open (true =
+     *  it closed one step here and the room stays), the same as the pad's B and the menu's own Back */
+    fun stepBackByTouch(): Boolean {
+        if (model.setPad?.gameAsks == true) return false
+        return when {
+            kitFor != null -> { closeKits(); invalidate(); true }
+            replFor != null -> { closeSub(); invalidate(); true }
+            moreFor != null -> { closeMore(); invalidate(); true }
+            model.setPad?.ask != null -> { model.setPad?.no?.let { setTap("no", it) }; true }
+            else -> false
+        }
+    }
     private var lastNote = ""
 
     // bags.equipped (Bags' collector): for the doll and the chosen piece's card
     private var equipped: JSONObject? = null
+    // uneq1: the bags document's free plain-bag slots (null = not known yet) and its pad (the bmvq row's presence)
+    private var freeGeneral: Int? = null
+    private var bagsPad: JSONObject? = null
+    private var bagsCtx: String? = null             // char-more2: a bag cell's tap sells / deposits / attaches now (no kit, no secure equip)
     private var chosenSlot: Int? = null
 
     // scroll offsets, by what is dragged
@@ -112,6 +136,9 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         val g = model.grid
         val cell = g?.leaveCell(gameOpenNow, held) ?: if (g != null && holdSent) g.row to g.close else null
         roomShown = false; openWanted = false; holdSent = false
+        // b-fix (the user on 1462: "... leaves the menu open"): the room left = its More menu / lists are gone with it (never drawn again
+        // on the next visit); the add-on forgets its own when the controller goes (onLost / the leave), so nothing is tapped for it here
+        moreFor = null; kitFor = null; replFor = null; moreSeen = false; subSeen = false
         return tapCell("out", cell)
     }
 
@@ -174,7 +201,21 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
             if (active) openWhenHeld()
         }
         if ("pad" in changed) model.pad?.let { key -> model.pad = null; pending.addLast(key) }
-        if ("eqs" in changed && current) model.setPad?.ack?.let { a ->
+        if ("eqs" in changed && current) model.setPad?.let { sp ->
+            // uneq1: the add-on's `more` went false while the menu is open (B closed it there): one step back here too
+            if (sp.more) moreSeen = true else if (moreSeen && (moreFor != null || kitFor != null)) { moreSeen = false; closeMore(tell = false) }
+            // char-more: its list flag went off while a Replace / Enchant list is open (B there): back to the menu, as B does
+            if (sp.sub) subSeen = true else if (subSeen && sp.more && moreFor != null && (replFor != null || kitFor != null)) closeSub(tell = false)
+        }
+        if ("eqs" in changed && current) model.setPad?.ack?.takeIf { it.op == "unequip" }?.let { a ->
+            // uneq2 (review): the add-on re-sends its LAST ack in every eqs part, so an old answer (another piece, another visit) is
+            // only recorded; a line is said only for an answer that came within [WornMore.ANSWER_MS] of this room's own unequip tap
+            if (a.seq != ackShownSeq) {
+                ackShownSeq = a.seq
+                if (WornMore.fresh(unequipSentAt, android.os.SystemClock.uptimeMillis())) WornMore.say(a.ok, a.why)?.let { kitSay(it) }
+            }
+        }
+        if ("eqs" in changed && current) model.setPad?.ack?.takeIf { it.op != "unequip" }?.let { a ->
             if (a.seq != ackShownSeq) {
                 ackShownSeq = a.seq; ackUntil = android.os.SystemClock.uptimeMillis() + 4000L
                 postInvalidateDelayed(4050L)
@@ -196,6 +237,8 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
 
     /** the bags' kits: (bag, slot, row) (BagsView.kitItems, the host's) */
     var kits: () -> List<Triple<Int, Int, JSONObject>> = { emptyList() }
+    /** char-more: every bag item: (bag, slot, row) (BagsView.bagItems, the host's), for Replace */
+    var bagItems: () -> List<Triple<Int, Int, JSONObject>> = { emptyList() }
     private var kitFor: Int? = null                 // the worn slot the list is open for
     private var kitSel = 0
     private var kitWait: Pair<Int, Long>? = null    // (slot, since): the kit was used, waiting for the game's pick
@@ -210,16 +253,39 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     }
     private fun kitSay(s: String) { kitLine = s; kitLineAt = android.os.SystemClock.uptimeMillis(); invalidate(); postInvalidateDelayed(3100L) }
 
+    /** char-more: the kits that may go on worn [slot]: those the game said no to for the piece worn there left out ([KitFit]) */
+    private fun slotKits(slot: Int) = KitFit.forSlot(kits(), slot)
+
+    /** X on a worn slot / the card's Apply: the kit list on its own. char-more: the add-on holds B for it (`moreon`), so B closes it,
+     *  one step back, the same as the More menu's Enchant list */
     private fun openKits(slot: Int) {
-        if (kits().isEmpty()) { kitSay("No armor kits, stones or enchants in your bags"); return }
-        kitFor = slot; kitSel = 0; invalidate()
+        val list = slotKits(slot)
+        if (list.isEmpty()) { kitSay(if (kits().isEmpty()) "No armor kits, stones or enchants in your bags" else "Nothing fits"); return }
+        if (bagsCtx != null) { kitSay("Window open"); return }          // char-more2: the kit's cell would sell / deposit it
+        moreFor = null; replFor = null; moreSeen = false; subSeen = false
+        kitFor = slot; kitSel = 0
+        model.setPad?.moreOn?.let { setTap("more on (kits)", it) }
+        invalidate()
+    }
+
+    /** the kit list closes one step: opened from the More menu = back to the menu, else the list alone was open = all closed */
+    private fun closeKits(tell: Boolean = true) {
+        if (kitFor == null) return
+        if (moreFor != null) closeSub(tell) else closeMore(tell)
     }
 
     private fun applyKit(i: Int) {
         val slot = kitFor ?: return
-        val (bag, s, row) = kits().getOrNull(i) ?: return
-        kitFor = null
-        if (!tapPad("bag$bag", s - 1)) { kitSay("The game did not take it"); return }
+        val (bag, s, row) = slotKits(slot).getOrNull(i) ?: return
+        if (bagsCtx != null) { kitSay("Window open"); return }          // char-more2: a vendor / bank / mail opened under the list
+        // select -> ONE action: the list (and a More menu under it) is done; the add-on hears it in the same batch as the kit's use
+        val sp = model.setPad
+        val off = sp?.moreOff?.takeIf { sp.row.isNotEmpty() }?.let { listOf(sp.row to it) } ?: emptyList()
+        kitFor = null; moreFor = null; replFor = null; moreSeen = false; subSeen = false
+        val g = model.grid
+        val ok = g != null && TapBridge.tapsSpaced(context, g.pad, off + listOf("bag$bag" to s - 1), 120L)
+        Log.i(TAG, "character: kit bag$bag:${s - 1} for slot $slot -> ${if (ok) "tapped" else "refused"}")
+        if (!ok) { sp?.moreOff?.let { setTap("more off", it) }; kitSay("The game did not take it"); return }
         val since = android.os.SystemClock.uptimeMillis()
         kitWait = slot to since
         kitSay("Applying ${row.optString("name")}")
@@ -229,29 +295,34 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     }
 
     /** Bags.lua's `itarget`: the game's "pick an item" started (or ended); a kit used from here goes on its slot now */
-    fun onItarget(on: Boolean) {
+    fun onItarget(on: Boolean, doc: JSONObject? = null) {
         val w = kitWait ?: return
         if (!on) return
         kitWait = null
+        // bags-kit3 (the user's pick, 2026-11-13): the slot only when it is a row of the Bags room's list, else the game's /stopspelltarget
+        if (!KitTarget.slotFits(doc, w.first)) { tapPad("binv", KitTarget.STOP_COL); kitSay("It can't go there"); return }
         tapPad("binv", w.first - 1)
     }
 
     private fun kitKey(key: String) {
-        val n = kits().size
+        val n = kitFor?.let { slotKits(it).size } ?: 0
         when (key) {
             "PADDUP" -> kitSel = (kitSel - 1).coerceAtLeast(0)
             "PADDDOWN" -> kitSel = (kitSel + 1).coerceAtMost(maxOf(0, n - 1))
             "PAD1" -> applyKit(kitSel)
-            "PAD2", "PAD3" -> kitFor = null
+            "PAD2", "PAD3" -> closeKits()
         }
         invalidate()
     }
 
-    /** the list over the room: the kits in your bags, the gold row the controller's, A Apply, B / X Close */
+    /** the list over the room: the kits that may go on this slot (char-more: [slotKits]), the gold row the controller's, A Apply,
+     *  B / X Close (Back when it is the More menu's Enchant list) */
     private fun kitList(c: Canvas, w: Float, h: Float) {
         kitHits.clear()
         val slot = kitFor ?: return
-        val list = kits()
+        val list = slotKits(slot)
+        if (list.isEmpty()) { post { if (kitFor == slot && slotKits(slot).isEmpty()) closeKits() }; return }    // the bags changed under it
+        if (kitSel > list.size - 1) kitSel = list.size - 1
         UiKit.cover(c, RectF(0f, 0f, w, h))
         val bw = minOf(760f, w - 80f)
         val rowH = 84f
@@ -276,13 +347,226 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
             kitHits.add(RectF(r) to k)
         }
         val hy = box.bottom + 46f
-        val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Apply", UiKit.backGlyph() to "Close")
+        val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Apply", UiKit.backGlyph() to (if (moreFor != null) "Back" else "Close"))
         kitHits.add(RectF((hs + box.right) / 2f, hy - 36f, box.right, hy + 36f) to -1)
     }
 
     /** the Bags document (`full.bags`): its `equipped` part feeds the doll and the card */
     fun updateBags(bags: JSONObject) {
+        if (bags.has("freeGeneral")) freeGeneral = bags.optInt("freeGeneral")
+        bags.optJSONObject("pad")?.let { bagsPad = it }
+        // char-more2: the game window that changes what a bag cell's tap does (vendor / bank / mail / trade / auction: the Bags room's ctx)
+        bagsCtx = bags.optString("ctx").takeIf { it.isNotEmpty() && it[0].code > 3 }
         bags.optJSONObject("equipped")?.let { equipped = it; if (model.tab == CharTab.CHARACTER) invalidate() }
+    }
+
+    // ------------------------------------------------------------------ uneq1: A WORN PIECE'S MORE MENU (the user's picks, 2026-11-13: "choose a
+    // worn slot, Y = More opens a small menu with 'Unequip' first (A does it, B back, Up/Down moves; touch: a More card button with the Y
+    // glyph)"; "WEAPONS (slots 16,17,18) MAY be unequipped in combat, armor is refused in combat"). The rules are [WornMore]'s. Opening it
+    // taps the add-on's `moreon` (B is the room's then: one step back closes it, the add-on says `more` false), closing it `moreoff`.
+    private var moreFor: Int? = null
+    private var moreSel = 0
+    private var moreSeen = false                    // the add-on has said `more` true for this menu (its false then closes it)
+    private var unequipSentAt = 0L                  // uneq2: uptime of this room's last unequip batch (0 = none): only its answer is said
+    private val moreHits = ArrayList<Pair<RectF, Int>>()
+    private var subSeen = false                     // char-more: the add-on has said `msub` true for the open list (its false: back)
+    // char-more: the Replace list (the worn slot it is open for) over the menu
+    private var replFor: Int? = null
+    private var replSel = 0
+    private val replHits = ArrayList<Pair<RectF, Int>>()
+
+    /** the pad that has both cells of the route (the bags document's is the newer), else null: nothing is tapped */
+    private fun routePad(): JSONObject? {
+        val row = model.setPad?.row?.takeIf { it.isNotEmpty() } ?: return null
+        for (p in listOfNotNull(bagsPad, model.grid?.pad)) {
+            val rows = p.optJSONObject("rows") ?: continue
+            if (rows.has("bmvq") && rows.has(row)) return p
+        }
+        return null
+    }
+
+    /** char-more: the bags' pieces for worn [slot] (the game's slot rules; what the player can't wear left out) */
+    private fun replPicks(slot: Int) = WornReplace.picks(bagItems(), slot, equipped?.optBoolean("dw") == true)
+
+    /** char-more: the pad and the cells that put [p] into worn [slot] now (the More menu's close first, on the add-on's row), or null */
+    private fun replRoute(p: WornReplace.Pick, slot: Int): Pair<JSONObject, List<Pair<String, Int>>>? {
+        val sp = model.setPad
+        val off = sp?.moreOff?.takeIf { sp.row.isNotEmpty() }
+        for (pad in listOfNotNull(bagsPad, model.grid?.pad)) {
+            val cells = WornReplace.cells(pad, p, slot, model.combat, bagsCtx != null) ?: continue
+            if (off != null && pad.optJSONObject("rows")?.has(sp.row) != true) continue
+            return pad to ((if (off != null) listOf(sp.row to off) else emptyList()) + cells)
+        }
+        return null
+    }
+
+    private fun moreRows(slot: Int): List<WornMore.Row> {
+        val combat = model.combat
+        val picks = replPicks(slot)
+        val window = bagsCtx != null
+        val now = picks.filter { WornReplace.now(it, slot, combat, window) }
+        val fits = WornMore.Fits(picks.size, now.size, now.isEmpty() || now.any { replRoute(it, slot) != null },
+            kits().size, slotKits(slot).size, window)
+        return WornMore.rows(slot, worn()[slot]?.has("id") == true, combat, freeGeneral,
+            model.setPad?.unequip != null && routePad() != null, fits)
+    }
+
+    private fun openMore(slot: Int) {
+        if (moreRows(slot).isEmpty()) return            // ammo: no menu
+        moreFor = slot; moreSel = 0; moreSeen = false; subSeen = false; kitFor = null; replFor = null
+        model.setPad?.moreOn?.let { setTap("more on", it) }
+        invalidate()
+    }
+
+    /** the whole More menu closes, with any list over it; [tell] = say so to the add-on (`moreoff`) */
+    private fun closeMore(tell: Boolean = true) {
+        if (moreFor == null && kitFor == null && replFor == null) return
+        moreFor = null; kitFor = null; replFor = null; subSeen = false
+        if (tell) model.setPad?.moreOff?.let { setTap("more off", it) }
+        invalidate()
+    }
+
+    /** char-more: a Replace / Enchant list opens over the menu; the add-on holds its B (`moresub`: B = back to the menu) */
+    private fun openSub(slot: Int, enchant: Boolean) {
+        subSeen = false
+        if (enchant) { kitFor = slot; kitSel = 0 } else { replFor = slot; replSel = 0 }
+        model.setPad?.moreSub?.let { setTap("more list", it) }
+        invalidate()
+    }
+
+    /** char-more: the open list closes, one step back to the menu; [tell] = say so to the add-on (`moreon`: the menu alone again) */
+    private fun closeSub(tell: Boolean = true) {
+        if (replFor == null && kitFor == null) return
+        replFor = null; kitFor = null; subSeen = false
+        if (tell) model.setPad?.moreOn?.let { setTap("more back", it) }
+        invalidate()
+    }
+
+    private fun chooseMore(i: Int) {
+        val slot = moreFor ?: return
+        val row = moreRows(slot).getOrNull(i) ?: return
+        if (!row.usable) { row.why?.let { kitSay(it) }; return }
+        when (row.label) {
+            WornMore.REPLACE -> { openSub(slot, enchant = false); return }
+            WornMore.ENCHANT -> { openSub(slot, enchant = true); return }
+        }
+        val sp = model.setPad
+        val arm = sp?.unequip
+        val pad = routePad()
+        if (sp == null || arm == null || pad == null) { closeMore(); kitSay("Unavailable"); return }
+        closeMore(tell = false)                         // the arm closes it in the add-on too
+        // ONE batch, all or nothing: the arm, then the worn slot's column; spaced past the pad's 0.25 s repeat guard
+        val ok = TapBridge.tapsSpaced(context, pad, WornMore.cells(sp.row, arm, slot), 120L)
+        Log.i(TAG, "character: unequip slot $slot -> ${if (ok) "tapped" else "refused"}")
+        unequipSentAt = if (ok) android.os.SystemClock.uptimeMillis() else 0L
+        if (!ok) { sp.moreOff?.let { setTap("more off", it) }; kitSay("The game did not take it") }
+    }
+
+    private fun moreKey(key: String) {
+        val slot = moreFor ?: return
+        val (sel, act) = WornMore.key(moreSel, moreRows(slot).size, key)
+        moreSel = sel
+        when (act) {
+            WornMore.Act.CHOOSE -> chooseMore(moreSel)
+            WornMore.Act.BACK -> closeMore()
+            WornMore.Act.NONE -> {}
+        }
+        invalidate()
+    }
+
+    /** char-more: A on a Replace row = that piece into the slot (ONE batch: the menu's close, then its route); one that can't now says why */
+    private fun doReplace(i: Int) {
+        val slot = replFor ?: return
+        val p = replPicks(slot).getOrNull(i) ?: return
+        WornReplace.why(p, slot, model.combat, bagsCtx != null)?.let { kitSay(it); return }
+        val route = replRoute(p, slot)
+        if (route == null) { kitSay("Unavailable"); return }
+        replFor = null; moreFor = null; kitFor = null; moreSeen = false; subSeen = false
+        val ok = TapBridge.tapsSpaced(context, route.first, route.second, BagsMoveRoute.GAP_MS)
+        Log.i(TAG, "character: replace slot $slot with ${p.bag}:${p.slot} (${if (p.exact && bagsCtx == null) "secure" else "drag"}) -> ${if (ok) "tapped" else "refused"}")
+        if (!ok) { model.setPad?.moreOff?.let { setTap("more off", it) }; kitSay("The game did not take it") }
+        invalidate()
+    }
+
+    private fun replKey(key: String) {
+        val slot = replFor ?: return
+        val n = replPicks(slot).size
+        when (key) {
+            "PADDUP" -> replSel = (replSel - 1).coerceAtLeast(0)
+            "PADDDOWN" -> replSel = (replSel + 1).coerceAtMost(maxOf(0, n - 1))
+            "PAD1" -> doReplace(replSel)
+            "PAD2", "PAD3" -> closeSub()
+        }
+        invalidate()
+    }
+
+    /** char-more: the Replace list over the menu, drawn as the Bags room's lists: the bag pieces for this slot (one that can't go on now
+     *  greyed, its reason beside its name), the gold row the controller's, A Equip, B Back */
+    private fun replList(c: Canvas, w: Float, h: Float) {
+        replHits.clear()
+        val slot = replFor ?: return
+        val list = replPicks(slot)
+        if (list.isEmpty()) { post { if (replFor == slot && replPicks(slot).isEmpty()) closeSub() }; return }    // the bags changed under it
+        if (replSel > list.size - 1) replSel = list.size - 1
+        val combat = model.combat
+        UiKit.cover(c, RectF(0f, 0f, w, h))
+        val bw = minOf(760f, w - 80f)
+        val rowH = 84f
+        val shown = list.size.coerceAtMost(7)
+        val box = RectF(w / 2f - bw / 2f, 90f, w / 2f + bw / 2f, 90f + 80f + shown * rowH + 20f)
+        val inner = UiKit.menu(c, box, solid = true)
+        c.drawText(Tr.t(WornMore.REPLACE), inner.left + 16f, inner.top + 40f, UiKit.bodyPaint(30f, Theme.gold))
+        val name = worn()[slot]?.optString("name")?.takeIf { it.isNotEmpty() } ?: Doll.NAMES[slot] ?: ""
+        if (name.isNotEmpty()) {
+            val np = UiKit.bodyPaint(24f, Theme.dim).apply { textAlign = Paint.Align.RIGHT }
+            c.drawText(TextUtils.ellipsize(name, TextPaint(np), inner.width() / 2f, TextUtils.TruncateAt.END).toString(), inner.right - 16f, inner.top + 40f, np)
+        }
+        val first = (replSel - shown + 1).coerceAtLeast(0)
+        for (k in first until (first + shown).coerceAtMost(list.size)) {
+            val p = list[k]
+            val y = inner.top + 64f + (k - first) * rowH
+            val r = RectF(inner.left + 8f, y, inner.right - 8f, y + rowH - 6f)
+            val icon = Icons.getOrUnknown(if (p.row.has("icon")) p.row.optInt("icon") else null)
+            val why = WornReplace.why(p, slot, combat, bagsCtx != null)
+            val label = p.row.optString("name", "?") + (why?.let { " (" + Tr.t(it) + ")" } ?: "")
+            UiKit.itemPlate(c, r, icon, label, Theme.quality(p.row.optInt("quality", 1)), 0, unusable = why != null)
+            if (k == replSel) UiKit.focus(c, r)
+            replHits.add(RectF(r) to k)
+        }
+        val hy = box.bottom + 46f
+        val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Equip", UiKit.backGlyph() to "Back")
+        replHits.add(RectF((hs + box.right) / 2f, hy - 36f, box.right, hy + 36f) to -1)
+    }
+
+    /** the Y glyph in the layout the Settings chose (Nintendo's Y, Xbox's Y, PlayStation's triangle) */
+    private fun yGlyph(): String = when (CastSettings.buttonLayout) {
+        CastSettings.ButtonLayout.XBOX -> "ltr_y"
+        CastSettings.ButtonLayout.PLAYSTATION -> "shp_triangle"
+        else -> "rev_y"
+    }
+
+    /** the menu over the room: the piece's name, its rows (a disabled one with its reason), A Choose, B Back */
+    private fun moreMenu(c: Canvas, w: Float, h: Float) {
+        moreHits.clear()
+        val slot = moreFor ?: return
+        val rows = moreRows(slot)
+        if (rows.isEmpty()) { moreFor = null; return }
+        UiKit.cover(c, RectF(0f, 0f, w, h))
+        val bw = 520f
+        val box = RectF(w / 2f - bw / 2f, 220f, w / 2f + bw / 2f, 220f + 56f + rows.size * 96f + 24f)
+        val inner = UiKit.menu(c, box, solid = true)
+        val name = worn()[slot]?.optString("name")?.takeIf { it.isNotEmpty() } ?: Doll.NAMES[slot] ?: ""
+        val np = UiKit.bodyPaint(26f, Color.WHITE)
+        c.drawText(TextUtils.ellipsize(name, TextPaint(np), inner.width() - 32f, TextUtils.TruncateAt.END).toString(),
+            inner.left + 16f, inner.top + 34f, np)
+        for ((i, row) in rows.withIndex()) {
+            val rr = RectF(inner.left, inner.top + 56f + i * 96f, inner.right, inner.top + 56f + i * 96f + 92f)
+            UiKit.menuRow(c, rr, Tr.t(row.label) + (row.why?.let { " (" + Tr.t(it) + ")" } ?: ""), moreSel == i, enabled = row.usable, size = 28f)
+            moreHits.add(RectF(rr) to i)
+        }
+        val hy = box.bottom + 40f
+        val hs = UiKit.hints(c, box.right - 16f, hy, "rev_a" to "Choose", UiKit.backGlyph() to "Back")
+        moreHits.add(RectF((hs + box.right) / 2f, hy - 36f, box.right, hy + 36f) to -1)
     }
 
     // ------------------------------------------------------------------ drawing
@@ -321,7 +605,9 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         }
         setQuestion(c, w, h)
         glow(c)
-        if (kitFor != null) kitList(c, w, h)
+        if (moreFor != null) moreMenu(c, w, h)
+        if (kitFor != null) kitList(c, w, h)            // char-more: the menu's lists over it
+        if (replFor != null) replList(c, w, h)
         kitLine?.let { s ->
             if (android.os.SystemClock.uptimeMillis() - kitLineAt > 3000L) kitLine = null
             else c.drawText(Tr.t(s), w / 2f, h - 60f, UiKit.bodyPaint(28f, Theme.gold).apply { textAlign = android.graphics.Paint.Align.CENTER })
@@ -364,12 +650,16 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
     }
 
     /** a press the addon passed on: the D-pad moves the glow, A does what a tap does (SPEC 8); B is the addon's (it closes
-     *  the game's window); X and Y do nothing in the first build */
+     *  the game's window; while the More menu is open the add-on holds it and closes the menu); X on a worn slot = its kits;
+     *  Y on a worn slot = its More menu (uneq1) */
     private fun press(key: String) {
         if (kitFor != null) { kitKey(key); return }
-        if (key == "PAD3") {
+        if (replFor != null) { replKey(key); return }
+        if (moreFor != null) { moreKey(key); return }
+        if (key == "PAD3" || key == "PAD4") {
             val k = current()?.key?.takeIf { it.startsWith("slot:") }?.removePrefix("slot:")?.toIntOrNull()
-            if (k != null && worn()[k] != null) { openKits(k); return }
+            if (key == "PAD3" && k != null && worn()[k] != null) { openKits(k); return }
+            if (key == "PAD4" && k != null && worn()[k] != null) { chosenSlot = k; openMore(k); return }
         }
         val cur = current() ?: return
         when (key) {
@@ -470,11 +760,21 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         if (slot == null || slot !in layout.boxes) { chosenSlot = null; UiKit.emblem(c, middle, model.who?.clsFile ?: "") }
         else {
             card(c, middle, slot)
-            // the card's Apply (X): the kits for this slot (the same as X on the slot)
-            if (worn()[slot] != null && kits().isNotEmpty()) {
-                val ab = RectF(middle.left + 24f, middle.bottom - 78f, middle.right - 24f, middle.bottom - 8f)
+            // the card's Apply (X): the kits for this slot (the same as X on the slot); More (Y, uneq1): the slot's More menu (the same
+            // as Y on the slot). Both: side by side; one alone: the card's width
+            val apply = worn()[slot] != null && slotKits(slot).isNotEmpty()
+            val more = worn()[slot] != null && moreRows(slot).isNotEmpty()
+            val bt = middle.bottom - 78f; val bb = middle.bottom - 8f
+            val mid = middle.centerX()
+            if (apply) {
+                val ab = RectF(middle.left + 24f, bt, if (more) mid - 6f else middle.right - 24f, bb)
                 UiKit.button(c, ab, "Apply", UiKit.xGlyph(), UiKit.Button.UP)
                 hit(ab) { openKits(slot) }
+            }
+            if (more) {
+                val mb = RectF(if (apply) mid + 6f else middle.left + 24f, bt, middle.right - 24f, bb)
+                UiKit.button(c, mb, "More", yGlyph(), UiKit.Button.UP)
+                hit(mb) { openMore(slot) }
             }
         }
         Doll.draw(c, layout, worn(), eq?.optJSONObject("ammo"), eq?.optBoolean("relic") == true,
@@ -527,7 +827,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         }
         c.restore()
         dragged(c, inner, key, y - start + 16f)
-        // the piece's options (Bind for an on-use piece) come with the second step (user, 2026-09-28): nothing drawn now
+        // the piece's options: the card's More (uneq1: Unequip first; Bind for an on-use piece may follow there)
     }
 
     private fun equippedSlot(slot: Int): JSONObject? {
@@ -685,7 +985,7 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
         hit(eq, "set:equip") { if (usable) set?.equipCell?.let { setTap("equip ${set.name}", it) } }
         hit(sv, "set:save") { if (usable) set?.saveCell?.let { setTap("save ${set.name}", it) } }
         // a refused tap, the game's words where it has them, for a few seconds
-        val ack = pad?.ack
+        val ack = pad?.ack?.takeIf { it.op != "unequip" }
         if (ack != null && !ack.ok && ack.seq == ackShownSeq && android.os.SystemClock.uptimeMillis() < ackUntil) {
             centred(c, r.centerX(), buttonsTop - 24f, ack.why, 22f, Color.rgb(255, 32, 32))
         }
@@ -1032,7 +1332,21 @@ class CharacterView(context: Context) : View(context), BLeadsHome {
                 if (kitFor != null) {
                     // the list: a row applies, Close / outside closes
                     val k = kitHits.firstOrNull { it.first.contains(e.x, e.y) }?.second
-                    if (k != null && k >= 0) applyKit(k) else kitFor = null
+                    if (k != null && k >= 0) applyKit(k) else closeKits()
+                    invalidate()
+                    return true
+                }
+                if (replFor != null) {
+                    // char-more, the Replace list: a row equips (as A on it), Back / outside goes back to the menu (as B)
+                    val k = replHits.firstOrNull { it.first.contains(e.x, e.y) }?.second
+                    if (k != null && k >= 0) { replSel = k; doReplace(k) } else closeSub()
+                    invalidate()
+                    return true
+                }
+                if (moreFor != null) {
+                    // uneq1, the More menu: a row chooses (as A on it), Back / outside closes (as B)
+                    val k = moreHits.firstOrNull { it.first.contains(e.x, e.y) }?.second
+                    if (k != null && k >= 0) { moreSel = k; chooseMore(k) } else closeMore()
                     invalidate()
                     return true
                 }

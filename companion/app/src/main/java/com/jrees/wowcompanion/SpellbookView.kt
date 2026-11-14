@@ -239,6 +239,8 @@ class SpellbookView(
         val x = 26f + (i % 2) * CW; val y = Y0 + (i / 2) * rh(h)
         return RectF(x, y, x + CW - 8f, y + rh(h))
     }
+    // GitHub #43 cb3 (the user, 2026-11-13: "to assign to the bar, in the bind menu ... we will add a third tab"): the Spellbook's own
+    // Cast bar button beside Bind is gone; Bind's box has the Cast bar tab (SpellsOverlay) while the bar is on in Settings
     private fun bindRect(w: Float, h: Float) = RectF(SPLIT + 40f, h - 30f - 111f, w - 56f, h - 30f)
 
     // ---------------------------------------------------------------- drawing

@@ -101,7 +101,51 @@ object PartyLayout {
 
     /** the cell index under ([x], [y]), else -1 */
     fun hit(m: Module, x: Float, y: Float): Int = m.cells.indexOfFirst { it.contains(x, y) }
+
+    /** m150 THE PRESS (the user, 2026-11-13: "Touching the party members lacks any visual feedback making it feel uncertain who im even
+     *  touching or holding a press for."; the pick "Press dip + outline"): the touched plate shrinks to [PRESS_SCALE] round its centre and
+     *  sinks [PRESS_DY] px while the finger is down; [k] 0..1 = how far in (the press eases in and back out) */
+    const val PRESS_SCALE = 0.96f
+    const val PRESS_DY = 2f
+    /** how long the dip takes to go in, and to come back out after the finger lifts */
+    const val PRESS_IN_MS = 60L
+    const val PRESS_OUT_MS = 110L
+    fun pressed(b: Box, k: Float = 1f): Box {
+        val q = k.coerceIn(0f, 1f)
+        val s = 1f - (1f - PRESS_SCALE) * q
+        val hw = b.w * s / 2f; val hh = b.h * s / 2f
+        val cy = b.cy + PRESS_DY * q
+        return Box(b.cx - hw, cy - hh, b.cx + hw, cy + hh)
+    }
+    /** the press's depth at [now]: held since [downAt] (eases in), or let go at [upAt] (eases out; 0 = gone) */
+    fun pressDepth(now: Long, downAt: Long, upAt: Long?): Float = if (upAt == null)
+        ((now - downAt).toFloat() / PRESS_IN_MS).coerceIn(0f, 1f)
+    else (1f - (now - upAt).toFloat() / PRESS_OUT_MS).coerceIn(0f, 1f) * ((upAt - downAt).toFloat() / PRESS_IN_MS).coerceIn(0f, 1f)
     fun hitTag(m: Module, x: Float, y: Float): Boolean = m.tag.contains(x, y)
+
+    /** THE HOLD FILL (the user, 2026-11-13: "when doing the hold to open radials I want the bar to kind of fill to indicate that its
+     *  opening when holding"): a held member plate fills left to right in the theme's accent over exactly [HOLD_MS] (the long press
+     *  that opens the member's target radial: PartyModuleView.LONG_MS is this value), the radial opens as it completes; let go early
+     *  and it drains in [FILL_DRAIN_MS] (no radial; the tap is unchanged). */
+    const val HOLD_MS = 450L
+    const val FILL_DRAIN_MS = 120L
+    /** the fill 0..1 at [now]: held since [downAt] (rises), or let go at [upAt] (drains from where it stood) */
+    fun holdFill(now: Long, downAt: Long, upAt: Long?): Float {
+        if (upAt == null) return ((now - downAt).toFloat() / HOLD_MS).coerceIn(0f, 1f)
+        val stood = ((upAt - downAt).toFloat() / HOLD_MS).coerceIn(0f, 1f)
+        return stood * (1f - (now - upAt).toFloat() / FILL_DRAIN_MS).coerceIn(0f, 1f)
+    }
+    /** the filled part of plate [b] at fill [f] (left to right) */
+    fun fillBox(b: Box, f: Float): Box = Box(b.l, b.t, b.l + b.w * f.coerceIn(0f, 1f), b.b)
+    /** a hold on unit [unit] opens a radial (PartyTaps.menu's units: you and party1..4; PadMap m157, the user on 1462: "holding on the
+     *  pet bar does not open the pet inspect": the pet too while it is alive and the add-on has its menu cell [petMenu]; a DEAD pet's
+     *  slot keeps its Smart Res tap alone - its wheel would offer nothing, Revive Pet is never on a wheel) */
+    fun holdOpens(unit: Int?, dead: Boolean = false, petMenu: Boolean = true): Boolean = when (unit) {
+        null -> false
+        in 0..4 -> true
+        PartyModel.PET_I -> petMenu && !dead
+        else -> false
+    }
 
     // ------------------------------------------------------------------------------------------------ the Select tab
 

@@ -49,7 +49,14 @@ object PadMapModel {
                     /** m43: a [Kind.COMBAT] button whose fight spell is the OVERLAY's (no macro; [otherwise] = what the button holds) */
                     val ov: Boolean = false,
                     /** m146: the In combat tab's Smart Range box is checked here (also with no spell yet) */
-                    val smart: Boolean = false)
+                    val smart: Boolean = false,
+                    /** m150 STICK BUTTONS (GitHub #78): "L3" / "R3" on a stick's place (positions 9 / 10), null on the eight buttons */
+                    val stick: String? = null,
+                    /** m150: the game took this stick's key back twice: the add-on no longer binds it (the room says so) */
+                    val taken: Boolean = false,
+                    /** m155 (the user, 2026-11-13: "L3 and R3 should show the wow default options on them by default"): an empty stick's
+                     *  GAME binding (the doc's gd / gn / gi: the action, its name, an icon fileID or 0), shown until one of ours is put */
+                    val game: Bind? = null)
     /** m13 START ATTACK ON CAST (the user 2026-10-01): [on]; [n] buttons converted; [full] / [user] / [refused] buttons left plain (no
      *  Character Macro free / a macro of that name is the user's own / the game refused); [pending] waits for the fight to end; [colOn] /
      *  [colOff] the `spells` row's columns Home's Settings room taps (no-action notes, idempotent) */
@@ -120,6 +127,8 @@ object PadMapModel {
         val faceCcColOff: Int? = null,
         /** m33 the Extra tab's mounts and bag items, after the commands, in the addon's order (the "extra" pad row counts alike) */
         val binds: List<Bind> = emptyList(),               // m34: after the commands
+        /** m150 STICK BUTTONS: L3 / R3 of the bare set and ZL (the document's `sticks`, each with its set) */
+        val sticks: List<PadSet> = emptyList(),
         val mounts: List<Extra> = emptyList(),
         val items: List<Extra> = emptyList(),
         /** m49 A / X / Y's FIGHT SWITCH (an attack / auto-repeat running, or combat; the user on test20: the D-pad's In-combat picture
@@ -208,6 +217,14 @@ object PadMapModel {
                 if (key.isEmpty()) null
                 else Command(key, o.optString("n", key), o.optInt("i", 0), o.optBoolean("made", false), intOrNull(o, "mi"), textOrNull(o, "b"))
             },
+            sticks = objects(m.optJSONArray("sticks")).mapNotNull { o ->
+                val p = o.optInt("pos", 0); val st = o.optInt("set", 0)
+                if (!isStick(p) || st !in 1..2) null
+                else PadSet(st, listOf(Slot(p, null, kind(o.optString("kind", "")), intOrNull(o, "id"), textOrNull(o, "n"), o.optInt("i", 0),
+                    key = textOrNull(o, "key"), ov = o.optBoolean("ov", false), stick = textOrNull(o, "stick") ?: stickWord(p), taken = o.optString("st", "") == "taken",
+                    game = textOrNull(o, "gd")?.takeIf { o.optString("kind", "") == "none" }
+                        ?.let { Bind(it, textOrNull(o, "gn") ?: it, o.optInt("gi", 0)) })))
+            }.groupBy { it.set }.map { (st, l) -> PadSet(st, l.flatMap { it.slots }) },
             binds = objects(m.optJSONArray("binds")).mapNotNull { o ->
                 o.optString("key", "").takeIf { it.isNotEmpty() }?.let { Bind(it, o.optString("n", it), o.optInt("i", 0)) }
             },
@@ -334,7 +351,21 @@ object PadMapModel {
     }
 
     /** The button at a set (1-4) and position (1-8); null off the map. */
-    fun slot(map: Map, set: Int, pos: Int): Slot? = map.sets.firstOrNull { it.set == set }?.slots?.firstOrNull { it.pos == pos }
+    fun slot(map: Map, set: Int, pos: Int): Slot? =
+        if (isStick(pos)) map.sticks.firstOrNull { it.set == set }?.slots?.firstOrNull { it.pos == pos } ?: Slot(pos, null, Kind.NONE, null, null, 0, stick = stickWord(pos))
+        else map.sets.firstOrNull { it.set == set }?.slots?.firstOrNull { it.pos == pos }
+
+    /** m150 STICK BUTTONS (GitHub #78, PadMap m150 / PadTabCtl p49): L3 = position 9, R3 = 10 (WoW Defaults only); m157 / p52: a spell,
+     *  a command, an item or a mount too (the add-on's own button per stick), as well as the game bindings */
+    const val POS_L3 = 9
+    const val POS_R3 = 10
+    val STICKS = listOf(POS_L3, POS_R3)
+    fun isStick(pos: Int) = pos == POS_L3 || pos == POS_R3
+    fun stickWord(pos: Int) = if (pos == POS_L3) "L3" else "R3"
+    /** the game's glyph for a stick press */
+    fun stickGlyph(pos: Int) = if (pos == POS_L3) "gen_lstickin" else "gen_rstickin"
+    /** a finger's pick of stick [pos]: the one-shot talentn 38 pick, then button code 1 / 2 (PadTabCtl p49 reads them as 9 / 10) */
+    fun stickCells(pos: Int): List<Pair<String, Int>> = listOf(ROW_LAYOUT to COL_COMMANDS_FROM_12, ROW to colPos(pos - 8))
 
     /** The button can be changed: not one of the game's fixed four, and no fight on. */
     fun changeable(map: Map, set: Int, pos: Int): Boolean =
@@ -343,7 +374,10 @@ object PadMapModel {
     /** What a put would REPLACE on that button (the Replace box names it); null when the button is empty. */
     fun replaces(map: Map, set: Int, pos: Int): Slot? = slot(map, set, pos)?.takeIf { it.kind != Kind.NONE && it.kind != Kind.FIXED }
 
-    fun command(map: Map, key: String): Command? = map.commands.firstOrNull { it.key == key }
+    /** a command as the room shows it: the spell radials' wear their radial's own name and icon (RadialMeta installs it) */
+    @Volatile var dress: (Command) -> Command = { it }
+
+    fun command(map: Map, key: String): Command? = map.commands.firstOrNull { it.key == key }?.let(dress)
 
     /** Putting this command makes a NEW macro (one of the user's General Macros; the room says so and asks first). */
     fun needsMacro(map: Map, key: String): Boolean = command(map, key)?.made == false
@@ -381,7 +415,7 @@ object PadMapModel {
             ?: slot.key?.let { Command(it, slot.name ?: it, slot.icon, true, null) }                // m41: the overlay's own words
         slot.kind != Kind.MACRO || slot.id == null -> null
         else -> map.commands.firstOrNull { it.macroIndex == slot.id }
-    }
+    }?.let(dress)
 
     // ---------------------------------------------------------------- m41 S1: THE CLEAN-UP (`padclean`)
 
@@ -457,6 +491,17 @@ object PadMapModel {
          *  clockwise, as Home's wheel */
         val rpage: Int = 1,
         val rad: List<Int> = emptyList(),
+        /** p40 SEVERAL SPELL RADIALS (Radial.lua q2; the user's picks 2026-11-08): [rpage] = the radial on show (its slot 1..6, 0 = none),
+         *  [rad] its spells in order; the radials that exist ([rslots]), the plates' cursor ([rplate], 1-based over the radials + New), the
+         *  settings row ([rrow]: 1 Name, 2 Icon, 3 Opening, 4 Delete), an open Name / Icon box ([rbox] "rname" / "ricon"), the add-on's
+         *  last event ([rev], numbered [revn]: "name", "icon", "mode", "key:<PAD...>"), a Delete waiting for its second A ([rdel]) */
+        val rslots: List<Int> = emptyList(),
+        val rplate: Int = 1,
+        val rrow: Int = 1,
+        val rbox: String? = null,
+        val revn: Int = 0,
+        val rev: String? = null,
+        val rdel: Boolean = false,
         /** p29 (f-combat-forms): the In combat tab's chosen form (its spell id; null = Caster) and the form row's cursor (0 = Caster) */
         val form: Int? = null,
         val fcur: Int? = null,
@@ -485,7 +530,7 @@ object PadMapModel {
             focus = c.optString("focus", "buttons").ifEmpty { "buttons" },
             set = c.optInt("set", 1).coerceIn(1, 4),
             shown = c.optInt("shown", c.optInt("set", 1)).coerceIn(1, 4),
-            pos = c.optInt("pos", 1).coerceIn(1, 8),
+            pos = c.optInt("pos", 1).coerceIn(1, 10),             // m150: 9 / 10 = L3 / R3
             page = c.optInt("page", 1).coerceIn(1, 3),
             chooser = ch?.let { Chooser(it.optString("list", "spells").let { l -> if (l == "commands") "extra" else l },
                 it.optInt("row", 1).coerceAtLeast(1), textOrNull(it, "id"), it.optBoolean("tabs", false),
@@ -493,14 +538,14 @@ object PadMapModel {
             box = bx?.let { b -> textOrNull(b, "kind")?.let { Box(it, textOrNull(b, "what"), textOrNull(b, "thing")) } },
             swap = c.optString("lay", "swap") != "plain",
             note = textOrNull(c, "note"),
-            view = when (c.optString("view", "normal")) { "combat" -> "combat"; "ds" -> "ds"; "radial" -> "radial"; "party" -> "party"; else -> "normal" },
+            view = when (c.optString("view", "normal")) { "combat" -> "combat"; "ds" -> "ds"; "radial" -> "radial"; "party" -> "party"; "castbar" -> "castbar"; else -> "normal" },
             tcur = c.optInt("tcur", 1).coerceIn(1, TABS.size),
             sw = c.optInt("sw", 1).coerceAtLeast(1),
             scur = c.optInt("scur", 2).coerceIn(2, 4),
             dpos = c.optInt("dpos", 2).coerceIn(1, 4),
             carry = c.optJSONObject("carry")?.let { Carry(it.optInt("set", 1).coerceIn(1, 4), it.optInt("pos", 1).coerceIn(1, 8),
-                                                         it.optInt("page", 1).coerceIn(1, 3), textOrNull(it, "h")?.takeIf { h -> h == "m" || h == "r" }) },
-            rpage = c.optInt("rpage", 1).coerceIn(1, 3),
+                                                         it.optInt("page", 1).coerceIn(1, 6), textOrNull(it, "h")?.takeIf { h -> h == "m" || h == "r" }) },
+            rpage = c.optInt("rpage", 1).coerceIn(0, 6),
             rad = c.optJSONArray("rad")?.let { a -> List(minOf(8, a.length())) { i -> a.optInt(i, 0) } } ?: emptyList(),
             form = intOrNull(c, "form")?.takeIf { it > 0 },
             fcur = intOrNull(c, "fcur"),
@@ -511,13 +556,20 @@ object PadMapModel {
             ptouch = c.optInt("ptouch", 1).coerceIn(1, 2),
             srp = intOrNull(c, "srp")?.takeIf { it == 1 || it == 2 },
             srh = textOrNull(c, "srh")?.takeIf { it == "m" || it == "r" },
+            rslots = c.optJSONArray("rslots")?.let { a -> List(a.length()) { i -> a.optInt(i, 0) }.filter { it in 1..6 } } ?: emptyList(),
+            rplate = c.optInt("rplate", 1).coerceIn(1, 7),
+            rrow = c.optInt("rrow", 1).coerceIn(1, 4),
+            rbox = textOrNull(c, "rbox"),
+            revn = c.optInt("revn", 0),
+            rev = textOrNull(c, "rev"),
+            rdel = c.optBoolean("rdel", false),
         )
     }
 
     /** A note the addon writes for a TOUCH pick or action (the app's own): the app's open chooser or box stays. Any other note is the
      *  controller's, and the controller wins. */
     fun touchNote(note: String?): Boolean = note == null || note.startsWith("touch-") || note in setOf(
-        "layout", "enter", "leave", "put", "cleared", "spell-not-in-book", "stays-back", "fixed")
+        "layout", "enter", "leave", "put", "cleared", "spell-not-in-book", "stays-back", "fixed", "cb-tab")      // p53: the bar setting
 
     /**
      * Where button [pos] (1-8) is DRAWN in its diamond: 0 left, 1 up, 2 right, 3 down. The D-pad's 1-4 are left / up / right / down; the face
@@ -526,6 +578,7 @@ object PadMapModel {
      */
     fun drawnSpot(pos: Int, swap: Boolean): Int = when {
         pos <= 4 -> pos - 1
+        pos > 8 -> 3                                                    // m150: L3 / R3 sit low (PadDiamonds places them itself)
         !swap -> pos - 5
         else -> intArrayOf(1, 0, 3, 2)[pos - 5]
     }
@@ -601,9 +654,9 @@ object PadMapModel {
     const val ROW_EXTRA = "extra"
     fun extraCells(index: Int): List<Pair<String, Int>> = listOf(ROW_PADTAB to 6 + (index / 40).coerceIn(0, 2), ROW_EXTRA to index % 40)
     /** the tab's index (1-4) by its name */
-    fun tabOf(view: String) = when (view) { "ds" -> 2; "combat" -> 3; "radial" -> 4; "party" -> 5; else -> 1 }
-    /** the room's tabs in order (PadTabCtl's TABS; p33: the 5th, Party mode) */
-    val TABS = listOf("normal", "ds", "combat", "radial", "party")
+    fun tabOf(view: String) = when (view) { "ds" -> 2; "combat" -> 3; "radial" -> 4; "party" -> 5; "castbar" -> 6; else -> 1 }
+    /** the room's tabs in order (PadTabCtl's TABS; p33: the 5th, Party mode; p53: the 6th, the Cast bar, opened by padtab 39 then 29) */
+    val TABS = listOf("normal", "ds", "combat", "radial", "party", "castbar")
 
     /** The cells that put command [index] (1-based, the list's order): a pick first for 12 and up, then the ONE action */
     fun commandCells(index: Int): List<Pair<String, Int>> =

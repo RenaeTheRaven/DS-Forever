@@ -84,6 +84,9 @@ object NativeLogin {
     /** when this run's file was written (its lifetime goes to the log when it is deleted) */
     private var writtenAt = 0L
     private var flavorDir: File? = null
+    /** issue #231 (diagnostics only): this run's shadow Logs entry, for the add-ons' silence line */
+    fun shadowLogsLine(): String = AddonSilence.shadowLogs(flavorDir?.let { File(it, "Logs") },
+        { f -> Files.isSymbolicLink(f.toPath()) }, System.currentTimeMillis())
     private val main = Handler(Looper.getMainLooper())
     private var lifeMs = MAX_LIFE_MS
     private val timeout = Runnable { capCheck() }
@@ -122,6 +125,10 @@ object NativeLogin {
     @Volatile private var expiredUnread = false
     /** issues #132 / #42 / #57: what the client received before its first read of login.txt (main thread) */
     internal val preLogin = PreLoginTraffic()
+    /** issue #215 (diagnostics only): the client's traffic past its login screen and before the world, a line a busy minute */
+    internal val afterLogin = PreLoginTraffic(phase = "past the login screen, before the world")
+    /** issue #215: what the bottom screen shows (CompanionHost; main thread), added to [afterLogin]'s lines */
+    @Volatile var bottomState: (() -> String)? = null
 
     /** the private shadow root (Wine's G:) */
     fun shadowRoot(ctx: Context) = File(ctx.filesDir, "gameroot")
@@ -135,7 +142,7 @@ object NativeLogin {
         clear()
         consumed = false; firstReadAt = 0L; pastLogin = false; quietFor = 0; quiet = false   // a new client run
         outOfWorld = false; reachedWorld = false; lifeMs = MAX_LIFE_MS; appCtx = ctx.applicationContext; changed()
-        playAt = System.currentTimeMillis(); windowArmed = false; windowSeen = false; expiredUnread = false; main.post { preLogin.reset() }
+        playAt = System.currentTimeMillis(); windowArmed = false; windowSeen = false; expiredUnread = false; main.post { preLogin.reset(); afterLogin.reset() }
         downloading = false; holdFrom = 0L; capHeld = false
         val root = shadowRoot(ctx).apply { mkdirs() }
         val isLinkF = { f: File -> Files.isSymbolicLink(f.toPath()) }
@@ -216,6 +223,10 @@ object NativeLogin {
             worldTraffic(rxBytes); onTrafficSample?.invoke(rxBytes, txBytes)
             val counts = PreLoginTraffic.counts(firstReadAt > 0L, pastLogin, reachedWorld)
             if (counts) preLogin.add(rxBytes, System.currentTimeMillis())?.let { logEvent(it) }
+            // issue #215: past the login screen and still downloading before the world: the minute's line and the bottom screen's state
+            if (PreLoginTraffic.countsAfter(firstReadAt > 0L, pastLogin, reachedWorld)) afterLogin.add(rxBytes, System.currentTimeMillis())?.let {
+                logEvent(it + (runCatching { bottomState?.invoke() }.getOrNull()?.let { s -> "; bottom screen: $s" } ?: ""))
+            }
             // issue #132: downloading before the login screen holds the unread file's cap and says "Game downloading"
             val d = PreLoginTraffic.downloading(counts, preLogin.busy)
             if (d) holdFrom = System.currentTimeMillis()
@@ -389,12 +400,19 @@ object NativeLogin {
     fun logEvent(s: String) {
         Log.i(TAG, s)
         DiagLog.event("signin", s)            // the sign-in's step names only (never anything typed): the problem report's log
-        try {
-            val f = File("/sdcard/WowCompanion/logs/login.log")
-            f.appendText("${stamp(System.currentTimeMillis())} $s\n")
-            if (++logWrites % 25 == 0) cap(f)
-        } catch (_: Throwable) {}
+        // issue #230 (1.0.28 ANR while the game loaded, right after "sign-in: keyboard (bottom) closed" was logged on the main thread):
+        // the append went through FUSE (/sdcard) on the caller's thread, often the main one, while the game read its data through the
+        // same FUSE. Now the line is queued and the background log writer appends it (BgAppend, as lat.log / taps.log in 1.0.29)
+        runCatching { loginLog.add("${stamp(System.currentTimeMillis())} $s") }
     }
+
+    /** login.log's writer: appends on BgAppend's thread, the cap kept there */
+    private val loginLog = BgAppend({ File("/sdcard/WowCompanion/logs/login.log") }, write = { f, lines, _ ->
+        f.parentFile?.let { if (!it.isDirectory) it.mkdirs() }
+        f.appendText(lines.joinToString("\n", postfix = "\n"))
+        logWrites += lines.size
+        if (logWrites >= 25) { logWrites = 0; cap(f) }
+    })
 
     /** the user's ruling 2026-10-12 ("Keep it, capped"): past [LOG_MAX] lines the file keeps its last [LOG_KEEP] (atomic swap) */
     private const val LOG_MAX = 400
