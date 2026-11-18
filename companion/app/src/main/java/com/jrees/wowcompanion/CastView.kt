@@ -99,6 +99,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         var drawAlpha = 255        // Party mode: the whole slot faded (an Empty place: the ring alone at 45 %)
         var kitAlpha = 255         // Party mode: the kit picture alone faded (an arrow the box cannot take: 28 %)
         var noBadge = false        // Party mode: the D-pad slots are emptied (no glyph badge, no toolbar mark)
+        var talk = false           // the D-pad toolbar's Chat: hold to talk's microphone shows on it ([talk])
         var bmp: Bitmap? = null
         var shader: BitmapShader? = null
         val empty get() = k.isEmpty()
@@ -141,6 +142,16 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         /** m71: each place's spell id (0 = none): the out-of-mana look */
         val ids = IntArray(8)
         val cell = arrayOfNulls<Int>(8); val auto = arrayOfNulls<Int>(8)
+        /** ActionBar pa1 / Quests q62 (the user, 2026-11-16: "hunters need to be able to visually see when their pets abilities are
+         *  active like growl, and a way to turn it off from those radials"): a pet command's mode on ([act]: the gold ring); a pet
+         *  spell that MAY cast itself ([autoA]: the game's corners), that does ([autoOn]: the marching shine), its pet bar [slot] */
+        val act = BooleanArray(8); val autoA = BooleanArray(8); val autoOn = BooleanArray(8); val slot = IntArray(8)
+        /** ClassPetKeys (the user, 2026-11-16: "use the face buttons without having to select the attack to toggle the attack on and
+         *  off"; 2026-11-16 again: "the glyph locations on this bar should match where they actually are on the controller"): the place
+         *  on each wheel spot (top / right / bottom / left, -1 none; all -1 = no pet ability that may cast itself: not a class pet
+         *  wheel) - the face button physically there toggles it; [at] = when this layout came (uptime ms): a PetAuto document after it
+         *  says what changed since */
+        var keys: IntArray = IntArray(ClassPetKeys.SPOTS) { -1 }; var at = 0L
         /** b-class-radial-slots: the places it HAS, in order: only these are drawn, evenly round the wheel */
         val order: List<Int> get() = (0 until 8).filter { has[it] }
         /** place [i]'s angle on the wheel (degrees, 0 = the top, clockwise) */
@@ -156,9 +167,11 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private var drawCollapsed = false
     /** the right stick's eighth (0 = top, clockwise), -1 at rest: the radial's pointed-at place */
     private var stickSector = -1
-    /** b-class-radial-slots: the right stick as a vector (x right +, y down +), for the evenly spaced class wheel */
-    private var stickX = 0f
-    private var stickY = 0f
+    /** b-class-radial-slots: the aiming stick as a vector (x right +, y down +), for the evenly spaced class wheel; f-class-wheel-sticks
+     *  (the user 2026-11-16: "I think that either stick should work those wheels."): EITHER stick's, by [classAim]'s rule (0, 0 = none) */
+    private val classAim = ClassAim(CLASS_NEUTRAL)
+    private val stickX get() = classAim.aimX
+    private val stickY get() = classAim.aimY
     /** the place of [r] the right stick points at now (its evenly spaced slices), -1 = none */
     private fun pointedPlace(r: Radial): Int {
         previewPointed?.let { return it }
@@ -182,6 +195,11 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private var swingKind = -1
     private var swingStartMs = Double.NaN
     private var swingDurMs = 0.0
+    /** sw-dual (the user, 2026-11-16: "Dual weilding needs split swing timers for each weapon"): the OFF hand's swing (hudS.so, sent
+     *  only while dual wielding; hudS.sw is then the main hand's) on the same clock, NaN = none; [offFlashAt] its own restart flash */
+    private var offStartMs = Double.NaN
+    private var offDurMs = 0.0
+    private var offFlashAt = 0L
     /** the cast bar: start / end on the app clock in ms (NaN = no cast), channel = drains instead of fills */
     private var castStartMs = Double.NaN
     private var castEndMs = 0.0
@@ -207,7 +225,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
      * divider, so the page always has one line. Only drawn in the band layouts.
      */
     var bottomLine = false
-        set(v) { if (field != v) { field = v; invalidate() } }
+        set(v) { if (field != v) { field = v; invalidate(); onCastState?.invoke() } }   // feat/wk-itemcast: the rooms' bar re-asks [ownCastBarShown]
     /**
      * b-cast-any (the user on test9: "the cast bar doesn't play when like, opening container or using the hearthstone"): out of the
      * combat takeover the line is the CAST BAR ONLY - drawn while one of the player's casts (any: an item, an object, a profession)
@@ -376,6 +394,121 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         set(v) { if (field != v) { field = v; invalidate() } }
     private val barBtns = arrayOfNulls<Btn>(2)
 
+    /**
+     * HOLD TO TALK ON THE TOOLBAR'S CHAT (the user, 2026-11-16: "usage and chat indicated by a mic symbol on the toolbar and the color of
+     * the chat is the mic"; [HoldTalk]): null = the switch off (the Chat picture alone). [TalkFace.Mode.READY] = a small microphone on the
+     * picture's corner in the last used chat's colour; LISTEN = a big microphone in its place, a halo following the voice's level; WORK
+     * = the words being worked out (dimmed); NO_VOICE = no voice model (dimmed, the line says where to get one). The host sets it.
+     */
+    data class TalkFace(val mode: Mode, val colour: Int, val level: Float = 0f) { enum class Mode { READY, LISTEN, WORK, NO_VOICE } }
+    var talk: TalkFace? = null
+        set(v) { if (field != v) { field = v; invalidate() } }
+
+    /**
+     * HOLD TO TALK'S LINE under the D-pad: the chat's header ([prefix], "Party: ") in its [colour], the [words]; [ask] = "Show, then A
+     * sends": the A and B glyphs at its end (A sends, B drops); a [note] (sent, refused, no voice) in plain words; [alpha] its fade
+     */
+    data class TalkLine(val prefix: String, val colour: Int, val words: String, val ask: Boolean = false, val note: Boolean = false,
+                        val alpha: Int = 255)
+    var talkLine: TalkLine? = null
+        set(v) {
+            if (field == v) return
+            field = v
+            if (v == null) talkLineBox.setEmpty()
+            // Home draws the line over its page, under this band (HomeView.dispatchDraw): the page redraws
+            var p = parent
+            while (p is View) { p.invalidate(); p = p.parent }
+        }
+    /** where the line was last drawn, in the drawing page's px (the tests; empty = none) */
+    val talkLineBox = RectF()
+
+    private val pTalk by lazy { UiKit.bodyPaint(26f) }
+    private val pTalkDisc = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    /** the big microphone in the Chat slot's place (not [TalkFace.Mode.READY]); returns the next frame's delay */
+    private fun drawTalkBig(c: Canvas, cx: Float, cy: Float, size: Float, t: TalkFace, now: Long): Long {
+        val listen = t.mode == TalkFace.Mode.LISTEN
+        if (listen) {
+            // the halo: the voice's level, and a slow breath so a quiet room still shows it listens
+            val breath = 0.5f + 0.5f * sin(2.0 * Math.PI * (now % 1200L) / 1200.0).toFloat()
+            val r = size * (0.30f + 0.10f * t.level.coerceIn(0f, 1f) + 0.03f * breath)
+            pTalkDisc.style = Paint.Style.FILL
+            pTalkDisc.color = t.colour; pTalkDisc.alpha = (70 + 110 * t.level.coerceIn(0f, 1f)).toInt()
+            c.drawCircle(cx, cy, r, pTalkDisc)
+        }
+        pTalkDisc.style = Paint.Style.FILL; pTalkDisc.color = Color.argb(200, 8, 6, 4)
+        c.drawCircle(cx, cy, size * 0.27f, pTalkDisc)
+        val a = when (t.mode) { TalkFace.Mode.LISTEN -> 255; TalkFace.Mode.WORK -> 150; else -> 95 }
+        VoiceUi.mic(c, cx, cy + size * 0.02f, size * 0.42f, t.colour, alpha = a)
+        return if (listen) 33L else Long.MAX_VALUE
+    }
+
+    /** READY: the small microphone on the Chat picture's lower-left corner, in the chat's colour */
+    private fun drawTalkBadge(c: Canvas, cx: Float, cy: Float, iconHalf: Float, t: TalkFace) {
+        val r = iconHalf * 0.40f
+        val bx = cx - iconHalf * 0.58f; val by = cy + iconHalf * 0.58f
+        pTalkDisc.style = Paint.Style.FILL; pTalkDisc.color = Color.argb(230, 8, 6, 4)
+        c.drawCircle(bx, by, r, pTalkDisc)
+        pTalkDisc.style = Paint.Style.STROKE; pTalkDisc.strokeWidth = maxOf(1.5f, r * 0.12f); pTalkDisc.color = Theme.bronze
+        c.drawCircle(bx, by, r, pTalkDisc)
+        VoiceUi.mic(c, bx, by + r * 0.06f, r * 1.25f, t.colour)
+    }
+
+    /**
+     * the line under the D-pad, drawn by the page this band stands in (Home: over its chat, under the band; this view is only as tall as
+     * its buttons): [ox] / [oy] = this view's place on [c], [maxRight] the page's right edge
+     */
+    fun drawTalkLine(c: Canvas, ox: Float, oy: Float, maxRight: Float) {
+        talkLineBox.setEmpty()
+        val l = talkLine ?: return
+        if (l.alpha <= 0 || hud == null || layout == Layout.FULL || k <= 0f) return
+        var bot = 0f; var left = Float.MAX_VALUE
+        for (pos in 0 until 4) {
+            bandSlot(pos, bandBox); val hs = bandBox[2] / 2f
+            bot = max(bot, oy + bandBox[1] + hs); left = min(left, ox + bandBox[0] - hs)
+        }
+        val h = TALK_LINE_H
+        val glyph = h * 0.66f
+        val pad = 16f
+        val icon = h * 0.62f
+        val pre = l.prefix                         // the chat's own header, in the app's language already (ChatView.prefixFor)
+        val preW = if (l.note) 0f else pTalk.measureText(pre)
+        val tail = if (l.ask) 2 * (glyph + 8f) + 6f else 0f
+        val x = maxOf(12f, left)
+        val maxW = maxRight - 12f - x
+        var words = if (l.note) Tr.t(l.words) else l.words
+        val room = maxW - pad * 2 - icon - 10f - preW - tail
+        if (pTalk.measureText(words) > room) {
+            val n = pTalk.breakText(words, true, (room - pTalk.measureText("…")).coerceAtLeast(0f), null)
+            words = words.substring(0, n).trimEnd() + "…"
+        }
+        val w = pad * 2 + icon + 10f + preW + pTalk.measureText(words) + tail
+        val y = bot + 10f
+        val box = RectF(x, y, x + w, y + h)
+        talkLineBox.set(box)
+        val layer = l.alpha < 255
+        if (layer) c.saveLayerAlpha(RectF(box.left - 4f, box.top - 4f, box.right + 4f, box.bottom + 4f), l.alpha)
+        pTalkDisc.style = Paint.Style.FILL; pTalkDisc.color = Color.argb(245, 6, 6, 10)
+        c.drawRect(box.left + 4f, box.top + 4f, box.right - 4f, box.bottom - 4f, pTalkDisc)
+        UiKit.border(c, box, "border_tooltip", 18f, Color.rgb(120, 120, 120))
+        VoiceUi.mic(c, box.left + pad + icon / 2f, box.centerY(), icon, l.colour, alpha = if (l.note) 170 else 255)
+        val base = box.centerY() - (pTalk.ascent() + pTalk.descent()) / 2f
+        var tx = box.left + pad + icon + 10f
+        if (!l.note) { pTalk.color = l.colour; c.drawText(pre, tx, base, pTalk); tx += preW }
+        pTalk.color = if (l.note) Theme.textDim else l.colour
+        c.drawText(words, tx, base, pTalk)
+        if (l.ask) {
+            val gx = box.right - pad / 2f - glyph / 2f
+            UiKit.pad(c, UiKit.backGlyph(), gx, box.centerY(), glyph)
+            UiKit.pad(c, aGlyphName(), gx - glyph - 8f, box.centerY(), glyph)
+        }
+        if (layer) c.restore()
+    }
+
+    private fun aGlyphName(): String = when (CastSettings.buttonLayout) {
+        CastSettings.ButtonLayout.XBOX -> "ltr_a"; CastSettings.ButtonLayout.PLAYSTATION -> "shp_cross"; else -> "rev_a"
+    }
+
     private fun roomOverride(li: Int, src: Int): Btn? {
         if (barArrows && li == N && (src == 0 || src == 2)) {
             val i = src / 2
@@ -390,7 +523,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             // PadMap m29 ("DS WoW toolbar", the user's D-pad layout): the same pictures as Home's bar
             when (what) {
                 "map" -> kit = "ricon_map"
-                "chat" -> kit = "ricon_chat"
+                "chat" -> { kit = "ricon_chat"; talk = true }
                 // the Home disc's swirl, as the Home button draws it, filling the tile (user 10-06: "made a bit larger")
                 "home" -> { kit = "home_stone_rough"; kitCut = true; kitScale = 0.95f }   // the bar Home button's own face, 1:1 (user 10-06)
                 // the consumables radial (user 10-06: "should look like a little mini Radial wheel")
@@ -427,12 +560,26 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private var gcdDurS = Double.NaN
     private val fightCdDur = LongArray(8)
 
-    /** remaining fraction of fight face [src]'s cooldown, or -1 */
+    /** remaining fraction of fight face [src]'s cooldown, or -1. PadMap m165: a macro using an ITEM there ([fightItems]) has the
+     *  item's cooldown from the `itemcd` document ([ItemCd]: the same sweep the bags and the item wheel draw) */
     private fun fightCdLeft(src: Int, now: Long): Float {
-        val d = fightCdDur[src]; if (d <= 0L) return -1f
+        val d = fightCdDur[src]
+        if (d <= 0L) {
+            val item = fightItems?.get(src + 1) ?: return -1f
+            val len = ItemCd.len(item); val l = ItemCd.left(item)
+            return if (len > 0.0 && l > 0.0) (l / len).toFloat().coerceIn(0f, 1f) else -1f
+        }
         val left = fightCdStart[src] + d - now
         return if (left > 0L) (left.toFloat() / d).coerceIn(0f, 1f) else -1f
     }
+
+    /**
+     * PadMap m165 (the user, 2026-11-16: "when using show tooltip on a macro it doesn't actually show the GCD when using it"): base-set
+     * game position 1..8 -> the item a macro drawn there as a fight thing uses now (HomeFightFace.items); its sweep is the item's own
+     */
+    var fightItems: Map<Int, Int>? = null
+        set(v) { if (field != v) { field = v; invalidate() } }
+    init { ItemCd.onChange { postInvalidate() } }
 
     /**
      * THE D-PAD'S IN-COMBAT SPELLS (Track C; the user after test15: "The DS toolbar buttons are still not changing in combat like they
@@ -678,6 +825,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             field = v
             if (width > 0 && height > 0) applyGeometry(width, height)
             invalidate()
+            onCastState?.invoke()                       // feat/wk-itemcast: FULL draws no cast bar: the rooms' bar re-asks [ownCastBarShown]
         }
 
     private var k = 0f          // px per Blizzard UI unit
@@ -858,7 +1006,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             onButtons = { mask -> onButtons(mask) },
             onStick = { sec -> if (sec != stickSector) { stickSector = sec; invalidate() } },
             // b-class-radial-stick: Home's class layer is another view: it is told too (it was redrawn only at the open / close)
-            onStickVector = { st, x, y -> if (st == 1) { stickX = x; stickY = y; classStick() } },
+            // f-class-wheel-sticks (the user 2026-11-16, pick: "Both sticks aim, no walking"): both sticks reach the class wheel
+            onStickVector = { st, x, y -> classStick(st, x, y) },
         )
         ready = true
         refreshSettings()
@@ -971,11 +1120,19 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             r.names[i] = str(e.opt("n")) ?: ""
             r.icons[i] = when (val ic = e.opt("i")) { is Number -> ic.toInt(); else -> 0 }
             r.ids[i] = if (str(e.opt("k")) == "spell") ji(e.opt("id"), 0) else 0
-            // a pet command whose mode is on, or a pet spell that casts itself: the gold ring (UI Art)
+            // a pet command whose mode is on, or a pet spell that casts itself: lit (the chord's icon, ClassChord.iconOf)
             r.lit[i] = ji(e.opt("act"), 0) == 1 || ji(e.opt("auto"), 0) == 1
             r.cell[i] = ji(e.opt("c"), -1).takeIf { it in 0..39 }
             r.auto[i] = ji(e.opt("ac"), -1).takeIf { it in 0..39 }
+            // pa1: the mode's gold ring (UI Art) for a command; a pet spell's autocast in the game's own look
+            val pet = str(e.opt("k")) == "petspell"
+            r.act[i] = ji(e.opt("act"), 0) == 1
+            r.autoOn[i] = pet && ji(e.opt("auto"), 0) == 1
+            r.autoA[i] = pet && (ji(e.opt("aa"), 0) == 1 || r.autoOn[i])
+            r.slot[i] = ji(e.opt("slot"), 0)
         }
+        r.keys = ClassPetKeys.spots(r.has, r.autoA)
+        r.at = SystemClock.uptimeMillis()
         return r
     }
 
@@ -1094,7 +1251,17 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             if (!swingStartMs.isNaN() && ns > swingStartMs + 1.0) flash(FLASH_SWING)
             swingKind = ji(sw.opt("k"), 0); swingStartMs = ns; swingDurMs = jd(sw.opt("d")) * 1000.0
         }
+        // sw-dual: the off hand's own swing (absent = one hand: one line, as before)
+        val so = o.optJSONObject("so")
+        val os = if (so != null) toApp(jd(so.opt("s"))) else Double.NaN
+        if (so == null || os.isNaN()) offStartMs = Double.NaN
+        else {
+            val ns = os * 1000.0
+            if (!offStartMs.isNaN() && ns > offStartMs + 1.0) offFlashAt = SystemClock.elapsedRealtime()
+            offStartMs = ns; offDurMs = jd(so.opt("d")) * 1000.0
+        }
         // the cast bar (hudS.cs while a cast / channel runs; hudS.ce = how it ended, 2 s)
+        val wasStart = castStartMs; val wasEnd = castEndMs; val wasFlash = flashAtMs
         val cs = o.optJSONObject("cs")
         val cs0 = if (cs != null) toApp(jd(cs.opt("s"))) else Double.NaN
         val cs1 = if (cs != null) toApp(jd(cs.opt("e"))) else Double.NaN
@@ -1123,6 +1290,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             }
             castStartMs = Double.NaN
         }
+        // feat/wk-itemcast: a cast that began, moved, ended or flashed redraws the rooms' bar (its cast band, [drawRoomCast])
+        if (wasStart.compareTo(castStartMs) != 0 || wasEnd.compareTo(castEndMs) != 0 || wasFlash != flashAtMs) onCastState?.invoke()
         val bu = ji(o.opt("bu"), 1) != 0
         if (bu != barsUsable) { barsUsable = bu; setLayer(computeLayer()) }
         liveF = o.optJSONObject("F")
@@ -1352,16 +1521,19 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
     /** PadInput: the D-pad / face buttons held, bit n = drawn position n; main thread, on change */
     /** b-class-takeover: the right stick while the class wheel is open: the pointed slice follows; back in the middle = Tap + Release's
-     *  cast; a wheel already closed lets the controller go once the stick is back */
-    private fun classStick() {
+     *  cast; a wheel already closed lets the controller go once the stick is back. f-class-wheel-sticks (the user 2026-11-16: "I think
+     *  that either stick should work those wheels."): EITHER stick ([ClassAim]: the one moved last aims; one held since before the open
+     *  waits for the middle; a hand-over to the other stick casts nothing); the free waits for the right stick only (a held walk stick walks on) */
+    private fun classStick(st: Int, x: Float, y: Float) {
+        val ended = classAim.move(st, x, y)
         if (chordSide == ClassChord.NONE) {
-            if (classHeld && ClassChord.stickDeg(stickX, stickY, CLASS_NEUTRAL) == null) { removeCallbacks(freeLater); freeLater.run() }
+            if (classHeld && classAim.freeOk()) { removeCallbacks(freeLater); freeLater.run() }
             return
         }
         invalidate(); onClassStick?.invoke()
         val p = pointedNow()
-        if (p >= 0) { classLastPointed = p; return }
-        if (ClassChord.stickDeg(stickX, stickY, CLASS_NEUTRAL) != null) return
+        if (p >= 0) { if (p != classLastPointed) classLine = null; classLastPointed = p; return }   // aiming elsewhere: its name again
+        if (!ended) return
         val r = chordRadial()
         val was = classLastPointed; classLastPointed = -1
         if (was >= 0) classAct(classFlow.stickBack(::pickAOf, was), r)
@@ -1371,15 +1543,36 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         onPadButtons?.invoke(mask)
         onButtonsAlso?.invoke(mask)
         val down = mask and held.inv()
-        // b-class-takeover: A / B while the class wheel is open are the wheel's (the guest keeps them from the game)
-        if (chordSide != ClassChord.NONE && down != 0) {
+        // b-class-takeover: the presses while the class wheel is open are the wheel's (the guest keeps the eight buttons from the game)
+        val wheel = chordSide != ClassChord.NONE
+        if (wheel && down != 0) {
             val r = chordRadial()
-            if (PadInput.isHeld(down, PadInput.SLOT_FACE_RIGHT)) classAct(classFlow.b(), r)
-            else if (PadInput.isHeld(down, PadInput.SLOT_FACE_BOTTOM)) classAct(classFlow.a(::pickAOf, pointedNow()), r)
+            val keys = r?.keys ?: NO_KEYS
+            val swap = CastSettings.faceSwap
+            // B (the action, wherever the ABXY location puts it) goes back - except on a class pet wheel with an ability on B's
+            // spot, where B is that ability's toggle (ClassPetKeys.backToggles)
+            if (PadInput.isHeld(down, ClassPetKeys.BACK_BIT) && !ClassPetKeys.backToggles(keys, swap)) classAct(classFlow.b(), r)
+            else {
+                // PET AUTOCAST ON THE FACE BUTTONS (the user, 2026-11-16: "use the face buttons without having to select the attack to
+                // toggle the attack on and off? ... just flat out playing the animation or turning it off when toggling"; "Class pet
+                // wheel only"; 2026-11-16 again: "the glyph locations on this bar should match where they actually are on the
+                // controller" - "mainly whatever controller setting the user is currently using. where I am using nintento what you
+                // described wouldnt be right"): on a class pet wheel the face button PHYSICALLY on an ability's spot (top / right /
+                // bottom / left, under the ABXY location) toggles it at once - no aiming, the wheel stays open, nothing cast
+                // (ClassPetKeys.press); the D-pad nothing
+                val p = ClassPetKeys.press(keys, down, swap)
+                for (place in p.toggles) classAutoToggle(r, place)
+                // A: the pointed slice's cast (where the side picks with A) unless A's spot holds an ability; X: the pointed pet spell's
+                // autocast (pa1 / q62) only on a wheel with no pet ability of its own - a pet wheel's X is its spot's ability or nothing
+                if (p.aPick) classAct(classFlow.a(::pickAOf, pointedNow()), r)
+                else if (p.xPointed) classAutoToggle(r, pointedNow())
+            }
         }
         if (down != 0) {
             val now = SystemClock.elapsedRealtime()
-            for (pos in 0 until 8) if (down and (1 shl pos) != 0) { pressAtMs[pos] = now; predictCast(pos, now) }
+            // a press the open class wheel took (a toggle, a pick, B) never starts the predicted cast bar: it never reached the game's
+            // bars (and a pick that closed the wheel must not look like a bar press either)
+            for (pos in 0 until 8) if (down and (1 shl pos) != 0) { pressAtMs[pos] = now; if (!wheel) predictCast(pos, now) }
         }
         held = mask and 0xFF
         invalidate()
@@ -1958,7 +2151,10 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         if (!drawCollapsed) {
             val left = chordSide == ClassChord.LEFT                          // b-radial-exclusive: the latched side only
             val rad = when { left -> h.caL; chordSide == ClassChord.RIGHT -> h.caR; else -> null }
-            if (rad != null) drawRadial(c, rad, ox + (if (left) -75f else 70f) * k, oy, width.toFloat(), height.toFloat())
+            if (rad != null) {
+                drawRadial(c, rad, ox + (if (left) -75f else 70f) * k, oy, width.toFloat(), height.toFloat())
+                if (radialLive(rad)) next = min(next, now + 33L)               // q62: the autocast shine marches
+            }
         }
 
         if (grey) c.restore()
@@ -2242,7 +2438,10 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
         // ---- the D-pad toolbar's pictures (host-driven, PadMap m29): under the ring and the glyph badge
         if (b != null && b.wheel) UiKit.miniWheel(c, cx, cy, size * 0.4f)
-        b?.kit?.let { name ->
+        // hold to talk: while held (or working, or with no voice) the big microphone stands in the Chat picture's place
+        val talkNow = if (b?.talk == true) talk else null
+        if (talkNow != null && talkNow.mode != TalkFace.Mode.READY) next = min(next, drawTalkBig(c, cx, cy, size, talkNow, now))
+        b?.kit?.takeIf { talkNow == null || talkNow.mode == TalkFace.Mode.READY }?.let { name ->
             val bmp = if (b.kitCut) swirlCut(name) else UiKit.tex(name)
             if (bmp != null) {
                 val hs = size * b.kitScale / 2f
@@ -2332,6 +2531,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         if (!(drawCollapsed && keyText == null) && b?.noBadge != true) drawGlyphBadge(c, gx, gy, pos, keyText, outOfRange, pressed)
         // the companion mark: a small gold "two screens" tag in the lower-left corner (the slot drives the bottom screen)
         if (b != null && b.ds) drawDsMark(c, cx - iconHalf * 0.62f, cy + iconHalf * 0.62f, iconHalf * 0.34f)
+        if (talkNow != null && talkNow.mode == TalkFace.Mode.READY) drawTalkBadge(c, cx, cy, iconHalf, talkNow)
         return next
     }
 
@@ -2572,17 +2772,42 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
                 }
             }
             if (sel) aRadHi?.let { hl -> val hw = slot / 2f; drawBox(c, hl, px - hw, py - hw, px + hw, py + hw) }
-            if (has && r.lit[i]) {
+            // pa1 / q62: a pet spell that may cast itself: the game's corners, the marching shine while it does (live: PetAuto, then
+            // the layout's word); a command whose mode is on: the gold ring (UI Art)
+            if (has && r.autoA[i]) UiKit.autoCastRing(c, px, py, 56f * sc, classAutoOn(r, i))
+            else if (has && r.lit[i]) {
                 pStroke.color = Theme.gold; pStroke.strokeWidth = 4f * sc
                 c.drawCircle(px, py, 56f * sc, pStroke)
             }
+            // ClassPetKeys (the user, 2026-11-16: "the glyph locations on this bar should match where they actually are on the
+            // controller"): the button physically on this ability's spot, its glyph (the BUTTON GLYPHS set's picture of the action the
+            // ABXY location puts there) on every slice that has one - pointing no longer matters - on the SAME side of the icon as
+            // the spot (top: above, right: right ...); faint while a press would be refused
+            val k = r.keys.indexOf(i)
+            if (has && k >= 0) {
+                val off = CLASS_KEY_OFF * sc
+                val gx = px + off * CLASS_KEY_DX[k]; val gy = py + off * CLASS_KEY_DY[k]
+                classKeyGlyph(c, ClassPetKeys.glyph(k, CastSettings.faceSwap), gx, gy, CLASS_KEY_GLYPH * sc,
+                    if (previewPointed == null && classAutoRefusal(r, i) != null) 115 else 255)
+            }
         }
-        if (pointed in 0..7) {
+        // a toggle's refusal (q62's words) in the middle for a moment, else the pointed place's name; never in a Settings preview
+        val la = if (previewPointed == null) classLineAlpha() else 0f
+        val line = classLine
+        if (la > 0f && line != null) {
+            val p = radialName ?: UiKit.bodyPaint(30f, Color.WHITE).also { it.textAlign = Paint.Align.CENTER; radialName = it }
+            p.textSize = 30f * sc; p.alpha = (255 * la).toInt()
+            c.drawText(Tr.t(line), cx, cy + p.textSize / 3f, p)
+            p.alpha = 255
+        } else if (pointed in 0..7) {
             val p = radialName ?: UiKit.bodyPaint(30f, Color.WHITE).also { it.textAlign = Paint.Align.CENTER; radialName = it }
             p.textSize = 30f * sc
             c.drawText(Tr.t(r.names[pointed] ?: ""), cx, cy + p.textSize / 3f, p)
         }
     }
+
+    /** ClassPetKeys: a button's glyph [size] across at ([x], [y]): the game's face discs, the BUTTON GLYPHS set's */
+    private fun classKeyGlyph(c: Canvas, name: String, x: Float, y: Float, size: Float, alpha: Int) = UiKit.pad(c, name, x, y, size, alpha)
 
     /** p-bars-grey (CastDiag): the layer on show's buttons with something on them that the add-on calls not enabled */
     private fun diagEOff(h: Hud): Int {
@@ -2644,7 +2869,12 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     /** the app holds the controller for a class wheel now (its free not sent yet) */
     fun classHolding(): Boolean = classHeld
     private fun tapOf(side: Int) = if (side == ClassChord.LEFT) HomeSettings.classTapL else HomeSettings.classTapR
-    private fun pickAOf(side: Int) = if (side == ClassChord.LEFT) HomeSettings.classPickAL else HomeSettings.classPickAR
+    /** the side picks with A (Settings > Controller) - except on a class pet wheel with an ability on A's spot (ClassPetKeys.pickToggles,
+     *  under the ABXY location): there A never casts and the pick is Release's (Hold: letting the chord go casts the pointed slice;
+     *  Tap: the stick back in the middle) */
+    private fun pickAOf(side: Int) = (if (side == ClassChord.LEFT) HomeSettings.classPickAL else HomeSettings.classPickAR) &&
+        !ClassPetKeys.pickToggles(sideRadial(side)?.keys ?: NO_KEYS, CastSettings.faceSwap)
+    private fun sideRadial(side: Int): Radial? = when (side) { ClassChord.LEFT -> hud?.caL; ClassChord.RIGHT -> hud?.caR; else -> null }
     /** the open side's radial and the place the stick points at in it now */
     private fun pointedNow(): Int = chordRadial()?.let { pointedPlace(it) } ?: -1
     /** an act of the flow: a pick taps its cell (read before the close: [r] is the side's radial), then the open state follows */
@@ -2659,11 +2889,14 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     /** the open state changed: Home's mirror, the controller's hold (its free waits for the stick to come back, as the item wheel's) */
     private fun noteClassOpen() {
         val open = chordRadial() != null
+        // f-class-wheel-sticks: a stick held from before the open neither aims nor casts until back in the middle once
+        if (open && !classOpen) { classAim.open(); classLastPointed = -1 }
+        if (!open) classLine = null                                       // a refusal never outlives its wheel
         if (open != classOpen) { classOpen = open; onClassRadial?.invoke(open) }
         removeCallbacks(freeLater)
         if (open && !classHeld) { classHeld = true; onClassHold?.invoke(true) }
         if (!open && classHeld) {
-            if (ClassChord.stickDeg(stickX, stickY, CLASS_NEUTRAL) == null) freeLater.run() else postDelayed(freeLater, CLASS_FREE_MS)
+            if (classAim.freeOk()) freeLater.run() else postDelayed(freeLater, CLASS_FREE_MS)
         }
         invalidate()
     }
@@ -2721,8 +2954,74 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     fun classRadialCell(i: Int, auto: Boolean): Int? {
         val r = chordRadial() ?: return null
         if (i !in 0..7) return null
+        // q62: Home's long press: the flip shows at once (review: only when a cell will really be tapped); the buttons' answers when
+        // it cannot be (ClassPetKeys: the same toggle by touch or by button)
+        if (auto && r.has[i] && r.autoA[i]) {
+            classAutoRefusal(r, i)?.let { classSay(it); return null }
+            classAutoPressed(r, i)
+        }
         return if (auto) r.auto[i] else r.cell[i]
     }
+
+    /** pa1 / q62: place [i] of [r] casts itself, as shown now: a press not yet answered or the pet's live document (PetAuto), else the
+     *  class layout's word */
+    private fun classAutoOn(r: Radial, i: Int): Boolean =
+        r.slot[i].takeIf { it in 1..10 }?.let { PetAuto.on(it, r.names[i], SystemClock.uptimeMillis()) } ?: r.autoOn[i]
+
+    private fun classAutoPressed(r: Radial, i: Int) {
+        val s = r.slot[i].takeIf { it in 1..10 } ?: return
+        // review: the flip on THIS spell's slot (by its name), never on another pet's ability that now sits in the slot
+        val at = PetAuto.find(s, r.names[i])?.slot ?: (if (PetAuto.has(s)) return else s)
+        PetAuto.pressed(at, classAutoOn(r, i), SystemClock.uptimeMillis())
+        invalidate(); onClassStick?.invoke()
+    }
+
+    /** pa1 / q62: place [p]'s autocast toggled on the open class wheel - its button (ClassPetKeys: the one on its spot) or, on a wheel
+     *  with no pet ability of its own, X on the pointed place - through its classr autocast cell (16-23); the wheel stays open */
+    private fun classAutoToggle(r: Radial?, p: Int) {
+        if (r == null || p !in 0..7 || !r.has[p] || !r.autoA[p]) return
+        val col = r.auto[p]
+        android.util.Log.i("WCLOG", "class radial: autocast place ${p + 1} -> classr ${col ?: "none"}")
+        classAutoRefusal(r, p)?.let { classSay(it); return }
+        if (col == null) return
+        classAutoPressed(r, p)
+        onClassPick?.invoke(col)
+    }
+
+    /** q62's answers, as the pet's own wheel gives them (TargetRadialView.toggle): a PetAuto document newer than the wheel's layout says
+     *  the pet is gone or dead ("Not available here"), or no longer has the ability (another pet); no toggle cell built for it (a fight
+     *  changed the pet: "Not in combat"). Null = place [i] can be toggled */
+    private fun classAutoRefusal(r: Radial, i: Int): String? {
+        if (PetAuto.gone(r.at)) return "Not available here"
+        val lost = r.slot[i] in 1..10 && PetAuto.lost(r.slot[i], r.names[i], r.at)
+        if (lost || r.auto[i] == null) return if (PetAuto.fight) "Not in combat" else "Not available here"
+        return null
+    }
+
+    /** a toggle's refusal in the wheel's middle (in place of the pointed name): HomePauseView's line, its time and its fade */
+    private var classLine: String? = null
+    private var classLineAt = 0L
+    private fun classSay(s: String) { classLine = s; classLineAt = SystemClock.uptimeMillis(); invalidate(); onClassStick?.invoke() }
+    /** the refusal's alpha now (0..1), 0 = none showing */
+    private fun classLineAlpha(now: Long = SystemClock.uptimeMillis()): Float {
+        if (classLine == null) return 0f
+        val t = now - classLineAt
+        if (t < 0L || t > HomePauseView.LINE_MS + HomePauseView.LINE_FADE_MS) { classLine = null; return 0f }
+        return if (t <= HomePauseView.LINE_MS) 1f else 1f - (t - HomePauseView.LINE_MS).toFloat() / HomePauseView.LINE_FADE_MS
+    }
+
+    /** a class wheel is open now: its guest keeps the eight buttons from the game and the presses are the wheel's (the D-pad does
+     *  nothing there), so Home's Party mode box must not move on the D-pad meanwhile */
+    fun classRadialOpen(): Boolean = chordRadial() != null
+    /** the open class wheel's B (PadInput SLOT_FACE_RIGHT, wherever the ABXY location puts it) is the toggle of the pet ability on its
+     *  spot (ClassPetKeys.backToggles), not back: Home's B leaves it alone */
+    fun classBToggles(): Boolean = ClassPetKeys.backToggles(chordRadial()?.keys ?: NO_KEYS, CastSettings.faceSwap)
+
+    /** the open class wheel shows a marching autocast shine or a refusal's fade (Home's layer keeps redrawing it) */
+    fun classRadialLive(): Boolean = chordRadial()?.let { radialLive(it) } == true
+    private fun radialLive(r: Radial): Boolean =
+        (0 until 8).any { r.has[it] && r.autoA[it] && classAutoOn(r, it) } || PetAuto.waiting(SystemClock.uptimeMillis()) ||
+            classLineAlpha() > 0f
     /** a class radial exists for that chord (Home's hint while a module holds the controller) */
     fun hasClassRadial(left: Boolean): Boolean = (if (left) hud?.caL else hud?.caR) != null
 
@@ -2949,6 +3248,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private fun drawSwingLine(c: Canvas, now: Long): Long {
         val g = CastBarPlace.bar(castTop, width.toFloat(), height.toFloat())
         curBh = g[3] - g[1]; curPlate = castTop
+        if (dualShown(now)) return drawDualLines(c, now, g)
         c.save(); c.translate(g[0], g[3] - height)
         val r = drawSwingLineIn(c, now, g[2] - g[0])
         c.restore()
@@ -2956,13 +3256,100 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     }
     private var curBh = 0f
     private var curPlate = false
+
+    /**
+     * sw-dual (the user, 2026-11-16: "Dual weilding needs split swing timers for each weapon"): while dual wielding (hudS.so) and no cast
+     * shows, the bar's own box holds TWO swing lines - the main hand's on top, the off hand's a thinner, slightly dimmer line right under
+     * it ([SwingLine.rows]), each its own fill, spark, wait and restart flash, the same art. The box itself is unchanged, so nothing new
+     * covers a button (CastBarPlace's rule) and Home's layout never moves when the off hand comes or goes. A cast takes the whole box as
+     * before (both lines wait under it).
+     */
+    private fun dualShown(now: Long): Boolean {
+        val predicted = castStartMs.isNaN() && predOn && CastPredict.alive(predPressAt, now)
+        val fa = now - flashAtMs
+        val castFx = predicted || ((flashKind == FLASH_CAST || flashKind == FLASH_FAIL) && fa >= 0 &&
+            fa < (if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS))
+        return SwingLine.dual(swingOn && !castOnly && !roomPass && !into, now.toDouble(), castStartMs, castEndMs, castFx,
+            offStartMs, offDurMs, SWING_GRACE)
+    }
+    /** true for the length of the off hand's line: [drawCastBar] draws hudS.so's swing (and its own flash), never a cast */
+    private var offPass = false
+
+    private fun drawDualLines(c: Canvas, now: Long, g: FloatArray): Long {
+        val w = g[2] - g[0]
+        val r = SwingLine.rows(g[1], g[3], width / FRAME_W)
+        val full = curBh
+        curBh = r[1] - r[0]
+        c.save(); c.translate(g[0], r[1] - height)
+        var next = try { drawCastBar(c, now, w, Double.NaN, 0.0) } finally { c.restore() }
+        curBh = r[3] - r[2]
+        val save = c.save()
+        try {
+            c.translate(g[0], r[3] - height)
+            c.saveLayerAlpha(-8f, height - curBh - 8f, w + 8f, height + 8f, SwingLine.OFF_ALPHA)
+            offPass = true
+            next = min(next, drawCastBar(c, now, w, Double.NaN, 0.0))
+        } finally { offPass = false; c.restoreToCount(save); curBh = full }
+        return next
+    }
+
+    // ---------------------------------------------------------------- bags-de1: THE CAST BAR, PAINTED INTO ANOTHER ROOM
+    /**
+     * bags-de1 (the Disenchant grid; the user's list 2026-11-16: "The disenchant cast bar is visible"; the design: "Extract CastView's bar
+     * drawing into one painter fed by the same actionbar document ... Build it once"): Home's own cast bar - the same state (hudS.cs / ce,
+     * the predicted bar, the finish and interrupt flashes), the same art and the same drawing code - painted into [r] of someone else's
+     * canvas (the Bags room's Disenchant grid foot), as [drawSet] paints the bar's buttons for the Spellbook. The cast only: no swing, the
+     * name inside the bar. Home's own draw is unchanged ([into] false: the view's own width / height, pixel for pixel - CastBarGuardShotsTest).
+     * Returns the next redraw delay (0 = every frame, Long.MAX_VALUE = nothing runs). Draw only; main thread.
+     */
+    fun drawCastInto(c: Canvas, r: RectF, now: Long = SystemClock.elapsedRealtime()): Long {
+        if (r.width() <= 0f || r.height() <= 0f) return Long.MAX_VALUE
+        val bh0 = curBh; val pl0 = curPlate
+        into = true; intoW = r.width(); intoH = r.height()
+        curBh = r.height(); curPlate = false
+        val save = c.save()
+        try {
+            c.translate(r.left, r.top)
+            return drawSwingLineIn(c, now, r.width())
+        } finally {
+            c.restoreToCount(save)
+            into = false; curBh = bh0; curPlate = pl0
+        }
+    }
+
+    /** bags-de1: a cast this long ([ctMs]) starts NOW from a press the host saw elsewhere (the Disenchant grid's A): the pending bar at once,
+     *  the game's real start takes over, never confirmed = dropped ([CastPredict]); false = no prediction (instant, or a cast runs) */
+    fun predictFrom(ctMs: Int, now: Long = SystemClock.elapsedRealtime()): Boolean {
+        val casting = !castStartMs.isNaN() && now < castEndMs
+        if (ctMs > 0) predPressAt = now
+        if (!CastPredict.start(ctMs, casting, true)) return false
+        predOn = true; predStartMs = now.toDouble(); predEndMs = now.toDouble() + ctMs
+        invalidate()
+        return true
+    }
+
+    /** a cast, its prediction or its finish shows now (the host redraws a room's painted bar while true) */
+    fun castShowing(now: Long = SystemClock.elapsedRealtime()): Boolean {
+        if (!castStartMs.isNaN() && now < castEndMs + 100.0) return true
+        if (predOn && CastPredict.alive(predPressAt, now)) return true
+        val fa = now - flashAtMs
+        return (flashKind == FLASH_CAST || flashKind == FLASH_FAIL) && fa >= 0 && fa < (if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS)
+    }
+
+    /** [drawCastInto] is painting: the box's own size stands in for the view's (Home's draw: false, the view's own) */
+    private var into = false
+    private var intoW = 0f
+    private var intoH = 0f
+    private fun barW(): Float = if (into) intoW else width.toFloat()
+    private fun barH(): Float = if (into) intoH else height.toFloat()
+
     private fun drawSwingLineIn(c: Canvas, now: Long, w: Float): Long {
         // b-cast-bar-late: no real cast yet, a fresh prediction: the bar from the press, in its pending look
         val predicted = castStartMs.isNaN() && predOn && CastPredict.alive(predPressAt, now)
         if (predOn && !predicted && castStartMs.isNaN()) predOn = false               // never confirmed: dropped quietly
         val cStart = if (predicted) predStartMs else castStartMs
         val cEnd = if (predicted) predEndMs else castEndMs
-        if (predicted) c.saveLayerAlpha(-width.toFloat(), -height.toFloat(), 2f * width, 2f * height, CastPredict.PENDING_ALPHA)
+        if (predicted) c.saveLayerAlpha(-barW(), -barH(), 2f * barW(), 2f * barH(), CastPredict.PENDING_ALPHA)
         val nextPred = drawCastLine(c, now, w, cStart, cEnd, if (predicted) null else castName)
         if (predicted) c.restore()
         return if (predicted) 0L else nextPred
@@ -2975,7 +3362,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val shown = (!castStartMs.isNaN() && now < castEndMs + 100.0) ||
             ((flashKind == FLASH_CAST || flashKind == FLASH_FAIL) && fa >= 0 && fa < (if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS))
         if (name == null || !shown) return next
-        val s = width / FRAME_W
+        val s = barW() / FRAME_W
         val bh = curBh; val u = bh / 13f
         // the whole cast fades with the bar's finish (the game's FadeOutAnim)
         val a = if (flashKind == FLASH_CAST || flashKind == FLASH_FAIL) {
@@ -2986,13 +3373,13 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         if (curPlate) {
             tp.textSize = CastBarPlace.NAME_PX * s
             tp.setShadowLayer(2f * s, s, s, Color.BLACK); tp.alpha = ai
-            val pg = CastBarPlace.plate(castTop, w, height.toFloat(), tp.measureText(CastFx.fit(name, (CastBarPlace.PLATE_MAX - CastBarPlace.PLATE_PAD) * s) { tp.measureText(it) }), s)
+            val pg = CastBarPlace.plate(castTop, w, barH(), tp.measureText(CastFx.fit(name, (CastBarPlace.PLATE_MAX - CastBarPlace.PLATE_PAD) * s) { tp.measureText(it) }), s)
             val text = CastFx.fit(name, (CastBarPlace.PLATE_MAX - CastBarPlace.PLATE_PAD) * s) { tp.measureText(it) }
             val tb = aBarTextBox
             if (tb != null) drawBox(c, tb, pg[0], pg[1], pg[2], pg[3], ai)
             else { pSwing.color = Color.argb((200 * a).toInt(), 0, 0, 0); c.drawRoundRect(pg[0], pg[1], pg[2], pg[3], 8f * s, 8f * s, pSwing) }
             c.drawText(Tr.t(text), (pg[0] + pg[2]) / 2f, (pg[1] + pg[3]) / 2f - (tp.ascent() + tp.descent()) / 2f, tp)
-        } else if (restGap(s)) {
+        } else if (!into && restGap(s)) {
             // the user (test42): "when casting out of combat could we make the spell text appear above the bar with the same font size as in
             // combat?": the fight's TextBox plate and type, standing on the bar, centred in the free gap between the two button groups
             // (never over a button: the plate is at most the gap's width; the gap measured from the band's own slot boxes)
@@ -3002,7 +3389,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             val text = CastFx.fit(name, maxW - CastBarPlace.PLATE_PAD * s) { tp.measureText(it) }
             val pw = minOf(tp.measureText(text) + CastBarPlace.PLATE_PAD * s, maxW)
             val mx = (gapL + gapR) / 2f
-            val b0 = height - bh - 2f * s; val t0 = b0 - CastBarPlace.PLATE_H * s
+            val b0 = barH() - bh - 2f * s; val t0 = b0 - CastBarPlace.PLATE_H * s
             val tb = aBarTextBox
             if (tb != null) drawBox(c, tb, mx - pw / 2f, t0, mx + pw / 2f, b0, ai)
             else { pSwing.color = Color.argb((200 * a).toInt(), 0, 0, 0); c.drawRoundRect(mx - pw / 2f, t0, mx + pw / 2f, b0, 8f * s, 8f * s, pSwing) }
@@ -3011,11 +3398,75 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             tp.textSize = bh * CastFx.NAME_SIZE
             tp.setShadowLayer(1.5f * u, u, u, Color.BLACK); tp.alpha = ai
             val text = CastFx.fit(name, w - 2f * CastFx.NAME_PAD * s) { tp.measureText(it) }
-            c.drawText(Tr.t(text), w / 2f, height - bh / 2f - (tp.ascent() + tp.descent()) / 2f, tp)
+            c.drawText(Tr.t(text), w / 2f, barH() - bh / 2f - (tp.ascent() + tp.descent()) / 2f, tp)
         }
         return next
     }
     private var castNamePaint: Paint? = null
+
+    // ---------------------------------------------------------------- feat/wk-itemcast: the cast bar in the rooms
+    /**
+     * THE CAST BAR IN THE ROOMS (the user, 2026-11-16: "the cast bar for using Items from my bag or applying enchants is not visible"):
+     * this view is Home's; while a room shows it is parked out of sight, so a cast started from a room - an item used from Bags, the
+     * Character room's Enchant / kit pick / Feed Pet, a Spellbook or Macros cast, any item-target spell - had no bar on the bottom
+     * screen. The rooms' bar ([Strip]) draws it in its tracking band through [roomCastState] / [drawRoomCast]: the same hudS.cs / ce,
+     * the same art and motion (groove, gold fill and spark, a channel's drain, the uninterruptible fill, the finish glow, the
+     * interrupted bar and its shake), the CAST only (never the swing), the cast's name in the bar. Draw only, as [drawSet]: no input,
+     * no state change.
+     */
+    var onCastState: (() -> Unit)? = null
+    /** true for the length of one [drawRoomCast]: the bar leaves the swing out */
+    private var roomPass = false
+    private var roomNamePaint: Paint? = null
+
+    /** Home draws this cast bar itself now (on screen, its band layout, a layout to draw): the rooms' bar leaves it out */
+    fun ownCastBarShown(): Boolean = isShown && bottomLine && layout != Layout.FULL && hud != null && k > 0f && width > 0
+
+    /**
+     * review fix: when this view leaves the screen or comes back (a room opens, a Home module covers the band, Home returns) the answer
+     * of [ownCastBarShown] changes with no cast event, and the rooms' bar only redraws on one ([onCastState]) or on its own clock - which
+     * stops when the living Home disc is not drawn. Told here (with [layout] / [bottomLine]) so a cast already running moves to the
+     * rooms' bar at once, never left on neither.
+     */
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        onCastState?.invoke()
+    }
+
+    /** the rooms' cast band: 0 = nothing, 1 = a cast / channel runs, 2 = its finish or its interrupt plays (the bar fading out) */
+    fun roomCastState(now: Long = SystemClock.elapsedRealtime()): Int = RoomCast.state(now.toDouble(), castStartMs, castEndMs,
+        flashKind == FLASH_CAST || flashKind == FLASH_FAIL, now - flashAtMs, if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS)
+
+    /**
+     * The bar into [bar] (someone else's canvas, its px), the cast's name centred between [nameL] and [nameR] inside it (the game's
+     * Classic bar carries its name in the bar). Returns the next frame's delay in ms (0 = every frame), or -1 when there is nothing to draw.
+     */
+    fun drawRoomCast(c: Canvas, bar: RectF, nameL: Float, nameR: Float): Long {
+        val now = SystemClock.elapsedRealtime()
+        val st = roomCastState(now)
+        if (st == RoomCast.NONE || bar.width() <= 0f || bar.height() <= 0f) return -1L
+        val keepBh = curBh
+        val save = c.save()
+        roomPass = true; curBh = bar.height()
+        // drawCastBar lays the bar against this view's own bottom edge: moved so that edge is [bar]'s bottom
+        c.translate(bar.left, bar.bottom - height)
+        val next = try { drawCastBar(c, now, bar.width(), castStartMs, castEndMs) } finally {
+            c.restoreToCount(save); roomPass = false; curBh = keepBh
+        }
+        val name = castName
+        if (name != null && nameR - nameL > bar.height()) {
+            val fa = now - flashAtMs
+            val a = if (st == RoomCast.FINISH) CastFx.barAlpha(flashKind == FLASH_FAIL, fa) else 1f
+            val tp = roomNamePaint ?: UiKit.bodyPaint(20f, Color.WHITE).apply { textAlign = Paint.Align.CENTER }.also { roomNamePaint = it }
+            tp.textSize = bar.height() * RoomCast.NAME_SIZE
+            val u = bar.height() / 13f
+            tp.setShadowLayer(1.5f * u, u, u, Color.BLACK); tp.alpha = (a * 255f).toInt().coerceIn(0, 255)
+            // the game's own text (the spell's name): never through Tr.t (DSF translation = menus only)
+            val text = CastFx.fit(name, nameR - nameL) { tp.measureText(it) }
+            c.drawText(text, (nameL + nameR) / 2f, bar.centerY() - (tp.ascent() + tp.descent()) / 2f, tp)
+        }
+        return if (next == Long.MAX_VALUE) 0L else next.coerceAtLeast(0L)
+    }
     /** the free gap between the D-pad group's right edge and the face group's left edge (view px), set by [restGap] */
     private var gapL = 0f
     private var gapR = 0f
@@ -3035,12 +3486,15 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private fun drawCastBar(c: Canvas, now: Long, w: Float, castStartMs: Double, castEndMs: Double): Long {
         fun xAt(p: Float) = w * p
         val bh = curBh
-        val y0 = height - bh; val y1 = height.toFloat()
+        val y0 = barH() - bh; val y1 = barH()
         var next = Long.MAX_VALUE
-        val fa = now - flashAtMs
-        val flashLen = when (flashKind) { FLASH_SWING -> SWING_FLASH_MS; FLASH_FAIL -> CastFx.FAIL_MS; else -> CastFx.FINISH_MS }
-        val parts = SwingLine.parts(swingOn && !castOnly, now.toDouble(), castStartMs, castEndMs, swingStartMs, swingDurMs, SWING_GRACE,
-            flashKind != 0, flashKind == FLASH_SWING, fa, flashLen)
+        // sw-dual: the off hand's pass reads hudS.so and its own restart flash only (no cast, no cast flash)
+        val fa = if (offPass) now - offFlashAt else now - flashAtMs
+        val fk = if (!offPass) flashKind else if (offFlashAt > 0L && fa >= 0 && fa < SWING_FLASH_MS) FLASH_SWING else 0
+        val flashLen = when (fk) { FLASH_SWING -> SWING_FLASH_MS; FLASH_FAIL -> CastFx.FAIL_MS; else -> CastFx.FINISH_MS }
+        val parts = SwingLine.parts(swingOn && !castOnly && !roomPass && !into, now.toDouble(), castStartMs, castEndMs,
+            if (offPass) offStartMs else swingStartMs, if (offPass) offDurMs else swingDurMs, SWING_GRACE,
+            fk != 0, fk == FLASH_SWING, fa, flashLen)
         val flashing = parts.flash
         val casting = parts.cast
         val swingP = parts.swing
@@ -3054,11 +3508,11 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val cy = (y0 + y1) / 2f
         val inset = u
         // a finish fades the WHOLE bar as the game's FadeOutAnim / HoldFadeOutAnim do; an interrupt shakes it (InterruptShakeAnim)
-        val finishing = flashing && !casting && swingP < 0 && flashKind != FLASH_SWING
-        val barA = if (finishing) CastFx.barAlpha(flashKind == FLASH_FAIL, fa) else 1f
+        val finishing = flashing && !casting && swingP < 0 && fk != FLASH_SWING
+        val barA = if (finishing) CastFx.barAlpha(fk == FLASH_FAIL, fa) else 1f
         val layered = barA < 1f
         if (layered) c.saveLayerAlpha(0f, y0 - 30f * u, w, y1, (barA * 255f).toInt())
-        val shook = finishing && flashKind == FLASH_FAIL
+        val shook = finishing && fk == FLASH_FAIL
         if (shook) { val sh = CastFx.shake(fa); c.save(); c.translate(sh[0] * u, -sh[1] * u) }
         // the user (test42): "Is there any way that we could make the sides of the cast bar more rounded?": the whole bar - groove, fill,
         // spark, glows, the game's border - is cut to a pill (its ends a half-circle of the bar's own height), the art kit's pieces as before
@@ -3116,7 +3570,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             next = SWING_FRAME_MS
         }
         if (flashing) {
-            when (flashKind) {
+            when (fk) {
                 FLASH_CAST -> {
                     val ch = finishChannel
                     // the bar's FULL texture, then the Flash (the full glow, ADD) in over 0.2 s (FlashAnim)
@@ -3670,6 +4124,14 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         const val CLASS_FREE_MS = 1_500L
         /** b-class-free-gap: the free's tap waits this long after the last bumper / trigger change (the tap-timing rule, as LB's 180) */
         const val CLASS_TAP_GAP_MS = 180L
+        /** ClassPetKeys: a pet ability's button glyph on the class wheel, in the wheel's units (the icon is 98 across, the autocast ring
+         *  56 + 6 %): its size, and its centre's distance from the slot's centre toward the spot's side (CLASS_KEY_DX / DY: top, right,
+         *  bottom, left) - out past the ring, still inside the wheel's 520 box on the outer side */
+        const val CLASS_KEY_GLYPH = 46f
+        const val CLASS_KEY_OFF = 70f
+        private val CLASS_KEY_DX = floatArrayOf(0f, 1f, 0f, -1f)
+        private val CLASS_KEY_DY = floatArrayOf(-1f, 0f, 1f, 0f)
+        private val NO_KEYS = IntArray(ClassPetKeys.SPOTS) { -1 }
         // layers: the four trigger layers carry state, the three shoulder layers do not
         private const val N = 0; private const val LT = 1; private const val RT = 2; private const val LR = 3
         private const val FR = 4; private const val HO = 5; private const val SC = 6
@@ -3728,6 +4190,8 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
         private const val ATTACK_SPELL = 6603
         private const val STALE_MS = 20_000L
+        /** hold to talk's line under the D-pad, px tall */
+        const val TALK_LINE_H = 64f
         private const val TRIG_X = 76f           // frame px (1240 wide): a chip's centre under its bumper (UI Art)
         private const val TRIG_BOTTOM = 60f      // ... and its centre this far above the band's bottom
         private const val TRIG_W = 84f; private const val TRIG_H = 56f
@@ -4033,6 +4497,37 @@ internal object CastBarPlace {
     }
 }
 
+/**
+ * feat/wk-itemcast (the user, 2026-11-16: "the cast bar for using Items from my bag or applying enchants is not visible"): the rooms'
+ * cast band - WHEN it shows and WHERE it sits in the rooms' bar ([Strip]'s tracking band). Pure, checked off-device.
+ * Only while a cast or channel runs and through the game's own finish / interrupt (the bar fading out), never for a swing.
+ */
+internal object RoomCast {
+    const val NONE = 0; const val RUNNING = 1; const val FINISH = 2
+    /** the bar's height in the 34 px tracking band (a slim bar: the band's panel shows round it), its margin from the screen's sides */
+    const val BAR_H = 24f; const val SIDE = 8f
+    /** the name: a share of the bar's height; its margin from the bar's ends and from HOME's disc */
+    const val NAME_SIZE = 0.76f; const val NAME_PAD = 14f
+    /** frames while the bar moves (the swing timer's pace, the bar redrawn with the rooms' pictures) */
+    const val FRAME_MS = 33L
+
+    fun state(now: Double, castStart: Double, castEnd: Double, flashCast: Boolean, flashAge: Long, flashLen: Long): Int = when {
+        !castStart.isNaN() && castEnd > castStart && now < castEnd + 100.0 -> RUNNING
+        flashCast && flashAge >= 0 && flashAge < flashLen -> FINISH
+        else -> NONE
+    }
+
+    /**
+     * The bar in the tracking band ([top] its top, [tracks] its height, [w] the bar's width) as (left, top, right, bottom), and the name's
+     * span (left, right): the left of HOME's disc ([discL] = the disc's left edge with its ring), the bar running on behind the disc as
+     * the experience bar does.
+     */
+    fun place(w: Float, top: Float, tracks: Float, discL: Float): FloatArray {
+        val t = top + (tracks - BAR_H) / 2f
+        return floatArrayOf(SIDE, t, w - SIDE, t + BAR_H, SIDE + NAME_PAD, discL - NAME_PAD)
+    }
+}
+
 internal object SwingLine {
     data class Parts(val cast: Boolean, val swing: Double, val flash: Boolean, val wakeMs: Long)
 
@@ -4048,6 +4543,32 @@ internal object SwingLine {
         val wake = if (!cast && swingOn && swing < 0 && !swingStart.isNaN() && swingDur > 0.0 && now < swingStart)
             (swingStart - now).toLong().coerceAtLeast(1L) else Long.MAX_VALUE
         return Parts(cast, swing, flash, wake)
+    }
+
+    /** sw-dual: the off hand's line, a little dimmer than the main hand's (0..255) */
+    const val OFF_ALPHA = 200
+    /** sw-dual: the off hand's share of the box (after the gap) and the gap between the two lines, frame px */
+    const val OFF_SHARE = 0.4f
+    const val DUAL_GAP = 2f
+
+    /**
+     * sw-dual (the user, 2026-11-16: "Dual weilding needs split swing timers for each weapon"): two lines while an off-hand swing
+     * (hudS.so) is known and not long over, the swing line is on ([swingOn]) and no cast, its prediction or its finish / interrupt
+     * ([castFx]) shows; otherwise today's one line.
+     */
+    fun dual(swingOn: Boolean, now: Double, castStart: Double, castEnd: Double, castFx: Boolean, offStart: Double, offDur: Double,
+             grace: Double): Boolean {
+        if (!swingOn || castFx) return false
+        if (!castStart.isNaN() && now < castEnd + 100.0 && castEnd > castStart) return false
+        if (offStart.isNaN() || offDur <= 0.0) return false
+        return (now - offStart) / offDur <= 1.0 + grace
+    }
+
+    /** sw-dual: the bar's box [top]..[bottom] split in two: (main top, main bottom, off top, off bottom); [s] = view px per frame px */
+    fun rows(top: Float, bottom: Float, s: Float): FloatArray {
+        val gap = DUAL_GAP * s
+        val off = (bottom - top - gap) * OFF_SHARE
+        return floatArrayOf(top, bottom - off - gap, bottom - off, bottom)
     }
 }
 
@@ -4169,6 +4690,109 @@ internal object ClassChord {
         for (i in has.indices) if (has[i] && lit[i] && icons[i] > 0) return icons[i]
         for (i in has.indices) if (has[i] && icons[i] > 0) return icons[i]
         return 0
+    }
+}
+
+/**
+ * PET AUTOCAST ON THE FACE BUTTONS (the user, 2026-11-16: "Turning off the Pet attack is not immediately obvious. I wonder if we should
+ * just use the face buttons without having to select the attack to toggle the attack on and off? like there can only be up to2 3 pet
+ * attacks I think so using Y/X/A as the toggles for them? just flat out playing the animation or turning it off when toggling"; the
+ * picks: "Class pet wheel only"; the 4th, 2026-11-16: "B still makes a lot of sense to use here"). Pure.
+ *
+ * BUTTON BY WHEEL SPOT (the user, 2026-11-16: "the glyph locations on this bar should match where they actually are on the controller";
+ * asked to pick, "I think the first option but mainly whatever controller setting the user is currently using. where I am using
+ * nintento what you described wouldnt be right"). Pet bar order no longer decides: WHERE an ability sits on the wheel does. The
+ * ability on the wheel's top spot takes the face button PHYSICALLY on top, the right spot the physically right one, bottom bottom,
+ * left left. Which button that is follows the ABXY LOCATION setting (CastSettings.abxyLocation, as the bar draws its faces: CastView's
+ * srcOf): Xbox = Y top / B right / A bottom / X left; Nintendo (the Thor's print) = X top / A right / B bottom / Y left. Its glyph is
+ * that button's (the BUTTON GLYPHS set's picture of the action, UiKit.pad), drawn on the SAME side of the icon as its spot.
+ *
+ * WHICH SPOT (deterministic): only abilities that MAY cast themselves (ActionBar pa1 `aa`) take one. Every (ability, spot) pair is
+ * ranked by the angle between the ability's slice and the spot (0 = the slice on the spot), then the slice's own angle (0 = the top,
+ * clockwise: the earlier slice first), then a TIE between two spots equally near (a slice exactly on a diagonal, 45 / 135 ...) goes
+ * to the spot reached turning CLOCKWISE from the slice (45 -> right, 135 -> bottom, 225 -> left, 315 -> top); the pairs are taken in
+ * that order, each ability and spot once. A 5th or more such ability gets no button (the long press still toggles it).
+ *
+ * A press of an ability's button toggles its autocast at once: no aiming, the flip shows (PetAuto.pressed), the wheel stays open,
+ * nothing is cast (no predicted cast bar), a held button toggles once. The class wheel's own two buttons are the ACTIONS B (back,
+ * PadInput bit SLOT_FACE_RIGHT) and A (pick, SLOT_FACE_BOTTOM) wherever the location setting puts them:
+ *   back  closes the wheel unless an ability claims its spot; then it is that ability's toggle and never closes - the wheel closes
+ *         as Release's does (Hold: letting the chord go; Tap: the stick back in the middle after pointing - casting the pointed
+ *         slice - or the same chord again, no cast). Home's own B (shrink the big controller, close a module) leaves it alone.
+ *   pick  keeps its job (casts the pointed slice where the side picks with A, Settings > Controller) unless an ability claims its
+ *         spot; then it never casts there and that wheel picks as Release does (Hold: letting the chord go casts the pointed slice;
+ *         Tap: the stick back in the middle).
+ *   X, Y with no ability on their spot do nothing on a pet wheel; the D-pad nothing.
+ * A wheel with no such ability (a warrior's stances, a druid's forms, the pet's commands) is exactly as before: A picks where the
+ * side picks with A, X toggles the pointed slice's autocast (none there: nothing), B goes back. The pet's own wheels
+ * (TargetRadialView: the target wheel on your pet, Party mode's pet slot) keep aim + X and the long press.
+ */
+internal object ClassPetKeys {
+    /** the wheel's four spots, clockwise from the top (a spot's angle = its index x 90 degrees, as ClassChord's) */
+    const val TOP = 0; const val RIGHT = 1; const val BOTTOM = 2; const val LEFT = 3
+    const val SPOTS = 4
+    /** the class wheel's back (Flow.b) and pick (Flow.a): the ACTIONS B and A (PadInput's bits are the game's Xbox slots) */
+    const val BACK_BIT = PadInput.SLOT_FACE_RIGHT
+    const val PICK_BIT = PadInput.SLOT_FACE_BOTTOM
+    private const val X_BIT = PadInput.SLOT_FACE_LEFT
+    /** each spot's drawn face position (PadInput SLOT_FACE_x, 4..7 = left / top / right / bottom) */
+    private val POS = intArrayOf(PadInput.SLOT_FACE_TOP, PadInput.SLOT_FACE_RIGHT, PadInput.SLOT_FACE_BOTTOM, PadInput.SLOT_FACE_LEFT)
+    /** the action of each PadInput face bit 4..7 (Blizzard's face 5..8 = Xbox X / Y / B / A) */
+    private val ACTION = arrayOf("x", "y", "b", "a")
+
+    /** the PadInput bit the button PHYSICALLY at [spot] sets, under the ABXY location ([nintendo] = CastSettings.faceSwap): the bar's
+     *  srcOf - Xbox identity; Nintendo swaps left / top and right / bottom (X on top, Y left, A right, B bottom) */
+    fun bit(spot: Int, nintendo: Boolean): Int {
+        val pos = POS[spot]
+        if (!nintendo) return pos
+        return when (pos) {
+            PadInput.SLOT_FACE_LEFT -> PadInput.SLOT_FACE_TOP; PadInput.SLOT_FACE_TOP -> PadInput.SLOT_FACE_LEFT
+            PadInput.SLOT_FACE_RIGHT -> PadInput.SLOT_FACE_BOTTOM; else -> PadInput.SLOT_FACE_RIGHT
+        }
+    }
+    /** the spot whose button sets PadInput bit [b] (-1: not a face bit) */
+    fun spotOf(b: Int, nintendo: Boolean): Int = (0 until SPOTS).firstOrNull { bit(it, nintendo) == b } ?: -1
+    /** the action ("a" "b" "x" "y") of the button at [spot] */
+    fun action(spot: Int, nintendo: Boolean): String = ACTION[bit(spot, nintendo) - PadInput.SLOT_FACE_LEFT]
+    /** its glyph for UiKit.pad (the BUTTON GLYPHS setting's picture of that action, Glyphs.translate) */
+    fun glyph(spot: Int, nintendo: Boolean): String = "rev_" + action(spot, nintendo)
+
+    /** the place on each spot ([SPOTS] long, -1 = none) of a wheel whose places are [has], [autoA] = may cast itself; the places sit
+     *  as the wheel draws them (ClassChord.evenAngle over the places it has). All -1 = no pet wheel */
+    fun spots(has: BooleanArray, autoA: BooleanArray): IntArray {
+        val order = (0 until minOf(has.size, 8)).filter { has[it] }
+        val angle = HashMap<Int, Double>()
+        for ((k, i) in order.withIndex()) if (i < autoA.size && autoA[i]) angle[i] = ClassChord.evenAngle(k, order.size)
+        class Pair(val place: Int, val spot: Int, val dist: Long, val at: Double, val cw: Boolean)
+        val pairs = ArrayList<Pair>()
+        for ((i, a) in angle) for (s in 0 until SPOTS) {
+            val turn = ((s * 90.0 - a) % 360.0 + 360.0) % 360.0          // clockwise from the slice to the spot
+            val d = minOf(turn, 360.0 - turn)
+            pairs += Pair(i, s, Math.round(d * 1000.0), a, turn <= 180.0)
+        }
+        pairs.sortWith(compareBy<Pair>({ it.dist }, { it.at }, { if (it.cw) 0 else 1 }))
+        val out = IntArray(SPOTS) { -1 }
+        val placed = HashSet<Int>()
+        for (p in pairs) if (out[p.spot] < 0 && p.place !in placed) { out[p.spot] = p.place; placed += p.place }
+        return out
+    }
+
+    /** a class pet wheel: at least one ability on a spot */
+    fun isPet(spots: IntArray): Boolean = spots.any { it >= 0 }
+    /** the pick button's spot holds an ability: it toggles and never casts on that wheel */
+    fun pickToggles(spots: IntArray, nintendo: Boolean): Boolean = spots.getOrElse(spotOf(PICK_BIT, nintendo)) { -1 } >= 0
+    /** the back button's spot holds an ability: it toggles and never goes back on that wheel */
+    fun backToggles(spots: IntArray, nintendo: Boolean): Boolean = spots.getOrElse(spotOf(BACK_BIT, nintendo)) { -1 } >= 0
+
+    /** what a press of the buttons newly down in [down] (PadInput's mask) does on a wheel of [spots], back aside (the caller closes on
+     *  [BACK_BIT] unless [backToggles]): the places toggled (one per button pressed, spot order); [aPick] the pick button goes to the
+     *  wheel's pick (Flow.a); [xPointed] X toggles the pointed slice (a wheel with no pet ability only) */
+    data class Press(val toggles: List<Int>, val aPick: Boolean, val xPointed: Boolean)
+    fun press(spots: IntArray, down: Int, nintendo: Boolean): Press {
+        fun on(b: Int) = (down shr b) and 1 != 0
+        val t = ArrayList<Int>()
+        for (s in 0 until SPOTS) if (on(bit(s, nintendo)) && spots.getOrElse(s) { -1 } >= 0) t += spots[s]
+        return Press(t, on(PICK_BIT) && !pickToggles(spots, nintendo), on(X_BIT) && !isPet(spots))
     }
 }
 

@@ -165,6 +165,10 @@ object TapBridge {
         // would land on the game world instead of the grid. Refuse rather than misfire.
         if (abs(d.x.toDouble() / d.y - pw / ph) > 0.02) {
             Log.w(TAG, "refused: display ${d.x}x${d.y} does not match the game's ${pw.toInt()}x${ph.toInt()}")
+            // #305 (1.0.32: "controls not working on bottom screen"; its pad said pw=1542 ph=1080 on a 1920x1080 top screen): every tap
+            // refused here, so no room could take the controller - and the report never said why (TapBridge's tag is not in it)
+            if (TapShape.refuse(pw.toInt(), ph.toInt(), d.x, d.y))
+                Log.i("WCLOG", "taps: refused: the game's screen ${pw.toInt()}x${ph.toInt()} is not the top screen's shape (${d.x}x${d.y})")
             return null
         }
         // 1.0.21: not rounded to a whole display pixel (a 1080p Thor pixel is 1.33 game px on a 1440p PC: rows were lost); the tap line
@@ -272,8 +276,13 @@ object TapBridge {
         // are one batch, so nothing else lands between them
         // and a short rest after the action: the game takes one touch per frame, and two actions' taps close together lost one
         // (b61: a wheel's hold right behind another tap never reached the game)
-        val gap = if (gapMs > 0L) "\nsleep ${"%.3f".format(java.util.Locale.ROOT, gapMs / 1000.0)}\n" else "\n"
-        val taps = pts.joinToString(gap) { c -> "input -d 0 tap ${"%.2f".format(java.util.Locale.ROOT, c.x)} ${"%.2f".format(java.util.Locale.ROOT, c.y)}" } + "\nsleep 0.08"
+        // pg1 (TapSpacing.offsets): a spaced row's cell repeated inside the batch waits for its own MIN_MS; every other gap is gapMs
+        val at = TapSpacing.offsets(cells, gapMs, pts.size)
+        val taps = pts.mapIndexed { i, c ->
+            val wait = if (i == 0) 0L else at[i] - at[i - 1]
+            (if (wait > 0L) "sleep ${"%.3f".format(java.util.Locale.ROOT, wait / 1000.0)}\n" else "") +
+                "input -d 0 tap ${"%.2f".format(java.util.Locale.ROOT, c.x)} ${"%.2f".format(java.util.Locale.ROOT, c.y)}"
+        }.joinToString("\n") + "\nsleep 0.08"
         val queuedAt = SystemClock.uptimeMillis()
         watchPad()
         // b90 (23:00:18 padstray, Home's focus): a press handled INSIDE the controller reader's own dispatch (DirectPad: Home's map

@@ -2,6 +2,7 @@ package com.jrees.wowcompanion
 
 import android.content.Context
 import android.graphics.*
+import android.text.TextUtils
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
@@ -1299,7 +1300,7 @@ class MapView(context: Context) : View(context) {
             if (field == v) return
             field = v
             filterOpen = false
-            pmenu.close(); closePanel()
+            pmenu.close(); closePanel(); stepChoice.close()
             compactDown = false
             lastCamAt = 0L                  // the Map room's camera eases from a fresh clock
             postInvalidate()
@@ -1437,7 +1438,7 @@ class MapView(context: Context) : View(context) {
             morphOk = !drawnPx.isNaN() && !drawnPy.isNaN() && drawnS > 0f
             morphP0x = drawnPx; morphP0y = drawnPy; morphS0 = drawnS
             filterOpen = false
-            pmenu.close(); closePanel()
+            pmenu.close(); closePanel(); stepChoice.close()
             touchOwner = OWN_NONE
             if (opening) {
                 // the list starts settled, the focused quest in its top spot
@@ -1636,7 +1637,12 @@ class MapView(context: Context) : View(context) {
                 }
                 MotionEvent.ACTION_UP -> {
                     if (touchOwner == OWN_LIST && !listMoved)
-                        trackerHits.firstOrNull { it.first.contains(e.x, e.y) }?.let { (_, item) -> touchItem(item) }
+                        trackerHits.firstOrNull { it.first.contains(e.x, e.y) }?.let { (_, item) ->
+                            // pm3: a long press on the light blue row is its Y (the Next / Previous step choice), as in the Map room
+                            if (item is MapList.Item.Polestar && e.eventTime - e.downTime >= LONG_PRESS_MS && stepChoice.can()) {
+                                cursor.touched(MapList.POLESTAR, listKeys()); openSteps(); invalidate()
+                            } else touchItem(item)
+                        }
                     touchOwner = OWN_NONE
                 }
                 MotionEvent.ACTION_CANCEL -> touchOwner = OWN_NONE
@@ -1645,6 +1651,12 @@ class MapView(context: Context) : View(context) {
         }
         if (e.action == MotionEvent.ACTION_DOWN) {
             touchOwner = OWN_NONE
+            if (stepChoice.open) {
+                // pm3: the step choice: a row presses it (and it closes), anywhere else closes it
+                stepChoice.touch(e.x, e.y)
+                touchOwner = OWN_CONTROL
+                syncB(); postInvalidate(); return true
+            }
             if (panelId != 0 && !pmenu.open) {
                 // the quest panel: its buttons act, the rest of it does nothing, outside it closes
                 val hit = panelHits.firstOrNull { it.first.contains(e.x, e.y) }
@@ -2597,6 +2609,27 @@ class MapView(context: Context) : View(context) {
     private fun compactDown(): Float = max(0f, compactCover - compactRimTop) / 2f
 
     /**
+     * What the last frame said where the terrain would be ([HomeMapNote]: issues #316 #317 #284, Home's map pictures not made yet), or
+     * null when it drew the terrain or needed no word. Read by the tests.
+     */
+    var artNote: String? = null
+        private set
+    private val pArtNote = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    /** [note] centred across the field ([left], [fw]: the part the open map's quest list leaves), under the player's arrow
+     *  ([HomeMapNote.baseline]), shrunk to fit a narrow map */
+    private fun drawArtNote(c: Canvas, note: String, left: Float, top: Float, fw: Float, fh: Float, compact: Boolean) {
+        val t = Tr.t(note)
+        pArtNote.color = cText
+        pArtNote.textSize = HomeMapNote.SIZE
+        UiKit.asBody(pArtNote)
+        val s = HomeMapNote.fit(pArtNote.measureText(t), HomeMapNote.SIZE, fw - 2f * HomeMapNote.PAD)
+        if (s != HomeMapNote.SIZE) { pArtNote.textSize = s; UiKit.asBody(pArtNote) }
+        val playerY = top + fh / 2f + (if (compact) compactDown() else 0f)
+        c.drawText(t, left + fw / 2f, HomeMapNote.baseline(playerY, top + fh), pArtNote)
+    }
+
+    /**
      * Boxes of the HOST's own controls over the map (view coordinates: Home's buff / debuff buttons and their list on the
      * small map, its buff / debuff rows over the open module), which the rim arrow slides along the edge to stay clear of.
      * NOT Home's + / - column: there the arrow keeps the true edge, under the faded buttons (the user, 2026-10-12: "It
@@ -3538,6 +3571,9 @@ class MapView(context: Context) : View(context) {
     private var trackedMap = Int.MIN_VALUE
     private val trackerHits = ArrayList<Pair<RectF, MapList.Item>>()
     private val TRACKER_W = 400f
+    /** pm3: the step choice's row (the Map room's OPT_ROW) and a long press on the light blue row (the Map room's) */
+    private val STEP_ROW = PolestarStepChoice.ROW
+    private val LONG_PRESS_MS = PolestarStepChoice.LONG_PRESS_MS
 
     // ---- NUMBERED QUEST BUBBLES (the user, LATER.md item 10, 2026-09-30: "in the map function the yellow quest bubble
     // should be numbered and correlate with the quests on the left side, these bubbles are small, so they should be large
@@ -3581,6 +3617,58 @@ class MapView(context: Context) : View(context) {
     private var psLiveAt = 0L                            // when the game was first seen live (ms; 0 not live)
     private val psBlue = Color.rgb(120, 200, 255)
     private fun psShown(): Boolean = Settings.questTracking == "polestar" && psStep != null
+    // ---- pg1 / D6 (the user, 2026-11-16: "I need some kind of header in the quests menu of the homeroom map indicating that it is the
+    // polestar objective"): Map.lua's pguide ([PolestarTab.Guide]) names the guide, so the light blue row's ribbon reads
+    // "Polestar · Westfall" (the guide's zone, else its title; Polestar's words: never translated), and with no row the header stands
+    // alone ([MapList.Item.PsHead], never a cursor stop): "Polestar · No guide", or the guide when it has nothing to do now. D4: a path
+    // choice waiting (the guide done, Polestar wants the next zone picked: pstep says none) is the light blue row "Choose your path";
+    // A opens the Quests room's Polestar tab straight on the choice ([onPolestarChoose]). An older add-on (no pguide): as before.
+    private var psGuide: PolestarTab.Guide? = null
+    /** A on the "Choose your path" row: the host opens the Quests room on the choice */
+    var onPolestarChoose: (() -> Unit)? = null
+    // pm3 (the user's pick, 2026-11-16: "Yes, match the Map room"): the light blue row's X opens THE Polestar menu (the Quests room's
+    // Polestar tab: the host opens that room on it, on the path choice when one waits), its Y the Next / Previous step choice
+    // ([PolestarStepChoice], the Map room's own; one press closes it: "Close after one press"). Skip step / Undo skip stay the menu's
+    // own X / Y. Touch: a long press on the row opens the choice (as in the Map room)
+    /** the one Polestar menu (the host hands QuestsView's): the step choice's sender and the dim rows */
+    var psMenu: PolestarMenu? = null
+    /** X on the light blue row: the host opens the Quests room's Polestar tab ([path]: on the waiting path choice) */
+    var onPolestarMenu: ((path: Boolean) -> Unit)? = null
+    private val stepChoice = PolestarStepChoice({ psMenu }) { note(it) }
+    /** X can open the Polestar menu */
+    private fun psMenuCan(): Boolean = onPolestarMenu != null && psMenu?.shows() == true
+    private fun openPsMenu() { if (psMenuCan()) { stepChoice.close(); onPolestarMenu?.invoke(psChoose()) } }
+    private fun openSteps() { if (stepChoice.open()) { pmenu.close(); closePanel() }; syncB() }
+    /** the step choice shows */
+    fun stepsOpen(): Boolean = stepChoice.open
+    /** the light blue row stands for a waiting path choice (D4) */
+    private fun psChoose(): Boolean = Settings.questTracking == "polestar" && psStep == null && psGuide?.let { it.have && it.waiting } == true
+    /** the light blue row is in the list (a step, or a waiting choice) */
+    private fun psRow(): Boolean = psShown() || psChoose()
+    /** the header alone: Polestar is the tracker and has answered, and there is no row */
+    private fun psHeadOnly(): Boolean = Settings.questTracking == "polestar" && psGuide?.have == true && !psRow()
+    /** the header's words: "Polestar · <zone>", "Polestar · No guide"; an older add-on: "Polestar" */
+    fun polestarHead(): String {
+        val g = psGuide?.takeIf { it.have } ?: return Tr.t(PolestarTab.TAB)
+        val place = if (g.none) Tr.t(PolestarTab.NO_GUIDE) else g.place() ?: return Tr.t(PolestarTab.TAB)
+        return Tr.t(PolestarTab.fill(PolestarTab.HEAD, place))
+    }
+    /** the Map room's row is the waiting path choice */
+    fun polestarChoose(): Boolean = psChoose()
+    /** the Map room's header line: shown while Polestar is the tracker and has answered (an older add-on: none) */
+    fun polestarHeadShown(): Boolean = Settings.questTracking == "polestar" && psGuide?.have == true
+    /** {"type":"pguide"} (Map.lua pg1) */
+    fun onPolestarGuide(d: JSONObject) {
+        val was = psGuide
+        val before = psRow(); val beforeHead = psHeadOnly(); val beforeWord = polestarHead()
+        psGuide = PolestarTab.Guide.parse(d) ?: return
+        if (psRow() != before || psHeadOnly() != beforeHead || polestarHead() != beforeWord || was?.waiting != psGuide?.waiting) {
+            cards.remove(MapList.POLESTAR)
+            rebuildItems()
+            if (cursor.shown && cursor.sel == MapList.POLESTAR && !psRow()) cursor.reset()
+        }
+        postInvalidate()
+    }
     private fun psHolds(): Boolean = psPicked && psShown()
     /** pn4 (the user, 2026-11-11: "a polestar objective that is not in my bag and not telling me where to go"): Polestar is the
      *  tracker - the setting, the light blue row picked, and a Polestar step seen within the last minute (through a step's none-gaps:
@@ -3591,7 +3679,7 @@ class MapView(context: Context) : View(context) {
     private fun psFocus(): Int { val q = psStep?.quest ?: 0; return if (psHolds() && q > 0 && questById.containsKey(q)) q else 0 }
     /** {"type":"pstep"}: Polestar's live objective, or none */
     fun onPolestarStep(d: JSONObject) {
-        val before = psShown(); val beforeHolds = psHolds(); val beforeWords = psStep?.sig()
+        val before = psRow(); val beforeHolds = psHolds(); val beforeWords = psStep?.sig()
         val beforeMerged = psMerged()
         psStep = PolestarStep.parse(d)
         if (psStep != null) psStepAt = System.currentTimeMillis()   // (Map.lua re-sends a none every 15 s: only a real step stamps)
@@ -3603,7 +3691,7 @@ class MapView(context: Context) : View(context) {
             val first = psBoot == 0L; psBoot = b
             psPicked = if (first && !psPicked) { Settings.polestarOffBoot = b; false } else Settings.polestarOffBoot != b
         }
-        if (psShown() != before) { rebuildItems(); if (cursor.shown && cursor.sel == MapList.POLESTAR && !psShown()) cursor.reset() }
+        if (psRow() != before) { rebuildItems(); if (cursor.shown && cursor.sel == MapList.POLESTAR && !psRow()) cursor.reset() }
         if (psHolds() != beforeHolds || psStep?.sig() != beforeWords || psMerged() != beforeMerged) psChanged()
         psSyncTick()
         postInvalidate()
@@ -3633,9 +3721,9 @@ class MapView(context: Context) : View(context) {
     /** Previous can be pressed now (a skip is left to undo) */
     fun polestarCanPrev(): Boolean = PolestarSkip.canPrev(psShown(), psStep)
     /** Polestar's step as shown on the light blue row (its title, else its goal's words), or null when there is none */
-    fun polestarTitle(): String? = if (psShown()) psStep?.let { it.title ?: it.words } else null
+    fun polestarTitle(): String? = if (psShown()) psStep?.let { it.title ?: it.words } else if (psChoose()) Tr.t(PolestarTab.CHOOSE_PATH) else null
     /** the goal's words under it (null when the same as the title, or none) */
-    fun polestarWords(): String? = if (psShown()) psStep?.let { st -> st.words?.takeIf { it != st.title } } else null
+    fun polestarWords(): String? = if (psShown()) psStep?.let { st -> st.words?.takeIf { it != st.title } } else if (psChoose()) psGuide?.title else null
     /** one press: Skip, or Previous ([prev]); nothing when it cannot be pressed now. True = the tap went */
     fun polestarSkip(prev: Boolean): Boolean {
         if (if (prev) !polestarCanPrev() else !polestarCanSkip()) return false
@@ -3696,6 +3784,12 @@ class MapView(context: Context) : View(context) {
      *  objectives instead of 'complete that quest'"): the quest's own title and live objectives, in Polestar's light blue */
     private fun psCard(): UiKit.QuestCard? {
         cards[MapList.POLESTAR]?.let { return it }
+        // pg1 / D4: a waiting path choice - "Choose your path", the finished guide's title under it
+        if (psStep == null && psChoose()) {
+            val card = UiKit.QuestCard(Tr.t(PolestarTab.CHOOSE_PATH), 0, psBlue, listOfNotNull(psGuide?.title?.let { it to false }), focused = false)
+            cards[MapList.POLESTAR] = card
+            return card
+        }
         val st = psStep ?: return null
         val q = psMerged()
         val base = if (q > 0) (tracked.firstOrNull { it.optInt("id", 0) == q } ?: questById[q])?.let { cardFor(it) } else null
@@ -3971,8 +4065,8 @@ class MapView(context: Context) : View(context) {
         val groups = MapList.groups(entries, questsPlv, current, ownHeaders)
         val merged = psMerged()
         // pk2 (the user, 2026-11-12: "Open stays reachable on the quest's own row"): the merged quest's own row stays (PolestarMerge.listMerged)
-        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups, polestar = psShown(),
-            merged = PolestarMerge.listMerged(merged)) { z -> openTabs[z] == true }
+        items = MapList.items(portrait != null && trackedKnown, trackedIds(), groups, polestar = psRow(),
+            merged = PolestarMerge.listMerged(merged), psHead = psHeadOnly()) { z -> openTabs[z] == true }
         // the user, 2026-11-11 ("consolidate that into one"): a selection on the quest the light blue row now stands for moves onto it
         if (merged > 0) cursor.moved(merged, MapList.POLESTAR, listKeys())
     }
@@ -4029,8 +4123,8 @@ class MapView(context: Context) : View(context) {
             }
             is MapList.Item.Group -> { cursor.touched(it.key, listKeys()); toggleTab(it.key) }
             is MapList.Item.Untracked -> { cursor.touched(it.id, listKeys()); listShow(it.id) }
-            is MapList.Item.Polestar -> { cursor.touched(MapList.POLESTAR, listKeys()); psToggle() }
-            is MapList.Item.Section -> {}
+            is MapList.Item.Polestar -> { cursor.touched(MapList.POLESTAR, listKeys()); if (psChoose()) onPolestarChoose?.invoke() else psToggle() }
+            is MapList.Item.Section, is MapList.Item.PsHead -> {}
         }
         invalidate()
     }
@@ -5351,6 +5445,7 @@ class MapView(context: Context) : View(context) {
         val cy = band.centerY()
         if (filterOpen) { UiKit.hints(c, band.right - 24f, cy, glyph("lb") to "", glyph("rb") to "Tabs", glyph("b") to "Close"); return }
         if (pmenu.open) { UiKit.hints(c, band.right - 24f, cy, glyph("up") to "Select", glyph("a") to "Choose", glyph("b") to "Back"); return }
+        if (stepChoice.open) { UiKit.hints(c, band.right - 24f, cy, glyph("a") to "Select", glyph("b") to "Close"); return }
         if (panelId != 0) {
             val hp = when {
                 armedId == panelId -> arrayOf(glyph("left") to "", glyph("right") to "Select", glyph("a") to "Press", glyph("b") to "Cancel")
@@ -5371,8 +5466,9 @@ class MapView(context: Context) : View(context) {
         when {
             at == MapList.ME -> if (onPlayerMenu != null) pairs.add(glyph("a") to "Menu")
             at == MapList.POLESTAR -> {
-                // pk1 (the user, 2026-11-12): X Skip, Y Previous (only while a skip is left to undo), merged or not
-                for ((b, w) in PolestarSkip.rowHints(psHolds(), polestarCanSkip(), polestarCanPrev())) pairs.add(glyph(b) to w)
+                // pm3 (the user's pick, 2026-11-16: "Yes, match the Map room"): A Choose (pg1 / D4) or Focus / Unfocus, X Polestar
+                // (the menu), Y Skip (the Next / Previous step choice), each only while it opens; merged or not
+                for ((b, w) in PolestarSkip.rowHints(psHolds(), psChoose(), psMenuCan(), stepChoice.can())) pairs.add(glyph(b) to w)
             }
             MapList.isGroup(at) -> pairs.add(glyph("a") to (if (openTabs[groupZone(at)] == true) "Close" else "Open"))
             at > 0 && at in MapList.untracked(items) -> {
@@ -5543,45 +5639,39 @@ class MapView(context: Context) : View(context) {
     }
 
     /** where the host's next B leads: "back" (closes the filter) or "home" */
-    fun hostBLeads(): String = cursor.bLeads(filterOpen || pmenu.open || panelId != 0)
+    fun hostBLeads(): String = cursor.bLeads(filterOpen || pmenu.open || panelId != 0 || stepChoice.open)
 
     /** apply one key; everything but leaving (returned as [MapCursor.Do.Leave] for the caller) */
     private fun applyKey(k: String): MapCursor.Do {
         if (radialOpen()) return MapCursor.Do.Nothing                                 // the context radial reads the controller itself
         if (pmenu.open) { pmenuDid(pmenu.key(k)); return MapCursor.Do.Nothing }      // every key is the open player menu's
         if (panelId != 0 && panelKey(k)) return MapCursor.Do.Nothing                  // ... and the open quest panel's, when it takes it
+        if (stepChoice.open) { stepChoice.key(k); syncB(); return MapCursor.Do.Nothing }        // pm3: ... and the step choice's (B / Y close it)
         // the Filter's tabs with LB / RB (zoom is not in use while it is open)
         if (filterOpen && (k == "PADLSHOULDER" || k == "PADRSHOULDER")) {
             filterTab = (filterTab + (if (k == "PADRSHOULDER") 1 else FILTER_TABS.size - 1)) % FILTER_TABS.size
             invalidate(); return MapCursor.Do.Nothing
         }
         // ps3: while the light blue row holds it is the focused row (A on the game's old quest focuses it, A on the row lets go)
-        // pk1 (the user, 2026-11-12: "X Skip, Y Previous"): the row's X skips Polestar's step, its Y undoes the last skip - merged
-        // with a quest too (that quest's Track / Open of the 2026-11-11 merge leave X and Y)
+        // pm3 (the user's pick, 2026-11-16: "Yes, match the Map room"): the row's X opens the Polestar menu, its Y the Next / Previous
+        // step choice - merged with a quest too (that quest's Track / Open of the 2026-11-11 merge leave X and Y)
         val d = cursor.key(k, listKeys(), if (psHolds()) MapList.POLESTAR else focusQid, filterOpen, MapList.untracked(items),
-            psSkip = PolestarSkip.canSkip(psShown(), psStep), psPrev = PolestarSkip.canPrev(psShown(), psStep))
+            psMenu = psMenuCan(), psSteps = stepChoice.can())
         when (d) {
             MapCursor.Do.Show -> { listShow(cursor.sel); landOn(cursor.sel) }
-            is MapCursor.Do.Select -> {
-                listShow(d.id); landOn(d.id)
-                // the quest box follows the list's quest while the cursor is on the list (the user's correction, 2026-10-17)
-                val pq = PolestarMerge.key(d.id, psMerged())     // onto the merged light blue row: its quest's box
-                if (panelId != 0 && pq > 0 && questById.containsKey(pq) && pq != panelId) {
-                    panelId = pq; panelScroll = 0f; panelContentH = 0f; armedId = 0
-                }
-            }
+            is MapCursor.Do.Select -> cameOnto(d.id)
             MapCursor.Do.PlayerMenu -> openPlayerMenu()
-            MapCursor.Do.Polestar -> psToggle()
-            MapCursor.Do.PsSkip -> polestarSkip(prev = false)
-            MapCursor.Do.PsPrev -> polestarSkip(prev = true)
+            MapCursor.Do.Polestar -> if (psChoose()) onPolestarChoose?.invoke() else psToggle()
+            MapCursor.Do.PsMenu -> openPsMenu()
+            MapCursor.Do.PsSteps -> openSteps()
             is MapCursor.Do.Toggle -> toggleTab(d.key)
-            is MapCursor.Do.Track -> onTrackFocusQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
-            is MapCursor.Do.Watch -> onTrackQuest?.let { it(d.id); trackNow(d.id, true) } ?: note("Track is not on the tap pad yet")
+            is MapCursor.Do.Track -> trackPress(d.id, true, onTrackFocusQuest)
+            is MapCursor.Do.Watch -> trackPress(d.id, true, onTrackQuest)
             is MapCursor.Do.Open -> openPanel(d.id)
             is MapCursor.Do.Focus -> askFocus(d.id)
             // ps3: a focus the player cleared is not pushed back as the default (the user, 2026-11-11: "aggressivly")
             is MapCursor.Do.Unfocus -> onUnfocusQuest?.let { focusPush.cleared(d.id); it(d.id) } ?: note("Unfocus is not on the tap pad yet")
-            is MapCursor.Do.Untrack -> onUntrackQuest?.let { it(d.id); trackNow(d.id, false) } ?: note("Untrack is not on the tap pad yet")
+            is MapCursor.Do.Untrack -> trackPress(d.id, false, onUntrackQuest)
             is MapCursor.Do.ShowOnMap -> tracked.firstOrNull { it.optInt("id", 0) == d.id }?.let { q ->
                 val qx = q.optDouble("x", Double.NaN); val qy = q.optDouble("y", Double.NaN)
                 if (!qx.isNaN() && !qy.isNaN()) focusOn(qx, qy, trackedMap) else note("This quest has no place on this map")
@@ -5601,7 +5691,7 @@ class MapView(context: Context) : View(context) {
     /** tell the capture where B leads now, so the Home button shows B only when it leads Home */
     private fun syncB() {
         if (!held) return
-        val where = cursor.bLeads(filterOpen || pmenu.open || panelId != 0)
+        val where = cursor.bLeads(filterOpen || pmenu.open || panelId != 0 || stepChoice.open)
         if (where != bSaid && guestTap(GuestPad.bnext(padDoc, home = where == "home"))) bSaid = where
     }
 
@@ -5614,20 +5704,53 @@ class MapView(context: Context) : View(context) {
 
     // ---- TRACKING SHOWN AT ONCE (the user on test58: "When I track a quest it doesn't move up out of the untracked sort in the map
     // module"): the list was sorted from the quests document only, and the game's answer comes a moment later (or not at all). A press
-    // (Track, Track & focus, Untrack) moves the quest at once - up into the tracked quests, or back down into its tab - the cursor
-    // staying on it; the next document that agrees settles it, and after [TRACK_PENDING_MS] the game's word stands again.
+    // (Track, Track & focus, Untrack) moves the quest at once - up into the tracked quests, or back down into its tab; the next document
+    // that agrees settles it, and after [TRACK_PENDING_MS] the game's word stands again.
+    // THE CURSOR HOLDS ITS PLACE (the user, 2026-11-16: "Tracking and untracking from that menu right now feels really unintuitive where
+    // it jumps you all the way down 40 slots in the quest menu with the untracked quest, if I want to track or untrack a bunch at once I
+    // want to be able quickly go down the list and hit untrack for each, not have to scroll all the way back up after each untrack"): the
+    // quest moves without the cursor, which stays where it was with the next stop moved into its place ([MapCursor.stay]); the list
+    // slides under it, so its row keeps its place on the screen. Its zone's tab is no longer opened for it (that was for the cursor).
     private var lastQuests: JSONObject? = null
     private val trackPending = HashMap<Int, Pair<Boolean, Long>>()
     private val TRACK_PENDING_MS = 10_000L
-    /** quest [id] tracked ([on]) or not, shown now: the list re-sorted from the last document with the press on top */
-    private fun trackNow(id: Int, on: Boolean) {
+
+    /** the cursor's Track / Track & focus / Untrack on quest [id]: [send] it (null: not on the pad yet), then show it at once */
+    private fun trackPress(id: Int, on: Boolean, send: ((Int) -> Unit)?) {
+        if (send == null) { note(if (on) "Track is not on the tap pad yet" else "Untrack is not on the tap pad yet"); return }
+        // the list as the press found it (the host's send may already re-sort it: Track & focus lets the light blue row go)
+        val before = listKeys()
+        val beforeAt = items.indexOfFirst { it.key == id && it !is MapList.Item.Section }
+        val onIt = cursor.shown && cursor.sel == id
+        send(id)
+        trackNow(id, on, onIt, before, beforeAt)
+    }
+
+    /** quest [id] tracked ([on]) or not, shown now: the list re-sorted from the last document with the press on top; the cursor, when
+     *  it was on it ([onIt]), stays at its place ([before] the stops and [beforeAt] its row as the press found them) */
+    private fun trackNow(id: Int, on: Boolean, onIt: Boolean, before: List<Int>, beforeAt: Int) {
         if (id == 0) return
         trackPending[id] = on to android.os.SystemClock.elapsedRealtime()
-        // back down: its zone's tab opened, so the cursor can stay on it there
-        if (!on) questById[id]?.optString("zone", "")?.takeIf { it.isNotEmpty() }?.let { openTabs[it] = true }
+        val firstBefore = listFirst                       // (the re-sort below would scroll to the moved quest: never wanted now)
         lastQuests?.let { applyQuests(it) }
-        if (cursor.shown && selQuest() == id) { listShow(cursor.sel); revealSelected() }
+        if (onIt) {
+            val s = cursor.stay(id, before, listKeys(), wasOn = true)   // (applyQuests' keepValid / moved may have moved it already)
+            // the row that took the quest's place stands where the quest stood: the list moves by the rows that came or went above it
+            val at = items.indexOfFirst { it.key == s && it !is MapList.Item.Section }
+            if (s != 0 && at >= 0 && beforeAt >= 0) listFirst = (firstBefore + at - beforeAt).coerceIn(0, (items.size - 1).coerceAtLeast(0))
+            if (s != 0) cameOnto(s)
+        }
         invalidate()
+    }
+
+    /** the cursor came onto stop [key] (up / down, or a track press handing it on): in view, the map to it, the quest box follows */
+    private fun cameOnto(key: Int) {
+        listShow(key); landOn(key)
+        // the quest box follows the list's quest while the cursor is on the list (the user's correction, 2026-10-17)
+        val pq = PolestarMerge.key(key, psMerged())     // onto the merged light blue row: its quest's box
+        if (panelId != 0 && pq > 0 && questById.containsKey(pq) && pq != panelId) {
+            panelId = pq; panelScroll = 0f; panelContentH = 0f; armedId = 0
+        }
     }
 
     private fun applyQuests(q: JSONObject) {
@@ -5784,9 +5907,10 @@ class MapView(context: Context) : View(context) {
     /** one item's height in the list */
     private fun itemH(it: MapList.Item): Float = when (it) {
         is MapList.Item.Me -> ME_H
-        is MapList.Item.Polestar -> psCard()?.let { UiKit.questCardHeight(it) } ?: 0f
+        is MapList.Item.Polestar -> psCard()?.let { UiKit.questCardHeight(it) + PS_RIBBON_H } ?: 0f     // its ribbon over the card
         is MapList.Item.Tracked -> tracked.firstOrNull { e -> e.optInt("id", 0) == it.id }?.let { e -> rowContentH(e) } ?: 0f
         is MapList.Item.Section -> SECTION_H
+        is MapList.Item.PsHead -> PS_RIBBON_H + PS_RIBBON_OVER + 4f              // pg1: the header alone
         is MapList.Item.Group -> GROUP_H
         is MapList.Item.Untracked -> questById[it.id]?.let { e -> rowContentH(e) } ?: 0f
     }
@@ -5836,6 +5960,56 @@ class MapView(context: Context) : View(context) {
     private val dstList = RectF()
     private val pBmpList = Paint(Paint.FILTER_BITMAP_FLAG)
 
+    // ---- THE POLESTAR RIBBON (the user, 2026-11-16: "I need some kind of header in the quests menu of the homeroom map indicating that
+    // it is the polestar objective"): the light blue row wears a small tab over its card's top edge - the guide's star and "Polestar",
+    // in its light blue - so the row reads as Polestar's objective, never as one more tracked quest. Part of the row (its touch, its
+    // up / down arrows around it); the selection box and Home's flying card are the card's alone ([psCardBox]).
+    private val PS_RIBBON_H = 30f            // the room above the card
+    private val PS_RIBBON_OVER = 5f          // how far the tab laps over the card's edge
+    private val pRibbon = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pRibbonEdge = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.6f }
+    private val psStarPath = Path()
+    private val psRibbonBox = RectF()
+
+    /** the light blue row's card: [row] under its ribbon */
+    private fun psCardBox(row: RectF): RectF = RectF(row.left, row.top + PS_RIBBON_H, row.right, row.bottom)
+
+    /** the ribbon over the light blue row [row]'s card: a tab at the card's top left, the star and the word */
+    private fun drawPsRibbon(c: Canvas, row: RectF) {
+        val tp = UiKit.bodyPaint(22f, psBlue)
+        val star = 20f
+        val left = row.left + 16f
+        // pg1 / D6: "Polestar · <zone>" (Map.lua's pguide), cut to the row (an older add-on: "Polestar")
+        val word = TextUtils.ellipsize(polestarHead(), tp, (row.width() - 32f - (11f + star + 7f + 13f)).coerceAtLeast(40f), TextUtils.TruncateAt.END).toString()
+        val w = 11f + star + 7f + tp.measureText(word) + 13f
+        psRibbonBox.set(left, row.top + 2f, left + w, row.top + PS_RIBBON_H + PS_RIBBON_OVER)
+        pRibbon.color = Color.rgb(14, 30, 46)
+        c.drawRoundRect(psRibbonBox, 8f, 8f, pRibbon)
+        pRibbonEdge.color = Color.argb(210, Color.red(psBlue), Color.green(psBlue), Color.blue(psBlue))
+        c.drawRoundRect(psRibbonBox, 8f, 8f, pRibbonEdge)
+        val cy = psRibbonBox.centerY()
+        drawPsStar(c, left + 11f + star / 2f, cy, star / 2f)
+        c.drawText(word, left + 11f + star + 7f, cy - (tp.ascent() + tp.descent()) / 2f, tp)
+    }
+
+    /** the guide's star: four long points (north, east, south, west) and four short ones, light blue on a dark edge */
+    private fun drawPsStar(c: Canvas, cx: Float, cy: Float, r: Float) {
+        psStarPath.reset()
+        for (k in 0 until 8) {
+            val a = Math.PI / 4.0 * k - Math.PI / 2.0
+            val rr = if (k % 2 == 0) r else r * 0.36f
+            val px = cx + (rr * cos(a)).toFloat(); val py = cy + (rr * sin(a)).toFloat()
+            if (k == 0) psStarPath.moveTo(px, py) else psStarPath.lineTo(px, py)
+        }
+        psStarPath.close()
+        pRibbonEdge.color = Color.argb(200, 0, 0, 0)
+        c.drawPath(psStarPath, pRibbonEdge)
+        pRibbon.color = psBlue
+        c.drawPath(psStarPath, pRibbon)
+        pRibbon.color = Color.WHITE
+        c.drawCircle(cx, cy, r * 0.16f, pRibbon)
+    }
+
     private fun drawTracker(c: Canvas, x: Float, y0: Float, yMax: Float, fly: Boolean) {
         trackerHits.clear()
         trackerRect.setEmpty()
@@ -5850,7 +6024,7 @@ class MapView(context: Context) : View(context) {
         val list = items
         // the selected row stands in a gap above and below for its up / down arrows (the user: "add some buffer between current
         // selection and next quests")
-        fun isSel(it: MapList.Item) = cursor.shown && it !is MapList.Item.Section && it.key == cursor.sel
+        fun isSel(it: MapList.Item) = cursor.shown && it !is MapList.Item.Section && it !is MapList.Item.PsHead && it.key == cursor.sel
         fun need(it: MapList.Item) = itemH(it) + gapC + (if (isSel(it)) 2f * SEL_GAP else 0f)
         // THE LAYOUT, in list space
         val n = list.size
@@ -5932,9 +6106,10 @@ class MapView(context: Context) : View(context) {
         val psOne = psMerged() > 0
         val ti = if (psOne) list.indexOfFirst { it is MapList.Item.Polestar } else list.indexOfFirst { it is MapList.Item.Tracked }
         if (ti >= listFirst && ti >= 0) {
-            val h0 = if (psOne) itemH(list[ti]) else tracked.firstOrNull { it.optInt("id", 0) == list[ti].key }?.let { rowContentH(it) }
+            val h0 = if (psOne) psCard()?.let { UiKit.questCardHeight(it) } else tracked.firstOrNull { it.optInt("id", 0) == list[ti].key }?.let { rowContentH(it) }
             if (h0 != null && h0 > 0f) {
-                val t0 = winTop + at[ti] - at[listFirst] + (if (isSel(list[ti])) SEL_GAP else 0f)
+                // (the light blue row's card stands under its ribbon: the card lands there, the ribbon stays with the rows)
+                val t0 = winTop + at[ti] - at[listFirst] + (if (isSel(list[ti])) SEL_GAP else 0f) + (if (psOne) PS_RIBBON_H else 0f)
                 flyLand.set(x, t0, x + w, t0 + h0)
             }
         }
@@ -5946,29 +6121,35 @@ class MapView(context: Context) : View(context) {
             val it = list[i]
             val front = if (psOne) it is MapList.Item.Polestar else it is MapList.Item.Tracked && it.id == shownFocus()
             if ((pass == 1) != front) continue
-            if (fly && i == ti && front) continue            // in flight: drawFlight draws it
             val pos = rowPos[it.key] ?: at[i]
             val sel = isSel(it)
             val ch = itemH(it)
             val ct = winTop + pos - listScroll + (if (sel) SEL_GAP else 0f)
             if (ct + ch < winTop - SEL_GAP || ct > winBot + SEL_GAP) continue    // outside the window
             val row = RectF(x, ct, x + w, ct + ch)
+            if (fly && i == ti && front) {                   // in flight: drawFlight draws its card (the ribbon stays, with the rows)
+                if (it is MapList.Item.Polestar) drawPsRibbon(c, row)
+                continue
+            }
             when (it) {
                 is MapList.Item.Me -> drawMe(c, row)
-                is MapList.Item.Polestar -> psCard()?.let { UiKit.questCard(c, row, it) }
+                is MapList.Item.Polestar -> psCard()?.let { UiKit.questCard(c, psCardBox(row), it) }
                 is MapList.Item.Tracked -> tracked.firstOrNull { e -> e.optInt("id", 0) == it.id }?.let { e -> drawRow(c, e, row) }
                 is MapList.Item.Section -> UiKit.trackerHeader(c, row.left, row.top, row.right, "Untracked", "${it.count}")
+                is MapList.Item.PsHead -> drawPsRibbon(c, row)                     // pg1: "Polestar · No guide" (never a stop)
                 is MapList.Item.Group -> drawGroup(c, it, row)
                 is MapList.Item.Untracked -> questById[it.id]?.let { e -> drawRow(c, e, row) }
             }
-            if (it !is MapList.Item.Section) trackerHits.add(row to it)
+            if (it !is MapList.Item.Section && it !is MapList.Item.PsHead) trackerHits.add(row to it)
             // THE SELECTED ROW, highlighted with the kit's focus (the user: "it should like highlight"), and the up / down arrows
             // that say the controller changes it (none above the first stop, none below the last), centred in its gaps
             if (sel) {
-                UiKit.focus(c, row)
+                UiKit.focus(c, if (it is MapList.Item.Polestar) psCardBox(row) else row)     // the light blue row: its card, under the ribbon
                 val si = stops.indexOf(it.key)
                 UiKit.moveArrowsUpDown(c, row, up = si > 0, down = si < stops.size - 1, size = 22f, width = 34f, around = true, gap = SEL_GAP)
             }
+            // the light blue row's ribbon last: over its card's edge, and over the selection's gold bar when it is selected
+            if (it is MapList.Item.Polestar && psCard() != null) drawPsRibbon(c, row)
         }
         c.restore()
         if (more > 0) c.drawText(Tr.t("$more more below"), x + ROW_PAD_X, y0 + gh - 10f, dp)
@@ -6525,6 +6706,7 @@ class MapView(context: Context) : View(context) {
         // No tiles on the device yet (the harvest still building), or a continent's worth on screen: the old grid.
         val rT = rect
         var terrain = false
+        var drew = false; var allAbsent = true           // a tile drawn this frame; every tile here looked for and not on the device
         if (rT != null && rT.valid && MinimapTiles.has(rT.continent)) {
             val adt = MinimapTiles.ADT
             val wyW = rT.left - (cxView - halfX) * rT.width; val wyE = rT.left - (cxView + halfX) * rT.width
@@ -6542,8 +6724,9 @@ class MapView(context: Context) : View(context) {
                     // half a pixel of overlap so filtered neighbours never show a hairline between them
                     tileDst.set(sx(rT.nx((32 - col) * adt)) - 0.5f, sy(rT.ny((32 - row) * adt)) - 0.5f,
                                 sx(rT.nx((31 - col) * adt)) + 0.5f, sy(rT.ny((31 - row) * adt)) + 0.5f)
-                    MinimapTiles.get(rT.continent, col, row, sample) { invalidate() }?.let { c.drawBitmap(it, null, tileDst, pArt) }
-                    if (full) MinimapTiles.get(rT.continent, col, row) { invalidate() }?.let { c.drawBitmap(it, null, tileDst, pArt) }
+                    MinimapTiles.get(rT.continent, col, row, sample) { invalidate() }?.let { c.drawBitmap(it, null, tileDst, pArt); drew = true }
+                        ?: run { if (!MinimapTiles.absent(rT.continent, col, row, sample)) allAbsent = false }
+                    if (full) MinimapTiles.get(rT.continent, col, row) { invalidate() }?.let { c.drawBitmap(it, null, tileDst, pArt); drew = true }
                 }
                 c.restore()
             }
@@ -6555,6 +6738,13 @@ class MapView(context: Context) : View(context) {
                 c.drawLine(left, top + fh * i / 4f, left + fw, top + fh * i / 4f, pGrid)
             }
         }
+        // issues #316 #317 #284 (1.0.32, "its black with blue zones", "game art shows its finished but map is still empty"): Home's map
+        // pictures not made yet (the background art builds them while the game is closed): said in the Map room's words, under the markers
+        // (review: also over this continent's folder with no tile here yet - the step part-way - not only with no folder at all)
+        val tilesShown = HomeMapNote.terrainShown(terrain, drew, allAbsent, artNote != null)
+        artNote = if (HomeMapNote.shows(morphOn, tilesShown, MinimapTiles.building())) HomeMapNote.TEXT else null
+        // (review: on the open map, in the part the quest list leaves - where the player is centred - not under the list)
+        artNote?.let { drawArtNote(c, it, left + trackPx, top, fw - trackPx, fh, compact) }
         // the floorplan sits ON the terrain, under every marker -- same projection, so it
         // lines up with the world by construction rather than by a second transform
         val flPlace = placeHere(m)
@@ -7398,6 +7588,12 @@ class MapView(context: Context) : View(context) {
                 fly = morphOn && morphCard != null)
             else { trackerRect.setEmpty(); flyLand.setEmpty() }
             if (rows >= 0) c.restoreToCount(rows)
+            // pm3: the Next / Previous step choice under the light blue row (the Map room's look)
+            val psRow = if (stepChoice.open && !morphOn) trackerHits.firstOrNull { it.second is MapList.Item.Polestar }?.first else null
+            if (stepChoice.open && !morphOn && psRow == null) stepChoice.close()
+            // (under the selection's gold down-arrow, which stays in sight)
+            if (psRow != null) stepChoice.draw(c, RectF(psRow.left, psRow.top, psRow.right, psRow.bottom + 26f), top + BTN_GAP, top + fh - 64f - (if (hintsOn()) HINT_BAND else 0f), STEP_ROW)
+            else stepChoice.draw(c, RectF(), 0f, 0f, STEP_ROW)
             // the player menu beside the list, from the top (the portrait's height)
             if (pmenu.open && !morphOn) {
                 val lw = if (showTracker && items.isNotEmpty()) min(TRACKER_W, fw * 0.34f) + 16f else 0f

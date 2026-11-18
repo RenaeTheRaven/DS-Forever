@@ -100,7 +100,99 @@ end
 -- overshot the facing by more than it corrected, so the bar swung left and right a little wider each frame, up to whole-bar
 -- swings and the 2.5 rad reset. Now each step is the spring's EXACT solution over dt (closed form, the same 0.2 s settle):
 -- stable at any frame time, never overshooting, the letters still placed at sub-pixel offsets (no snapping of a moving offset).
-WC.compass = { V = "cp40" }
+-- cp42 THE 11-16 TEST BUILD MERGE: issue #358's cp41 (the font family, WC.font) and feat/big-layout's cp41 (the compass in the
+-- layout editor) both kept; both notes below
+-- cp41 ISSUE #358 (a player: "Character names: Cyrillic characters are displayed as empty squares instead of actual letters"; the
+-- user's pick, 2026-11-16: the font family, "CreateFontFamily with the game's per-alphabet members, like the game's own frames"):
+-- WC.font(fs, height, flags) - OUR TOP-SCREEN TEXT IN A FONT FAMILY, the way the game's own frames draw theirs. SetFont with
+-- Fonts\FRIZQT__.TTF picks ONE file, and that file has no Cyrillic letters (253 glyphs, none in U+0400-04FF; its placeholder glyph
+-- is a hollow box), so every Cyrillic letter drew as an empty square. The game's fonts are families (blizzard_fonts_shared
+-- fonts.xml): one member font per alphabet, each letter drawn from its own alphabet's member. WC.font makes one family per
+-- (height, flags) with CreateFontFamily and the game's own members (roman FRIZQT__, russian FRIZQT___CYR, korean 2002, simplified
+-- Chinese ARKai_T, traditional Chinese blei00d; roman + russian only on a client that refuses that set), so Latin keeps today's
+-- look (the same FRIZQT__ file at the same size) and the other alphabets draw. SetFontObject hands the string the object's colour,
+-- shadow, justification and spacing, so the string's own go back on after it (plain values only: nothing secret is read back, a
+-- string's text is never read). No family on this client (no CreateFontFamily, or it fails): SetFont(FRIZQT__) as before.
+-- Runtime objects only (WowCompanionFont<n>, never saved). Hub's name strings (uf23) and our other top-screen text use it; here the
+-- compass's letters, distances and numbers (C.FONT stays the roman member, the fallback).
+do
+    local ROMAN = "Fonts\\FRIZQT__.TTF"
+    local ALL = { { "roman", ROMAN }, { "korean", "Fonts\\2002.ttf" }, { "simplifiedchinese", "Fonts\\ARKai_T.ttf" },
+                  { "traditionalchinese", "Fonts\\blei00d.TTF" }, { "russian", "Fonts\\FRIZQT___CYR.TTF" } }
+    local F = { V = "cp41", ROMAN = ROMAN, SETS = { ALL, { ALL[1], ALL[5] } }, set = 1, n = 0, fams = {} }
+    WC.fontFamily = F
+    local function plain(...)
+        local isPlain = WC.isPlain
+        if type(isPlain) ~= "function" then return true end
+        for i = 1, select("#", ...) do if not isPlain((select(i, ...))) then return false end end
+        return true
+    end
+    -- a new family of the current member set; a set the client refuses is dropped for this one and every later family
+    local function make(h, flags)
+        while F.set <= #F.SETS do
+            local m = {}
+            for i, a in ipairs(F.SETS[F.set]) do m[i] = { alphabet = a[1], file = a[2], height = h, flags = flags } end
+            F.n = F.n + 1
+            local ok, obj = pcall(CreateFontFamily, "WowCompanionFont" .. F.n, m)
+            if ok and obj ~= nil then
+                local okF, file = pcall(function() return obj:GetFont() end)
+                if okF and type(file) == "string" and file ~= "" then return obj end
+            end
+            F.set = F.set + 1
+        end
+        return false
+    end
+    local function family(h, flags)
+        local key = string.format("%.3f|%s", h, flags)
+        local obj = F.fams[key]
+        if obj == nil then
+            obj = type(CreateFontFamily) == "function" and make(h, flags) or false
+            F.fams[key] = obj
+        end
+        return obj
+    end
+    -- the string's own looks that SetFontObject replaces with the object's (only values that test plain FIRST are kept)
+    local function keep(fs)
+        local k = {}
+        local ok, r, g, b, a = pcall(fs.GetTextColor, fs)
+        if ok and plain(r, g, b, a) and type(r) == "number" then k.tc = { r, g, b, a or 1 } end
+        local okO, x, y = pcall(fs.GetShadowOffset, fs)
+        if okO and plain(x, y) and type(x) == "number" and type(y) == "number" then k.so = { x, y } end
+        local okC, sr, sg, sb, sa = pcall(fs.GetShadowColor, fs)
+        if okC and plain(sr, sg, sb, sa) and type(sr) == "number" then k.sc = { sr, sg, sb, sa or 1 } end
+        local okH, jh = pcall(fs.GetJustifyH, fs)
+        if okH and plain(jh) and type(jh) == "string" then k.jh = jh end
+        local okV, jv = pcall(fs.GetJustifyV, fs)
+        if okV and plain(jv) and type(jv) == "string" then k.jv = jv end
+        local okS, sp = pcall(fs.GetSpacing, fs)
+        if okS and plain(sp) and type(sp) == "number" then k.sp = sp end
+        return k
+    end
+    local function put(fs, k)
+        if k.tc then pcall(fs.SetTextColor, fs, k.tc[1], k.tc[2], k.tc[3], k.tc[4]) end
+        if k.so then pcall(fs.SetShadowOffset, fs, k.so[1], k.so[2]) end
+        if k.sc then pcall(fs.SetShadowColor, fs, k.sc[1], k.sc[2], k.sc[3], k.sc[4]) end
+        if k.jh then pcall(fs.SetJustifyH, fs, k.jh) end
+        if k.jv then pcall(fs.SetJustifyV, fs, k.jv) end
+        if k.sp then pcall(fs.SetSpacing, fs, k.sp) end
+    end
+    -- in place of fs:SetFont(FRIZQT__, h, flags): true = the family, false = the plain file (no family on this client)
+    function WC.font(fs, h, flags)
+        flags = flags or ""
+        local obj = type(h) == "number" and h > 0 and family(h, flags)
+        if obj then
+            local k = keep(fs)
+            if pcall(fs.SetFontObject, fs, obj) then put(fs, k); return true end
+        end
+        fs:SetFont(ROMAN, h, flags)
+        return false
+    end
+end
+-- cp41 THE COMPASS IN THE LAYOUT EDITOR (the user, 2026-11-16:
+-- "we need to make a way to basically edit the UI locations on the top screen from our UI menu"): the bar's place and size are the layout's (TapPad pad22 WC.lay.get("compass"): its top-centre at (dx, 4 + dy)
+-- 1080-line pixels from the screen's top-centre, scale s % of the frame: C.place); C.lay is the piece Hub's editor gathers. The target
+-- bar follows it until the target bar is moved itself (Hub uf23).
+WC.compass = { V = "cp42" }
 do
     local C = WC.compass
     local PI = math.pi
@@ -172,6 +264,39 @@ do
         return C.k
     end
     function C.u(px) return px * (C.k or C.scale()) end
+
+    -- cp41: the bar's place and scale from the layout (no entry: the spec's place, scale 1)
+    C.S_MIN, C.S_MAX, C.S_STEP = 70, 150, 10
+    function C.place()
+        local f = C.frame
+        if not f then return end
+        local L = WC.lay
+        local e = type(L) == "table" and type(L.get) == "function" and L.get("compass") or nil
+        local dx, dy = e and num(e.dx) or 0, e and num(e.dy) or 0
+        local sc = math.max(C.S_MIN, math.min(C.S_MAX, e and num(e.s) or 100)) / 100
+        pcall(f.SetScale, f, sc)
+        f:ClearAllPoints()
+        -- (the offsets are in the frame's own scaled units)
+        f:SetPoint("TOP", UIParent, "TOP", C.u(dx) / sc, -C.u(C.SPEC.top + dy) / sc)
+    end
+    C.lay = {
+        id = "compass", sn = C.S_MIN, sx = C.S_MAX, ss = C.S_STEP,
+        base = function()
+            local W = type(WC.lay) == "table" and WC.lay.screen() or 1920
+            return W / 2, C.SPEC.top
+        end,
+        size = function(e)
+            local sc = ((e and num(e.s)) or 100) / 100
+            return C.SPEC.w * sc, C.SPEC.h * sc
+        end,
+        off = function(w) return -w / 2, 0 end,
+        on = function() return C.wanted() end,
+        apply = function()
+            C.place()
+            -- the target bar follows the compass (Hub's uf23 reads the compass frame's own rect)
+            if type(WC.uf) == "table" and type(WC.uf.placeTarget) == "function" then pcall(WC.uf.placeTarget) end
+        end,
+    }
 
     -- the player's facing as counter-clockwise radians from north (the game's own convention), or nil
     function C.facing()
@@ -390,7 +515,7 @@ do
         C.frame = f
         local S, u = C.SPEC, C.u
         f:SetSize(u(S.w), u(S.h))
-        f:SetPoint("TOP", UIParent, "TOP", 0, -u(S.top))
+        C.place()
         -- the ground: our own soft band texture, its alpha already fading smoothly to every edge
         local g = f:CreateTexture(nil, "BACKGROUND")
         g:SetTexture(C.BAND)
@@ -403,7 +528,7 @@ do
         for deg = 0, 345, 15 do
             if C.NAMES[deg] then
                 local fs = f:CreateFontString(nil, "OVERLAY")
-                fs:SetFont(C.FONT, u(#C.NAMES[deg] == 1 and S.letter or S.letter2), "OUTLINE")
+                WC.font(fs, u(#C.NAMES[deg] == 1 and S.letter or S.letter2), "OUTLINE")
                 fs:SetText(C.NAMES[deg])
                 fs:SetTextColor(C.TICK[1], C.TICK[2], C.TICK[3], 1)
                 C.slot[deg] = { fs = fs, lifted = false }
@@ -431,7 +556,7 @@ do
             o.sh:SetSize(sz + u(3), sz + u(3))
             o.tx:SetSize(sz, sz)
             o.d = f:CreateFontString(nil, "OVERLAY")
-            o.d:SetFont(C.FONT, u(S.dist), "OUTLINE")
+            WC.font(o.d, u(S.dist), "OUTLINE")
             if spec.red then o.d:SetTextColor(1, 0.25, 0.25, 1) else o.d:SetTextColor(1, 1, 1, 1) end
             o.a = f:CreateTexture(nil, "ARTWORK", nil, 3)
             pcall(function() o.a:SetAtlas("Navigation-Tracked-Arrow") end)
@@ -441,7 +566,7 @@ do
                 -- brown disc (read from its atlas: the modern style, numbers drawn light on it); cp17's dark brown number was there
                 -- but invisible on it. Now light, outlined, over the disc (OVERLAY over its ARTWORK)
                 o.num = f:CreateFontString(nil, "OVERLAY", nil, 7)
-                o.num:SetFont(C.FONT, u(15), "")
+                WC.font(o.num, u(15), "")
                 o.num:SetTextColor(C.NUM_RGB[1], C.NUM_RGB[2], C.NUM_RGB[3], 1)   -- cp27: dark on our gold disc
             end
             C.mk[key] = o
@@ -985,10 +1110,10 @@ do
             dia:SetVertexColor(C.GOLD[1], C.GOLD[2], C.GOLD[3])
             dia:Hide()
             local d = f:CreateFontString(nil, "OVERLAY")
-            d:SetFont(C.FONT, C.u(13), "OUTLINE")
+            WC.font(d, C.u(13), "OUTLINE")
             d:SetPoint("TOP", f, "BOTTOM", 0, -C.u(2))
             local nm = f:CreateFontString(nil, "OVERLAY", nil, 7)            -- cp27: the objective's number on its disc
-            nm:SetFont(C.FONT, C.u(16), "")
+            WC.font(nm, C.u(16), "")
             nm:SetTextColor(C.NUM_RGB[1], C.NUM_RGB[2], C.NUM_RGB[3], 1)
             nm:SetPoint("CENTER", f, "CENTER", 0, 0)
             nm:Hide()
@@ -1601,7 +1726,7 @@ do
             o.ln[i] = f:CreateLine(nil, "ARTWORK", nil, 2); o.ln[i]:SetColorTexture(R[1], R[2], R[3], 1)
         end
         o.d = f:CreateFontString(nil, "OVERLAY")
-        o.d:SetFont(C.FONT, C.u(C.SPEC.dist), "OUTLINE")
+        WC.font(o.d, C.u(C.SPEC.dist), "OUTLINE")
         o.d:SetTextColor(R[1], R[2], R[3], 1)
         o.a = f:CreateTexture(nil, "ARTWORK", nil, 3)
         pcall(function() o.a:SetAtlas("Navigation-Tracked-Arrow") end)
@@ -1687,7 +1812,7 @@ do
             local s = C.slot[l.deg]
             seen[l.deg] = true
             if s.lifted ~= l.lifted then                    -- the font only when the size changes (a marker came / went)
-                s.fs:SetFont(C.FONT, u(l.size), "OUTLINE")
+                WC.font(s.fs, u(l.size), "OUTLINE")
                 s.lifted = l.lifted
             end
             s.fs:SetAlpha(C.LETTER_A * l.fade)
@@ -1769,10 +1894,10 @@ do
             o.dsh = f:CreateTexture(nil, "ARTWORK", nil, 4); o.dsh:SetTexture(C.DISC_TEX); o.dsh:SetVertexColor(0, 0, 0, 0.6)
             o.disc = f:CreateTexture(nil, "ARTWORK", nil, 5); o.disc:SetTexture(C.DISC_TEX)
             o.num = f:CreateFontString(nil, "OVERLAY", nil, 7)
-            o.num:SetFont(C.FONT, u(15), "")
+            WC.font(o.num, u(15), "")
             o.num:SetTextColor(C.NUM_RGB[1], C.NUM_RGB[2], C.NUM_RGB[3], 1)
             o.d = f:CreateFontString(nil, "OVERLAY")
-            o.d:SetFont(C.FONT, u(C.SPEC.dist), "OUTLINE")
+            WC.font(o.d, u(C.SPEC.dist), "OUTLINE")
             o.d:SetTextColor(1, 1, 1, 1)
             o.ar = f:CreateTexture(nil, "ARTWORK", nil, 3); pcall(function() o.ar:SetAtlas("Navigation-Tracked-Arrow") end)
             o.ar:SetSize(u(14), u(14))
@@ -2109,7 +2234,15 @@ end
 --   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
 --   NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
 --   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-WC.live = { V = "ag11", MAX = 24, REUSE_S = 10, SCAN_S = 0.2, FULL_S = 5, STILL_S = 1, slot = {}, byTok = {}, toks = {}, freeAt = {},
+-- ag13 THE 1.0.33 TEST BUILD MERGE (code 1475): fix/t16-singles (#358) and feat/wk-npf both tagged ag12, both kept (the font
+-- family = ag12f, Friendly plates Off for the session = ag12n).
+-- ag12f ISSUE #358 (a player: "Cyrillic characters are displayed as empty squares instead of actual letters"; the user's pick,
+-- 2026-11-16: the font family, "like the game's own frames"): the pull pick's step number (A.iconFor) takes cp41's WC.font
+-- instead of SetFont(FRIZQT__); the same look in Latin.
+-- ag12n (the user, 2026-11-16: "Sometimes while playing the friendly name plates will turn themselves back on even though they are
+-- turned off in the menu."): Friendly plates Off stays off for the session; only the player's own change through the game's own
+-- controls stands (A.friendsOffStep below).
+WC.live = { V = "ag13", MAX = 24, REUSE_S = 10, SCAN_S = 0.2, FULL_S = 5, STILL_S = 1, slot = {}, byTok = {}, toks = {}, freeAt = {},
             q = 0, bands = {}, ghosts = {}, pulls = {}, sent = { full = 0, same = 0, still = 0, off = 0 } }
 do
     local A = WC.live
@@ -2604,6 +2737,7 @@ do
         A.FRIENDS_ON = on
         A.friendWas = nil                       -- re-decided on the next step
         A.offDeclined = {}                      -- ag11: a new choice: the player's own on (declined) is re-decided too
+        A.offSeen, A.offPlayer, A.offAt = {}, {}, {}   -- ag12: the next reading is the game's value again (a press before it: re-decided)
     end
     -- ag11 OFF HIDES THEM (the user on build 1462: "friendly name plates still show with the setting off"). THE CAUSE: ag9 / ag10's Off
     -- only stopped US turning the friendly plates on; it never turned off what was already on in the player's game - the game's own
@@ -2615,8 +2749,82 @@ do
     -- (before On's own rule runs), and at log out (a disabled add-on or a closed game leaves the game as it was). A change of the
     -- player's own in the game meanwhile (an option of ours back on) stands for this session: dropped from the record, not fought.
     -- An option the client does not have reads nil and is skipped. Fights keep the 0 (nothing is put back at PLAYER_REGEN_DISABLED).
+    -- ag12 OFF STAYS OFF (the user, 2026-11-16: "Sometimes while playing the friendly name plates will turn themselves back on even
+    -- though they are turned off in the menu."). THE CAUSE: ag11 took EVERY 1 found where ours was 0 for the player's own choice and
+    -- gave Off up for the rest of the session (offDeclined + the record dropped), but it could not tell who wrote that 1, and the game
+    -- writes it too: the Off step ran from the first frame of the load (this file's ticker), before the game had put the character's
+    -- own saved options in place (C_CVar.AreCVarsLoaded; the game's own UI waits for VARIABLES_LOADED before it trusts a CVar), so the
+    -- game's load wrote the player's stored 1 over our 0 and ag11 read that as "the player turned it back on" - friendly plates for the
+    -- whole session, on the logins where the load landed after our first step (a /reload finds the options loaded: so "sometimes").
+    -- Any other writer that is not the player (another add-on, a game write we do not know of) did the same. NOW:
+    --   - the Off step waits for the game's options: VARIABLES_LOADED seen (PLAYER_ENTERING_WORLD + CV_GRACE_S without it) and
+    --     C_CVar.AreCVarsLoaded() not false; nothing is read as the player's value or written before;
+    --   - the PLAYER's own change is the one the game's own controls make: the Interface options' Friendly Players / Friendly NPCs
+    --     boxes (setting:SetValue(v)), their Defaults (setting:SetValueToDefault()) and the game's FRIENDNAMEPLATES / ALLNAMEPLATES
+    --     keys (Settings.SetValue(var, v) -> setting:SetValue(v)), all on the game's own setting OBJECT for the option
+    --     (Blizzard_Settings_Shared, Settings.GetSetting; the game registers it after VARIABLES_LOADED + PLAYER_ENTERING_WORLD). Off
+    --     post-hooks those two methods on the two objects (hooksecurefunc: the game's call runs first and as it was, ours only sets a
+    --     flag; read only) and only such a call marks a change as the player's. NOT the value-changed event
+    --     (Settings.SetOnValueChangedCallback, ag12's first cut): every script-API / console CVar write fires CVAR_UPDATE, and
+    --     SettingsPanel:OnCVarChanged answers it with setting:SetValue(value, true) - the same event - so an add-on's SetCVar (ours
+    --     too) read as the player's; that forced call (force true) is the one SetValue we do not count. A key press counts: it is the
+    --     game's own control, the game prints its own message for it (NAMEPLATES_MESSAGE_FRIENDLY_ON / _OFF), and a second press turns
+    --     them off again. Their on stands until the next load (as ag11); their off hands it back to Off;
+    --   - any other change (none of ours, no such call) is NOT the player's: Off puts the 0 back out of a fight (at most once each
+    --     OFF_MIN_S, so a writer that keeps fighting is not raced) and the record keeps the game's value to give back at log out;
+    --   - Off waits (up to OFF_HOOK_N steps) for the game's setting objects; an option the client has no object for keeps ag11's
+    --     reading (a change after ours is the player's), as does a client without Settings / hooksecurefunc.
     A.NP_FRIEND_OFF = { "nameplateShowFriendlyPlayers", "nameplateShowFriends", "nameplateShowFriendlyNPCs" }
+    -- the game's Settings variables (case matters there, not in a CVar name) -> our option names
+    A.NP_FRIEND_SETTINGS = { nameplateShowFriendlyPlayers = "nameplateShowFriendlyPlayers", nameplateShowFriends = "nameplateShowFriends",
+                             nameplateShowFriendlyNpcs = "nameplateShowFriendlyNPCs", nameplateShowFriendlyNPCs = "nameplateShowFriendlyNPCs" }
+    A.CV_GRACE_S = 3
+    A.OFF_MIN_S = 1
+    A.OFF_HOOK_N = 50                           -- steps (SCAN_S each, out of a fight) to find the game's setting objects
     A.offDeclined = {}
+    A.offSeen = {}                              -- ag12: each option as Off last read / wrote it (nil: the next reading is the game's)
+    A.offPlayer = {}                            -- ag12: the game's own controls changed it since the last step
+    A.offAt = {}                                -- ag12: Off's last write of each
+    A.offFix = 0                                -- ag12: 0s put back after one of ours (a change that was not the player's; the probe line)
+    A.offHooked = {}                            -- ag12: our option name -> its game setting object is hooked (never unhooked)
+    A.offHookN = 0
+    function A.cvReady()
+        if not (A.varsLoaded or (A.pewAt ~= nil and now() - A.pewAt >= A.CV_GRACE_S)) then return false end
+        if type(C_CVar) == "table" and type(C_CVar.AreCVarsLoaded) == "function" and pv(C_CVar.AreCVarsLoaded) == false then return false end
+        return true
+    end
+    -- true once every option the client has is hooked, or the looking is over (no Settings / hooksecurefunc, or OFF_HOOK_N steps)
+    function A.offHookTry()
+        if A.offHookDone then return true end
+        local api = type(Settings) == "table" and type(Settings.GetSetting) == "function" and type(hooksecurefunc) == "function"
+        local want = false
+        if api then
+            for variable, name in pairs(A.NP_FRIEND_SETTINGS) do
+                if not A.offHooked[name] and cvGet(name) ~= nil then
+                    local ok, setting = pcall(Settings.GetSetting, variable)
+                    if ok and type(setting) == "table" and type(setting.SetValue) == "function" then
+                        -- flags only: the step reads the option itself, out of a fight. force true = SettingsPanel:OnCVarChanged
+                        -- answering a CVar write that did not come through the setting (an add-on's, ours, the console)
+                        if pcall(hooksecurefunc, setting, "SetValue", function(_, _, force)
+                            if force ~= true then A.offPlayer[name] = true end
+                        end) then
+                            A.offHooked[name] = true
+                            if type(setting.SetValueToDefault) == "function" then
+                                pcall(hooksecurefunc, setting, "SetValueToDefault", function() A.offPlayer[name] = true end)
+                            end
+                        end
+                    end
+                end
+            end
+            for _, name in ipairs(A.NP_FRIEND_OFF) do
+                if not A.offHooked[name] and cvGet(name) ~= nil then want = true end
+            end
+        end
+        A.offHookN = A.offHookN + 1
+        if not want or A.offHookN >= A.OFF_HOOK_N then A.offHookDone = true end
+        A.offHook = next(A.offHooked) ~= nil
+        return A.offHookDone == true
+    end
     function A.friendsOffRestore(why)
         local saved = type(WowCompanionDB) == "table" and WowCompanionDB.npFriendsOff or nil
         if type(saved) ~= "table" then return end
@@ -2632,30 +2840,61 @@ do
         end
         WowCompanionDB.npFriendsOff = next(left) ~= nil and { orig = left } or nil
         A.offWhy = why
+        A.offSeen, A.offAt = {}, {}             -- ag12: the values given back are the game's: the next reading is the game's value
     end
     function A.friendsOffStep()
         if pv(InCombatLockdown) == true then return end
+        -- ag12: not before the game's own saved options are in place (its load would write over our 0)
+        if not A.cvReady() then A.offWait = true; return end
+        -- ag12: nor before the game's setting objects are hooked (the player's own change could not be told from another's)
+        if not A.offHookTry() then A.offWait = true; return end
+        A.offWait = nil
         local saved = WowCompanionDB.npFriendsOff
         if type(saved) == "table" and type(saved.orig) ~= "table" then saved.orig = {} end
+        local t = now()
         for _, name in ipairs(A.NP_FRIEND_OFF) do
             local cur = cvGet(name)
+            local player = A.offPlayer[name] == true
+            A.offPlayer[name] = nil
             if cur ~= nil then
-                local mine = type(saved) == "table" and saved.orig[name] ~= nil
-                if tonumber(cur) ~= 0 then
-                    if mine then
-                        -- ours was 0: the player turned it back on in the game; their choice stands (this session)
-                        saved.orig[name] = nil
-                        A.offDeclined[name] = true
-                    elseif not A.offDeclined[name] then
-                        saved = saved or { orig = {} }
-                        saved.orig[name] = cur
-                        WowCompanionDB.npFriendsOff = saved
-                        cvSet(name, "0")
+                local seen = A.offSeen[name]
+                local on = tonumber(cur) ~= 0
+                if seen == nil or tonumber(seen) ~= tonumber(cur) then
+                    -- a change that is not a write of ours, or the first reading of this load: the game's value now
+                    if player or (not A.offHooked[name] and seen ~= nil) then
+                        -- the player's own (the game's options / key; without its setting object, ag11's reading): an on stands
+                        -- for this session, an off gives the option back to Off
+                        A.offDeclined[name] = on or nil
+                    end
+                    local keep = seen == nil and not on and type(saved) == "table" and saved.orig[name] ~= nil
+                    if not keep then
+                        -- keep: a first reading of a 0 of ours left from before (a refused give-back); else the record holds the
+                        -- game's value exactly while Off holds a 0 over it
+                        if on and not A.offDeclined[name] then
+                            saved = saved or { orig = {} }
+                            saved.orig[name] = cur
+                            WowCompanionDB.npFriendsOff = saved
+                        elseif type(saved) == "table" then
+                            saved.orig[name] = nil
+                        end
                     end
                 end
+                if on and not A.offDeclined[name] and not (A.offAt[name] ~= nil and t - A.offAt[name] < A.OFF_MIN_S) then
+                    if A.offAt[name] ~= nil then A.offFix = A.offFix + 1 end    -- a put-back after a 0 of ours
+                    A.offAt[name] = t
+                    cvSet(name, "0")
+                end
+                A.offSeen[name] = cvGet(name) or cur
             end
         end
         if type(saved) == "table" and next(saved.orig) == nil then WowCompanionDB.npFriendsOff = nil end
+    end
+    -- ag12: the probe line's word on Off (plain values only)
+    function A.npfDiag()
+        local dec = 0
+        for _ in pairs(A.offDeclined) do dec = dec + 1 end
+        return { on = A.FRIENDS_ON == true, hook = A.offHook == true, wait = A.offWait == true or nil, fix = A.offFix,
+                 dec = dec > 0 and dec or nil, pl = cvGet("nameplateShowFriendlyPlayers"), npc = cvGet("nameplateShowFriendlyNPCs") }
     end
     function A.friendsStep()
         if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
@@ -2852,7 +3091,7 @@ do
         pcall(function() pk:SetAtlas("TargetCrosshairs") end)
         pk:Hide()
         local pn = f:CreateFontString(nil, "OVERLAY")
-        pcall(function() pn:SetFont("Fonts\\FRIZQT__.TTF", u(13), "OUTLINE") end)
+        pcall(function() WC.font(pn, u(13), "OUTLINE") end)               -- ag12 (#358): the family (cp41 WC.font)
         pn:SetPoint("BOTTOMLEFT", pk, "TOPRIGHT", -u(8), -u(10))
         pcall(function() pn:SetTextColor(1, 0.82, 0, 1) end)
         pn:Hide()
@@ -2934,6 +3173,7 @@ do
                        still = A.sent.still, rej = A.lastReject, err = A.err,
                        picks = (A.pick[1] and 1 or 0) + (A.pick[2] and 1 or 0), win = A.win and A.win.op or nil,
                        np = A.np.state, npv = npGet(), npo = A.npSaved() and A.npSaved().orig or nil, icons = A.iconN or 0,
+                       npf = A.npfDiag(),
                        route = A.routing(), pin = type(WC.routeWp) == "table" and WC.routeWp.active == true,
                        rings = type(WC.rings) == "table" and { v = WC.rings.V, on = WC.rings.wanted(), n = WC.rings.n,
                                                                    why = WC.rings.whyLine and WC.rings.whyLine() or nil } or nil,
@@ -2944,7 +3184,7 @@ do
 
     -- ---------------------------------------------------------------- events and the ticker
     local ev = CreateFrame("Frame")
-    for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED", "SPELLS_CHANGED",
+    for _, e in ipairs({ "PLAYER_ENTERING_WORLD", "VARIABLES_LOADED", "NAME_PLATE_UNIT_ADDED", "NAME_PLATE_UNIT_REMOVED", "SPELLS_CHANGED",
                          "ITEM_DATA_LOAD_RESULT", "CVAR_UPDATE", "ENCOUNTER_START", "ENCOUNTER_END", "UNIT_SPELLCAST_SENT",
                          "PLAYER_ENTER_COMBAT", "START_AUTOREPEAT_SPELL", "UNIT_THREAT_LIST_UPDATE", "PLAYER_LOGOUT", "PLAYER_REGEN_DISABLED" }) do
         pcall(function() ev:RegisterEvent(e) end)
@@ -2957,7 +3197,10 @@ do
             elseif e == "PLAYER_REGEN_DISABLED" then
                 -- a fight: the player's plate values back now (no friendly-target change sticks through a fight); re-decided after it
                 pcall(A.friendsRestore, "combat"); A.friendWas = nil
+            elseif e == "VARIABLES_LOADED" then
+                A.varsLoaded = true                 -- ag12: the game's own saved options are in place (Off may read / write them)
             elseif e == "PLAYER_ENTERING_WORLD" then
+                A.pewAt = A.pewAt or now()          -- ag12: Off's fallback wait when VARIABLES_LOADED never comes
                 -- a value of ours left from before (a crash): back to the player's once the route is not running (npStep's grace)
                 if A.npSaved() then A.np.offSince = now() - A.NP_OFF_S + 3 end
                 -- a reload / login: every slot cleared, q from 1 (the contract)
@@ -3301,7 +3544,23 @@ end
 -- Blizzard's own aura buttons do: P.auraSweep hands it straight over (never read or compared) for the HUD's row and Hub's target bar;
 -- without the functions, or refused, the old route as before. Feature-detected; the route that worked rides one "cap" line (probe
 -- "aurasweep") per route a login.
-WC.prd = { V = "prd17", PET_FADE_S = 0.2, PET_SIDE_GAP = 12, PARTY_GAP = 8, AURA_UP = 22, LIFT_MARGIN = 8, lift = 0, petSide = "under", auraUp = false, partyRoomPx = 0, PICK_S = 0.1, PICK_PAD = 4, PICK_PX = 2, PICK_GOLD = { 1, 0.82, 0 }, PET_W = 0.6, PET_HH = 8, PET_PH = 4, PET_BAR_GAP = 1, PET_GAP = 17, PET_ICON = 36, PET_IGAP = 10, PET_HAPPY = 20,
+-- prd19 THE 11-16 TEST BUILD MERGE: issue #358's prd18 (the font family) and feat/big-layout's prd18 (the HUD in the layout
+-- editor) both kept; both notes below
+-- prd18 ISSUE #358 (a player: "Cyrillic characters are displayed as empty squares instead of actual letters"; the user's pick,
+-- 2026-11-16: the font family, "like the game's own frames"): the HUD row's aura seconds and stack counts take cp41's WC.font
+-- instead of SetFont(FRIZQT__); the same look in Latin.
+-- prd18 THE HUD IN THE LAYOUT EDITOR (the user, 2026-11-16:
+-- "we need to make a way to basically edit the UI locations on the top screen from our UI menu";
+-- the design's pick: HUD height and scale move into the editor, the width stays a row): the HUD's PLACE and SIZE are
+-- the layout's (TapPad pad22 WC.lay, per character: WowCompanionDB.lay[name-realm].hud = { dx, dy, s }): its top-centre at the screen's
+-- centre plus (dx, 350 + dy) 1080-line pixels, its scale s % (S_MIN..S_MAX in S_STEP, as before), the place independent of the scale
+-- (the scale grows the bars round their top-centre). P.y / P.x stay the bar's own frame-unit offsets (P.fromLay), so the pet strip, the
+-- auras, the pick boxes, Party mode's lift and Hub's party grid (P.partyGeo, now with the HUD's x) follow it as before. ONCE (layV 1,
+-- every character at once) the old height / scale (prdY / prdS, the app's slider) become that character's layout entry, so nothing
+-- moves; the hub document then says the layout owns the two (prd.lay: the app drops them from its tap loop). Hub's old columns 36-39
+-- still step them for an older app (into the saved entry: the player's press). While the editor is open the HUD is held up at its rest
+-- alpha (why "layout"), so the piece being moved is seen. P.lay is the piece Hub's editor gathers.
+WC.prd = { V = "prd19", PET_FADE_S = 0.2, PET_SIDE_GAP = 12, PARTY_GAP = 8, AURA_UP = 22, LIFT_MARGIN = 8, lift = 0, petSide = "under", auraUp = false, partyRoomPx = 0, PICK_S = 0.1, PICK_PAD = 4, PICK_PX = 2, PICK_GOLD = { 1, 0.82, 0 }, PET_W = 0.6, PET_HH = 8, PET_PH = 4, PET_BAR_GAP = 1, PET_GAP = 17, PET_ICON = 36, PET_IGAP = 10, PET_HAPPY = 20,
            PET_DEAD_RGB = { 0.5, 0.5, 0.5 }, PET_HAPPY_TEX = "Interface\\PetPaperDollFrame\\UI-PetHappiness",
            PET_HAPPY_U = { { 0.375, 0.5625 }, { 0.1875, 0.375 }, { 0, 0.1875 } }, PET_HAPPY_V = 0.359375, petDrop = 0, CPH = 5, CP_GAP = 4, TRAVEL = 14, OUT_S = 0.45, vis = 0, dy = 0, ENERGY_S = 10, RAGE_S = 30, SEL_S = 4, W_DEF = 280, W_MIN = 180, W_MAX = 400, W_STEP = 20,
            S_DEF = 100, S_MIN = 70, S_MAX = 160, S_STEP = 10, sel = "y", FILL_ATLAS = { "UI-HUD-CoolDownManager-Bar-c60", "UI-HUD-CoolDownManager-Bar" }, HEALTH_RGB = { 0.12, 0.86, 0.12 }, LAG_S = 0.3, HEAL_RGB = { 0.47, 1, 0.47, 0.55 }, LAG_RGB = { 1, 0.86, 0.76 }, Y_DEF = -350, Y_MIN = -470, Y_MAX = -170, STEP = 10, W = 280, HH = 15, PH = 9, BAR_GAP = 8, ICON = 26, IGAP = 4,
@@ -3331,7 +3590,8 @@ do
         if ok and type(n) == "string" then return n .. "-" .. tostring(r or "") end
         return "?"
     end
-    function P.loadY()
+    -- the OLD height (prdY, frame units; the prd4 shift once) of [name], the default when none
+    local function oldY(name)
         -- prd4: a height the player set on the old default moves down with it, once (prdYv 2)
         if type(WowCompanionDB) == "table" and type(WowCompanionDB.prdY) == "table" and WowCompanionDB.prdYv ~= 2 then
             for k, v in pairs(WowCompanionDB.prdY) do
@@ -3340,10 +3600,63 @@ do
             WowCompanionDB.prdYv = 2
         end
         local t = type(WowCompanionDB) == "table" and WowCompanionDB.prdY
-        local y = type(t) == "table" and num(t[who()]) or nil
-        P.y = y and math.max(P.Y_MIN, math.min(P.Y_MAX, y)) or P.Y_DEF
+        local y = type(t) == "table" and num(t[name]) or nil
+        return y and math.max(P.Y_MIN, math.min(P.Y_MAX, y)) or P.Y_DEF
+    end
+    P.oldY = oldY
+    -- prd18 THE ONE-TIME MOVE (layV 1): every character's old height / scale -> its layout entry { dx 0, dy, s } (the top where it was:
+    -- the old top stood y * s spec px from the centre, the new one at Y_DEF - dy), never over an entry the layout already has
+    function P.layMigrate()
+        if type(WowCompanionDB) ~= "table" or WowCompanionDB.layV == 1 then return false end
+        local names = {}
+        for _, key in ipairs({ "prdY", "prdS" }) do
+            local t = WowCompanionDB[key]
+            if type(t) == "table" then for k in pairs(t) do if type(k) == "string" then names[k] = true end end end
+        end
+        local moved = 0
+        for name in pairs(names) do
+            local y = oldY(name)
+            local st = type(WowCompanionDB.prdS) == "table" and num(WowCompanionDB.prdS[name]) or nil
+            local sc = st and math.max(P.S_MIN, math.min(P.S_MAX, st)) or P.S_DEF
+            if y ~= P.Y_DEF or sc ~= P.S_DEF then
+                if type(WowCompanionDB.lay) ~= "table" then WowCompanionDB.lay = {} end
+                if type(WowCompanionDB.lay[name]) ~= "table" then WowCompanionDB.lay[name] = {} end
+                if WowCompanionDB.lay[name].hud == nil then
+                    WowCompanionDB.lay[name].hud = { dx = 0, dy = math.floor(P.Y_DEF - y * sc / 100 + 0.5), s = sc }
+                    moved = moved + 1
+                end
+            end
+        end
+        WowCompanionDB.layV = 1
+        P.layMoved = moved
+        return true
+    end
+    -- the HUD's layout entry: TapPad's WC.lay (the editor's view while it is open, else the saved one); without it (an older TapPad)
+    -- our saved table read directly
+    local function layHud()
+        local L = WC.lay
+        if type(L) == "table" and type(L.get) == "function" then return L.get("hud") end
+        local db = type(WowCompanionDB) == "table" and WowCompanionDB.lay or nil
+        local t = type(db) == "table" and db[who()] or nil
+        local e = type(t) == "table" and t.hud or nil
+        return type(e) == "table" and e or nil
+    end
+    -- the HUD's entry now -> P.sc, P.y, P.x (frame units: the offsets over the scale)
+    P.layOwns = true
+    function P.fromLay()
+        pcall(P.layMigrate)
+        local e = layHud()
+        local dx = e and num(e.dx) or 0
+        local dy = e and num(e.dy) or 0
+        local sc = e and num(e.s) or P.S_DEF
+        sc = math.max(P.S_MIN, math.min(P.S_MAX, sc))
+        dx, dy = math.max(-1920, math.min(1920, dx)), math.max(-1080, math.min(1080, dy))
+        P.sc = sc
+        P.y = (P.Y_DEF - dy) / (sc / 100)
+        P.x = dx / (sc / 100)
         return P.y
     end
+    function P.loadY() return P.fromLay() end
     -- the app's slider: one step down (-1) / up (+1), or back to the default (0)
     -- prd8: the width and the scale, per character
     local function kept(key, def, lo, hi)
@@ -3356,11 +3669,33 @@ do
         if type(WowCompanionDB[key]) ~= "table" then WowCompanionDB[key] = {} end
         WowCompanionDB[key][who()] = v ~= def and v or nil
     end
+    -- prd18: the layout's scale alone (P.fromLay sets the place with it; the place is left as it is here)
+    function P.layScale()
+        pcall(P.layMigrate)
+        local e = layHud()
+        return math.max(P.S_MIN, math.min(P.S_MAX, (e and num(e.s)) or P.S_DEF))
+    end
     function P.loadSize()
         P.wd = kept("prdW", P.W_DEF, P.W_MIN, P.W_MAX)
-        P.sc = kept("prdS", P.S_DEF, P.S_MIN, P.S_MAX)
+        P.sc = P.layScale()                                              -- prd18: the scale is the layout's
         P.W = P.wd
         return P.wd, P.sc
+    end
+    -- prd18: an older app's step of the height / the scale (Hub's columns 36-38, the player's press) into the saved layout entry
+    local function layStep(ddy, ds, reset)
+        local L = WC.lay
+        local name = type(L) == "table" and type(L.who) == "function" and L.who() or who()
+        if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
+        if type(WowCompanionDB.lay) ~= "table" then WowCompanionDB.lay = {} end
+        if type(WowCompanionDB.lay[name]) ~= "table" then WowCompanionDB.lay[name] = {} end
+        local t = WowCompanionDB.lay[name]
+        local e = type(t.hud) == "table" and t.hud or {}
+        local dx, dy, sc = num(e.dx) or 0, num(e.dy) or 0, num(e.s) or P.S_DEF
+        if reset == "y" then dy = 0 elseif reset == "s" then sc = P.S_DEF end
+        -- (the old slider's range: the height Y_MIN..Y_MAX at 100 %)
+        dy = math.max(P.Y_DEF - P.Y_MAX, math.min(P.Y_DEF - P.Y_MIN, dy + (ddy or 0)))
+        sc = math.max(P.S_MIN, math.min(P.S_MAX, sc + (ds or 0)))
+        t.hud = (dx ~= 0 or dy ~= 0 or sc ~= P.S_DEF) and { dx = dx, dy = dy, s = sc } or nil
     end
     -- Hub's column 39: the next setting the step columns move (height -> width -> scale -> height)
     function P.select()
@@ -3376,19 +3711,19 @@ do
                 P.wd = d == 0 and P.W_DEF or math.max(P.W_MIN, math.min(P.W_MAX, P.wd + (d > 0 and P.W_STEP or -P.W_STEP)))
                 keep("prdW", P.wd, P.W_DEF)
             else
-                P.sc = d == 0 and P.S_DEF or math.max(P.S_MIN, math.min(P.S_MAX, P.sc + (d > 0 and P.S_STEP or -P.S_STEP)))
-                keep("prdS", P.sc, P.S_DEF)
+                -- prd18: the scale is the layout's (the saved entry; the player's press)
+                if d == 0 then layStep(0, 0, "s") else layStep(0, d > 0 and P.S_STEP or -P.S_STEP) end
+                P.fromLay()
             end
             P.resize()
+            P.place()
             return P.sel == "w" and P.wd or P.sc
         end
         P.sel = "y"
-        P.y = P.y or P.loadY()
-        if d == 0 then P.y = P.Y_DEF else P.y = math.max(P.Y_MIN, math.min(P.Y_MAX, P.y + (d > 0 and P.STEP or -P.STEP))) end
-        if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
-        if type(WowCompanionDB.prdY) ~= "table" then WowCompanionDB.prdY = {} end
-        WowCompanionDB.prdY[who()] = P.y ~= P.Y_DEF and P.y or nil
-        WowCompanionDB.prdYv = 2                                   -- (a height on today's scale: never shifted)
+        -- prd18: the height is the layout's (the saved entry; one STEP of screen pixels a press, up = d > 0)
+        if d == 0 then layStep(0, 0, "y") else layStep(d > 0 and -P.STEP or P.STEP, 0) end
+        P.fromLay()
+        P.resize()
         P.place()
         return P.y
     end
@@ -3553,10 +3888,10 @@ do
         o.bd:SetPoint("TOPLEFT", o.f, "TOPLEFT", -u(4), u(4))
         o.bd:SetPoint("BOTTOMRIGHT", o.f, "BOTTOMRIGHT", u(4), -u(4))
         o.t = o.f:CreateFontString(nil, "OVERLAY")
-        o.t:SetFont("Fonts\\FRIZQT__.TTF", u(13), "OUTLINE")
+        WC.font(o.t, u(13), "OUTLINE")                                      -- prd18 (#358): the family (cp41 WC.font)
         o.t:SetPoint("TOP", o.f, "BOTTOM", 0, -u(2))
         o.n = o.f:CreateFontString(nil, "OVERLAY")
-        o.n:SetFont("Fonts\\FRIZQT__.TTF", u(13), "OUTLINE")
+        WC.font(o.n, u(13), "OUTLINE")
         o.n:SetPoint("BOTTOMRIGHT", o.f, "BOTTOMRIGHT", -u(1), u(1))
         o.f:Hide()
         return o
@@ -3629,8 +3964,26 @@ do
     function P.place()
         if not P.f then return end
         P.f:ClearAllPoints()
-        P.f:SetPoint("TOP", UIParent, "CENTER", 0, u((P.y or P.loadY()) + (P.dy or 0) + (num(P.lift) or 0)))   -- prd15: the guard's lift
+        local y = P.y or P.loadY()
+        P.f:SetPoint("TOP", UIParent, "CENTER", u(num(P.x) or 0), u(y + (P.dy or 0) + (num(P.lift) or 0)))   -- prd15: the guard's lift
     end
+    -- prd18 THE HUD AS A LAYOUT PIECE (Hub's editor gathers it): its anchor is the bars' top-centre, 1080-line pixels from the top-left
+    P.lay = {
+        id = "hud", sn = P.S_MIN, sx = P.S_MAX, ss = P.S_STEP,
+        -- the default anchor (no entry): the screen's centre, 350 below it
+        base = function()
+            local W = type(WC.lay) == "table" and WC.lay.screen() or 1920
+            return W / 2, 540 - P.Y_DEF
+        end,
+        -- the rect's size at entry [e] (its scale) and its top-left from the anchor
+        size = function(e)
+            local sc = ((e and num(e.s)) or P.S_DEF) / 100
+            return (num(P.W) or num(P.wd) or P.W_DEF) * sc, (P.HH + P.BAR_GAP + P.PH) * sc
+        end,
+        off = function(w) return -w / 2, 0 end,
+        on = function() local ok, w = pcall(P.wanted); return ok and w == true end,
+        apply = function() P.fromLay(); P.resize(); P.place() end,
+    }
 
     -- ---------------------------------------------------------------- the values (fed, never read)
     -- prd3: the lag bar (under the health fill), the heals and the shield (past it, clipped to the bar), the cost (on the power fill)
@@ -4385,7 +4738,7 @@ do
         local w = num(P.W) or P.W_DEF
         y = y + P.liftFor(P.partyModeOn())                              -- (the guard's lift the block is going to: Hub fades its rows to it)
         -- (h: the two bars' height, for the solo tab beside the [me][pet] row)
-        return { x = -u(w) / 2 * s, top = u(y) * s, h = u(P.HH + P.BAR_GAP + P.PH) * s,
+        return { x = (u(num(P.x) or 0) - u(w) / 2) * s, top = u(y) * s, h = u(P.HH + P.BAR_GAP + P.PH) * s,        -- prd18: the HUD's x
                  y = u(y - (P.HH + P.BAR_GAP + P.PH + cpx + P.PET_GAP + P.PARTY_GAP)) * s, s = s }
     end
     -- prd15 THE ON-SCREEN GUARD (the user, 2026-11-12: "KEEP IT ON SCREEN"): in Party mode, the lift (spec px, up) that keeps the block -
@@ -4569,6 +4922,9 @@ do
         P.partyOn = P.partyModeOn()                                     -- prd15: every frame (the lift and Hub's grid read it live)
         -- prd15: Party mode on holds the HUD up too (it is the block's [me] row: the grid hangs under it)
         local picked = P.partyWho ~= nil or P.partyOn == true
+        -- prd18: while the layout editor is open the HUD is held up too (why "layout": the piece being moved is seen)
+        local editing = type(WC.lay) == "table" and WC.lay.editing == true
+        picked = picked or editing
         local fight = P.fight()
         local hurt, src = P.hurt()
         if fight then P.lastFight = t end
@@ -4605,7 +4961,7 @@ do
         P.alpha = e
         local dy = -P.TRAVEL * (1 - e)
         if dy ~= P.dy then P.dy = dy; P.place() end
-        P.why = fight and "fight" or (picked and "party") or (powerOff and "power") or (src == "curve" and "curve") or (hurt and "hurt") or (P.alpha > 0 and "fading") or "full"
+        P.why = fight and "fight" or (editing and "layout") or (picked and "party") or (powerOff and "power") or (src == "curve" and "curve") or (hurt and "hurt") or (P.alpha > 0 and "fading") or "full"
         if P.alpha > 0 then
             if not P.f:IsShown() then P.f:Show() end
             P.f:SetAlpha(P.alpha * P.REST * ((P.hudFade and P.petFadeA) or 1))   -- prd15: the HUD fades too while its lift changes
@@ -4671,38 +5027,142 @@ end
 -- puts its alpha back INSIDE the engine - no SetAlpha call to hook - so only the next frame's OnUpdate caught it. Now every filler is
 -- post-hooked too: every method of the tooltip type named Set... (not SetAlpha: that one has its own rule), Show, ClearLines, AddLine,
 -- AddDoubleLine, AppendText - each tooltip is held at 0 the moment it is (re)filled, before the frame draws.
-WC.tips = { V = "tt3", FRAMES = { "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1", "ShoppingTooltip2", "ItemRefShoppingTooltip1",
-                                  "ItemRefShoppingTooltip2", "EmbeddedItemTooltip", "NamePlateTooltip", "GameNoHeaderTooltip" },
-            hooked = {}, on = false, zeroed = setmetatable({}, { __mode = "k" }), busy = false, typeHooked = false }
+-- tt4 (the user, 2026-11-16: "tooltips for buffs are still popping up on the top screen even though they are off"). Two holes, read in
+-- this client's own UI source (Blizzard_BuffFrame, Blizzard_AuraContainer, Blizzard_UnitFrame):
+--   1. THE BUFF'S OWN TOOLTIP FRAME. In controller mode the game pops a tooltip up for 4 s at every buff gained or refreshed
+--      (BuffFrameMixin:ShowNextAuraForTooltip, while GamepadShowAutoAuraTooltip is on) on BuffFrameTooltip: a tooltip frame of its own,
+--      not GameTooltip, anchored to the buff's icon (invisible here: Hub's riders). It was not in the named list, so nothing held it at
+--      its show or at each frame - only tt2 / tt3's hooks on the type's shared method table, which run after a Lua call and so miss an
+--      alpha the engine puts back with none (tt3's own measurement); GameTooltip's per-frame hold caught that a frame later, nothing
+--      caught it on BuffFrameTooltip, so the buff's tooltip drew for its whole 4 s. Now every tooltip frame we reach is ADOPTED:
+--      BuffFrameTooltip and GameSmallHeaderTooltip join the list, and any GameTooltip-type frame a type hook meets is adopted the next
+--      frame. An adopted frame is held at its OnShow, at EVERY frame (OnUpdate), at its layout (OnSizeChanged) and after each of its
+--      own fillers (post-hooks on the frame itself: they do not depend on the shared table reaching it).
+--   2. A FORBIDDEN TOOLTIP. The target / focus / boss frames' buffs and debuffs (TargetFrameAuraButtonTemplate, an aura container in the
+--      secure environment) show their tooltip on AuraButtonTooltip, which is forbidden and hidden from every add-on
+--      (Blizzard_AuraButtonTooltip.xml): no alpha of ours can reach it. And Hub hides the target frame by alpha only, so its invisible
+--      buffs still take the cursor's hover. While tooltips are off, a frame of OUR OWN lies over each shown aura container: MOTION only
+--      (SetMouseMotionEnabled true, SetMouseClickEnabled false - TapPad's sink is the same split the other way round), so the hover
+--      stops on it and the buff never gets its OnEnter, while a click still goes to whatever is under it. MEDIUM strata, level 1:
+--      above the unit frames (LOW), under every window. Nothing of the game's is touched; the aura container is only read.
+--   A hold never compares a value read back from the tooltip (on this client a frame's alpha can be a secret aspect). WC.tips.stats()
+--   counts what each hold caught (Interact's proof.tipc.st), so a device run says which path a tooltip came back on.
+-- The bottom screen's tooltips are read through C_TooltipInfo (Interact, Bags, Auras.lua), never from a tooltip frame: unchanged.
+-- Review of tt4 (the same report): two more buff tooltips that are NOT of the tooltip type, so no type hook ever met them:
+--   PartyMemberBuffTooltip (Blizzard_UnitFrame partyframe.xml: a plain frame, TOOLTIP strata, no parent): the pet frame's and every
+--   party member's buff / debuff icons, shown at its OnEnter (PetFrameMixin / PartyMemberFrameMixin:OnEnter -> UpdateTooltip). Hub
+--   hides those frames by alpha only (they still take the cursor where they stand; Hub's own unit frames take no mouse), so the cursor
+--   there drew it in full. And the consolidated buffs' list (BuffFrame.ConsolidatedBuffs.Tooltip, a plain frame, TOOLTIP
+--   strata: hovering the consolidation button while the game's buffs are shown). Both are adopted by name / path like the rest, and
+--   an adopted frame is held by its own hooks whatever its type (the type check guards the SHARED table only). stats() also says how
+--   the target frame's shield lies (tm: "anchor" / "rect"), since that container's size is a secret value (secretwrap at its layout).
+WC.tips = { V = "tt4", FRAMES = { "GameTooltip", "ItemRefTooltip", "ShoppingTooltip1", "ShoppingTooltip2", "ItemRefShoppingTooltip1",
+                                  "ItemRefShoppingTooltip2", "EmbeddedItemTooltip", "NamePlateTooltip", "GameNoHeaderTooltip",
+                                  "BuffFrameTooltip", "GameSmallHeaderTooltip", "PartyMemberBuffTooltip" },
+            -- review of tt4: tooltips with no global name, by their path from one
+            PATHS = { { "BuffFrame", "ConsolidatedBuffs", "Tooltip" } },
+            -- tt4: a tooltip's own fillers, post-hooked on each adopted frame (SetAlpha has its own rule)
+            FILL = { "Show", "SetOwner", "ClearLines", "AddLine", "AddDoubleLine", "AppendText", "SetText", "SetShown", "SetFrameLevel",
+                     "SetPoint" },
+            -- tt4: the unit frames whose auras show the forbidden AuraButtonTooltip (TargetFrameTemplate's aura container)
+            UNITS = { "TargetFrame", "FocusFrame", "Boss1TargetFrame", "Boss2TargetFrame", "Boss3TargetFrame", "Boss4TargetFrame",
+                      "Boss5TargetFrame" },
+            hooked = {}, on = false, zeroed = setmetatable({}, { __mode = "k" }), busy = false, typeHooked = false,
+            adopted = {}, list = {}, named = {}, queue = {}, shields = {}, ticking = false,
+            st = { show = 0, upd = 0, size = 0, fill = 0, type = 0, shield = 0 } }
 do
     local T = WC.tips
     function T.wanted() return type(WowCompanionDB) == "table" and WowCompanionDB.hideTips == true end
-    local function zero(fr)
-        if not T.on then return end
-        local ok, a = pcall(fr.GetAlpha, fr)
-        if not ok or type(a) ~= "number" or a > 0 then pcall(fr.SetAlpha, fr, 0) end
+    local function plain(v)
+        if type(WC.isPlain) == "function" then return WC.isPlain(v) end
+        if type(issecretvalue) == "function" then local ok, s = pcall(issecretvalue, v); return ok and s == false end
+        return true
+    end
+    local function nameOf(fr)
+        local ok, n = pcall(fr.GetName, fr)
+        if ok and type(n) == "string" and plain(n) then return n end
+        return "?"
+    end
+    -- the hold itself: alpha 0, nothing else. `why` counts a catch (the tooltip was drawn above 0 when the hold came)
+    local function zero(fr, why)
+        if not T.on or T.busy then return end
+        if why then
+            local ok, a = pcall(fr.GetAlpha, fr)
+            if ok and type(a) == "number" and plain(a) and a > 0 then
+                T.st[why] = (T.st[why] or 0) + 1
+                if why == "upd" or why == "size" then T.st.last = nameOf(fr) end
+            end
+        end
+        T.busy = true
+        if pcall(fr.SetAlpha, fr, 0) then T.zeroed[fr] = true end
+        T.busy = false
+    end
+    -- tt2: a GameTooltip-type frame, at a filler or at any SetAlpha above 0 (a guard: our own SetAlpha(0) comes back through the hook)
+    local function hold(fr, a, why)
+        if not T.on or T.busy then return end
+        if type(a) == "number" and plain(a) and a <= 0 then return end   -- (a secret alpha is held: never compared)
+        if not T.adopted[fr] then
+            -- only a TOOLTIP (the hooked methods are its type's; a shared table must never dim any other frame). An adopted frame
+            -- (review of tt4) is held whatever its type: only its own hooks reach here for it
+            local okT, ty = pcall(fr.GetObjectType, fr)
+            if not okT or ty ~= "GameTooltip" then return end
+            T.queue[fr] = true; T.wake()                                 -- tt4: adopted at the next frame, never inside the game's call
+        end
+        zero(fr, why)
+    end
+    -- tt4: ADOPT a tooltip frame: held at its show, every frame, its layout and after its own fillers. Once per frame; never a forbidden one
+    function T.adopt(fr, named)
+        if type(fr) ~= "table" or T.adopted[fr] then return end
+        local okF, forb = pcall(fr.IsForbidden, fr)
+        if okF and forb == true then return end
+        if not named then
+            local okT, ty = pcall(fr.GetObjectType, fr)
+            if not okT or ty ~= "GameTooltip" then return end
+        end
+        T.adopted[fr] = true
+        T.list[#T.list + 1] = fr
+        if type(fr.HookScript) == "function" then
+            pcall(fr.HookScript, fr, "OnShow", function(self) zero(self, "show") end)
+            pcall(fr.HookScript, fr, "OnUpdate", function(self) zero(self, "upd") end)
+            pcall(fr.HookScript, fr, "OnSizeChanged", function(self) zero(self, "size") end)
+        end
+        if type(hooksecurefunc) == "function" then
+            if type(fr.SetAlpha) == "function" then pcall(hooksecurefunc, fr, "SetAlpha", function(self, a) hold(self, a, "fill") end) end
+            for _, k in ipairs(T.FILL) do
+                if type(fr[k]) == "function" then pcall(hooksecurefunc, fr, k, function(self) hold(self, nil, "fill") end) end
+            end
+        end
+        if T.on then
+            local ok, s = pcall(fr.IsShown, fr)
+            if ok and s == true then zero(fr) end
+        end
     end
     -- hook the tooltips the client has (once each; a frame made later is picked up at the next apply)
     function T.hook()
         for _, n in ipairs(T.FRAMES) do
             local fr = _G[n]
-            if type(fr) == "table" and not T.hooked[n] and type(fr.HookScript) == "function" then
+            if type(fr) == "table" and not T.hooked[n] then
                 T.hooked[n] = true
-                pcall(fr.HookScript, fr, "OnShow", zero)
-                pcall(fr.HookScript, fr, "OnUpdate", zero)
+                T.named[#T.named + 1] = fr
+                T.adopt(fr, true)
             end
         end
-    end
-    -- tt2: every GameTooltip-type frame, at its Show and at any SetAlpha above 0 (a guard: our own SetAlpha(0) comes back through the hook)
-    local function hold(fr, a)
-        if not T.on or T.busy then return end
-        if a ~= nil and (type(a) ~= "number" or a <= 0) then return end
-        -- only a TOOLTIP (the hooked methods are its type's; a shared table must never dim any other frame)
-        local okT, ty = pcall(fr.GetObjectType, fr)
-        if not okT or ty ~= "GameTooltip" then return end
-        T.busy = true
-        if pcall(fr.SetAlpha, fr, 0) then T.zeroed[fr] = true end
-        T.busy = false
+        -- review of tt4: the unnamed ones, read down their path (only reads)
+        for _, p in ipairs(T.PATHS) do
+            local key = table.concat(p, ".")
+            if not T.hooked[key] then
+                local ok, fr = pcall(function()
+                    local o = _G[p[1]]
+                    for i = 2, #p do if type(o) ~= "table" then return nil end; o = o[p[i]] end
+                    return o
+                end)
+                if ok and type(fr) == "table" and type(fr.SetAlpha) == "function" then
+                    T.hooked[key] = true
+                    T.named[#T.named + 1] = fr
+                    T.adopt(fr, true)
+                end
+            end
+        end
     end
     function T.hookType()
         if T.typeHooked or type(GameTooltip) ~= "table" then return end
@@ -4710,15 +5170,118 @@ do
         local idx = type(mt) == "table" and mt.__index
         if type(idx) ~= "table" or type(hooksecurefunc) ~= "function" then return end
         T.typeHooked = true
-        pcall(hooksecurefunc, idx, "SetAlpha", function(fr, a) hold(fr, a) end)
+        pcall(hooksecurefunc, idx, "SetAlpha", function(fr, a) hold(fr, a, "type") end)
         local names = { Show = true, ClearLines = true, AddLine = true, AddDoubleLine = true, AppendText = true }
         for k, v in pairs(idx) do
             if type(k) == "string" and type(v) == "function" and k:sub(1, 3) == "Set" and k ~= "SetAlpha" then names[k] = true end
         end
         for k in pairs(names) do
-            if type(idx[k]) == "function" then pcall(hooksecurefunc, idx, k, function(fr) hold(fr) end) end
+            if type(idx[k]) == "function" then pcall(hooksecurefunc, idx, k, function(fr) hold(fr, nil, "type") end) end
         end
     end
+
+    -- ---------------------------------------------------------------- tt4: the hover shields over the forbidden tooltip's buffs
+    -- the unit frame's aura container (TargetFrameMixin:GetAuraContainer's path), read once and kept; a miss is tried again after 2 s
+    local boxOf, boxTry = {}, {}
+    local function auraBox(n)
+        local c = boxOf[n]
+        if c then return c end
+        local now = type(GetTime) == "function" and GetTime() or 0
+        if boxTry[n] and now - boxTry[n] < 2 then return nil end
+        boxTry[n] = now
+        local uf = _G[n]
+        if type(uf) ~= "table" then return nil end
+        local ok, v = pcall(function() return uf.TargetFrameContent.TargetFrameContentContextual.Auras end)
+        if ok and type(v) == "table" then boxOf[n] = v; return v end
+    end
+    local function newShield()
+        local f = CreateFrame("Frame", nil, UIParent)
+        -- motion only, or nothing: a frame that takes clicks would eat a touch meant for the frame under it
+        if type(f.SetMouseMotionEnabled) ~= "function" or type(f.SetMouseClickEnabled) ~= "function" then return false end
+        local ok = pcall(function()
+            f:SetFrameStrata("MEDIUM")
+            f:SetFrameLevel(1)
+            f:SetMouseClickEnabled(false)
+            f:SetMouseMotionEnabled(true)
+            f:Hide()
+        end)
+        return ok and f or false
+    end
+    -- lay [f] over [c]: anchored to it (it follows by itself), else its rectangle copied in our parent's units each tick
+    local function place(e, c)
+        if e.c == c and e.mode == "anchor" then return true end
+        local f = e.f
+        if pcall(function() f:ClearAllPoints(); f:SetAllPoints(c) end) then e.c, e.mode = c, "anchor"; return true end
+        local ok, l, b, w, h = pcall(c.GetRect, c)
+        local okS, sc = pcall(c.GetEffectiveScale, c)
+        local okU, us = pcall(UIParent.GetEffectiveScale, UIParent)
+        if not (ok and okS and okU) then return false end
+        for _, v in ipairs({ l, b, w, h, sc, us }) do
+            if type(v) ~= "number" or not plain(v) then return false end
+        end
+        if w <= 0 or h <= 0 or us <= 0 then return false end
+        local k = sc / us
+        local placed = pcall(function()
+            f:ClearAllPoints()
+            f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", l * k, b * k)
+            f:SetSize(w * k, h * k)
+        end)
+        if placed then e.c, e.mode = c, "rect" end
+        return placed
+    end
+    local function shieldUp(e, up)
+        if (e.up == true) == up or not e.f then return end              -- (a new one is down: its first "down" counts nothing)
+        e.up = up
+        pcall(up and e.f.Show or e.f.Hide, e.f)
+        T.st.shield = T.st.shield + (up and 1 or -1)
+    end
+    function T.shieldTick()
+        for _, n in ipairs(T.UNITS) do
+            local e = T.shields[n]
+            local c = T.on and auraBox(n) or nil
+            local want = false
+            if c then
+                local ok, v = pcall(c.IsVisible, c)
+                if ok then
+                    if plain(v) then want = (v == true) else want = true end   -- a secret answer: the hover stays blocked
+                end
+            end
+            if want then
+                if not e then e = { f = newShield() }; T.shields[n] = e end
+                if e.f and place(e, c) then shieldUp(e, true) else shieldUp(e, false) end
+            elseif e then
+                shieldUp(e, false)
+            end
+        end
+    end
+
+    -- ---------------------------------------------------------------- tt4: one frame of ours runs while tooltips are off
+    local drv = CreateFrame("Frame")
+    local function tick()
+        if not T.on then T.wake(); return end
+        if next(T.queue) ~= nil then                                     -- (no new table each frame)
+            local q = T.queue
+            T.queue = {}
+            for fr in pairs(q) do T.adopt(fr) end
+        end
+        T.shieldTick()
+    end
+    function T.wake()
+        if T.on then
+            if not T.ticking then T.ticking = true; pcall(drv.SetScript, drv, "OnUpdate", function() pcall(tick) end) end
+        else
+            pcall(T.shieldTick)                                          -- every shield down
+            if T.ticking then T.ticking = false; pcall(drv.SetScript, drv, "OnUpdate", nil) end
+        end
+    end
+    -- what each hold caught, for the interact document (Interact's proof.tipc.st)
+    function T.stats()
+        local s = T.st
+        local te = T.shields.TargetFrame
+        return { v = T.V, ad = #T.list, th = T.typeHooked and 1 or 0, show = s.show, upd = s.upd, size = s.size, fill = s.fill,
+                 type = s.type, sh = s.shield, last = s.last, tm = te and te.up == true and te.mode or nil }
+    end
+
     function T.apply()
         T.on = T.wanted()
         T.hook()
@@ -4727,10 +5290,11 @@ do
             for fr in pairs(T.zeroed) do pcall(fr.SetAlpha, fr, 1) end
             T.zeroed = setmetatable({}, { __mode = "k" })
         end
-        for _, n in ipairs(T.FRAMES) do
-            local fr = _G[n]
-            if type(fr) == "table" and type(fr.SetAlpha) == "function" then pcall(fr.SetAlpha, fr, T.on and 0 or 1) end
+        for _, fr in ipairs(T.named) do
+            if type(fr.SetAlpha) == "function" then pcall(fr.SetAlpha, fr, T.on and 0 or 1) end
         end
+        T.wake()
+        pcall(T.shieldTick)
         return T.on
     end
     -- the app's switch (Interact's ACT.tips)
@@ -4740,8 +5304,11 @@ do
         return T.apply()
     end
     local f = CreateFrame("Frame")
-    for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD" }) do pcall(function() f:RegisterEvent(e) end) end
-    f:SetScript("OnEvent", function() pcall(T.apply) end)
+    for _, e in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_TARGET_CHANGED", "PLAYER_FOCUS_CHANGED",
+                         "INSTANCE_ENCOUNTER_ENGAGE_UNIT" }) do pcall(function() f:RegisterEvent(e) end) end
+    f:SetScript("OnEvent", function(_, e)
+        if e == "PLAYER_LOGIN" or e == "PLAYER_ENTERING_WORLD" then pcall(T.apply) else pcall(T.shieldTick) end
+    end)
 end
 
 -- ================================================================== THE AGGRO TINT ON NAMEPLATES (at1; the user's "Nameplate tint plus bottom map")

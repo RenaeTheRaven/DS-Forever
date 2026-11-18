@@ -28,9 +28,14 @@ object PadMapModel {
     /** [layer] (PadMap m132, THE FIGHT-ONLY LAYER - the user, 2026-11-11: "Build a fight-only layer"): a combat button's In combat entry
      *  that is a whole-button thing - "command" / "bind" / "item" / "mount" - with [key] (the command's / binding's key, "i:<id>" /
      *  "m:<id>"; no [id], so nothing reads it as a spell); null = a spell */
+    /** [ms] / [mt] (PadMap m165; the user, 2026-11-16: "when using show tooltip on a macro it doesn't actually show the GCD when using
+     *  it"): a MACRO's what-it-casts-now - the spell's id (its state and cast time by id, as a fight spell's) / the item's id (its
+     *  cooldown from the `itemcd` document); never [id], so nothing takes a macro for a spell. [icon] is then the macro's live picture */
     data class Ref(val id: Int?, val name: String, val icon: Int, val item: Boolean = false, val kind: String? = null,
-                   val layer: String? = null, val key: String? = null) {
+                   val layer: String? = null, val key: String? = null, val ms: Int? = null, val mt: Int? = null) {
         val manners: Boolean get() = kind == "manners"
+        /** the spell id the button's state goes by: the spell's own, else a macro's spell now (m165) */
+        val stateId: Int? get() = id ?: ms
     }
 
     /** [combat] / [otherwise]: a COMBAT button's two spells ([otherwise] null = nothing out of combat); [fight]: the spell a base X / Y / A
@@ -146,6 +151,9 @@ object PadMapModel {
         /** m160 SMART RANGE IS GONE (the user, 2026-11-13: "Lets scrap the smart ranged attack"): the add-on's one-time clean-up for
          *  this character (the doc's `srx`, counts only: the problem report's line, [SmartRangeGone]); null = no character / older add-on */
         val srGone: SrGone? = null,
+        /** m165 B: PET FOLLOW (the padmap's `pf`): the add-on's word from the app, a pet class, a live pet, B carried for it now; null =
+         *  an add-on before m165 (no row, nothing told) */
+        val petB: PetB? = null,
     ) {
         /** m55: the form the character is in now (null: none / caster) */
         val activeForm: Form? get() = forms.firstOrNull { it.on }
@@ -158,6 +166,10 @@ object PadMapModel {
      *  macros with our name but not our exact body (the player's: never touched); [pending] = not run yet this game session;
      *  [held] (m160 review) our own macros kept because the player put them on an action slot (the doc's `h`, absent = 0) */
     data class SrGone(val macros: Int, val buttons: Int, val kept: Int, val pending: Boolean, val held: Int = 0)
+
+    /** m165 B: PET FOLLOW: [on] the app's word the add-on holds (its setting for this character AND Home with nothing of its own open),
+     *  [cls] a pet class (the row is offered), [pet] a live pet out, [bound] B is the router's for it now */
+    data class PetB(val on: Boolean, val cls: Boolean, val pet: Boolean, val bound: Boolean)
 
     /** p12: an "extra" answer also names what was put: [idx] (1-based in the Extra list), [kind], [what] (a command key or an id), [name] */
     data class Ack(val op: String, val ok: Boolean, val why: String?, val storage: Int?, val idx: Int? = null, val kind: String? = null,
@@ -182,7 +194,8 @@ object PadMapModel {
 
     private fun count(o: JSONObject?): MacroCount? = o?.let { MacroCount(it.optInt("n", 0), intOrNull(it, "max")) }
     private fun ref(o: JSONObject?): Ref? = o?.let { r ->
-        textOrNull(r, "n")?.let { Ref(intOrNull(r, "id"), it, r.optInt("i", 0), r.optBoolean("item", false), layer = textOrNull(r, "t"), key = textOrNull(r, "key")) }
+        textOrNull(r, "n")?.let { Ref(intOrNull(r, "id"), it, r.optInt("i", 0), r.optBoolean("item", false), layer = textOrNull(r, "t"), key = textOrNull(r, "key"),
+            ms = intOrNull(r, "ms")?.takeIf { v -> v > 0 }, mt = intOrNull(r, "mt")?.takeIf { v -> v > 0 }) }
     }
 
     /** The `padmap` message; null when it is not one. */
@@ -254,8 +267,10 @@ object PadMapModel {
                 FACES.mapNotNull { p -> k.optString(p.toString(), "").takeIf { it.isNotEmpty() }?.let { p to it } }.toMap()
             } ?: emptyMap(),
             facePending = m.optJSONObject("face")?.optBoolean("pending", false) == true,
-            // m49+ always means the switch (`fight` left out = off); before m49 there was none
-            fightSwitch = if (m.has("fight") || (msg.optString("v").removePrefix("m").toIntOrNull() ?: 0) >= 49) m.optBoolean("fight", false) else null,
+            // m49+ always means the switch (`fight` left out = off); before m49 there was none. Review of m165: the number only - a review's
+            // letter tag ("m163a") read as no version, and a left-out `fight` (off) then fell back to the bare `combat` flag
+            fightSwitch = if (m.has("fight") || (msg.optString("v").removePrefix("m").takeWhile { it.isDigit() }.toIntOrNull() ?: 0) >= 49)
+                m.optBoolean("fight", false) else null,
             faceGiven = m.optJSONObject("face")?.optBoolean("given", false) == true,
             faceRefused = m.optJSONObject("face")?.optBoolean("refused", false) == true,
             paused = m.optBoolean("paused", false),
@@ -291,6 +306,8 @@ object PadMapModel {
                 StartState(textOrNull(st, "key"), textOrNull(st, "bound"), textOrNull(st, "aside"), st.optBoolean("menu", false), textOrNull(st, "why"),
                     textOrNull(st, "over"))
             },
+            // m165: B's pet follow (the add-on leaves out every false)
+            petB = m.optJSONObject("pf")?.let { o -> PetB(o.optBoolean("on", false), o.optBoolean("cls", false), o.optBoolean("pet", false), o.optBoolean("b", false)) },
         )
     }
 

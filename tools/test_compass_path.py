@@ -66,7 +66,7 @@ def main():
     L.execute(open(TC.TRAIL, encoding="utf-8").read().replace("local ADDON = ...", "local ADDON = 'WowCompanion'", 1))
     G, WC = L.globals().GAME, L.globals().WowCompanion
     C = WC.compass
-    chk("cp40: the compass's version tag (the jitter fix)", C.V == "cp40")
+    chk("cp40: the compass's version tag (the jitter fix)", int(C.V[2:]) >= 40)      # (the layout editor: cp41 or later)
     chk("cp36: the path marker drawn under the quest (C.ORDER)", [C.ORDER[i] for i in range(1, len(C.ORDER) + 1)]
         == ["corpse", "pin", "path", "quest"])
 
@@ -331,7 +331,7 @@ def main():
     P = M.eval("WC.pnav")
     chk("pn3: the ticker keeps the route read for the compass", P.legs is not None and len(P.legs) == 2 and P.legs[1].k == "walk"
         and P.legs[1].p[3] == 50 and P.legs[2].k == "fly" and P.legSig == P.sig and P.legsAt == 1)
-    chk("pn7: the docs say pn7 (pk1)", all(M.eval("SAID")[i].v in ("pn7",) for i in range(1, len(M.eval("SAID")) + 1)))
+    chk("pn8: the docs say pn8 (pk1, pg1)", all(M.eval("SAID")[i].v in ("pn8",) for i in range(1, len(M.eval("SAID")) + 1)))
     M.execute("WC.pnav.cancel('test')")
     chk("pn3: cancel drops it", P.legs is None and P.legSig is None and P.legsAt is None)
 
@@ -390,7 +390,7 @@ def main():
         Polestar.Nav.GetTarget = function() return { map = 2521, x = 53.98, y = 38.92 } end
         ACTIVE = false; T = 510; TICK()""")
     d = pnavt()
-    chk("pn5: a step with a spot, nothing guided: act false, gm '-', ps loc, its map and frame", d is not None and d.v == "pn7"
+    chk("pn5: a step with a spot, nothing guided: act false, gm '-', ps loc, its map and frame", d is not None and d.v == "pn8"
         and d.act is False and d.gm == "-" and d.ps == "loc" and d.psm == 2521 and d.fr == "e" and d.a is False and d.on is False)
     M.execute("SAID = {}; T = 515; TICK()")
     chk("pn5: once per 10 s", pnavt() is None)

@@ -15,25 +15,39 @@ import android.content.SharedPreferences
  */
 object SettingsTabs {
     /** [folds] false = its groups are always open, plain headings (the user, 2026-11-12: "the general tab doesnt need the folding
-     *  sections") */
+     *  sections"). Top screen too since its tiles (the user, 2026-11-16: "VISUAL overhaul of UI menus"; the design's pick, accepted the
+     *  same day: "The five headings with no folding on this tab", which changes the 11-12 fold ruling for this tab only) */
     enum class Tab(val label: String, val hidden: Boolean = false, val folds: Boolean = true) {
-        GENERAL("General", folds = false), BOTTOM("Bottom screen"), TOP("Top screen"), CONTROLLER("Controller"), ADDONS("Add-ons"),
+        GENERAL("General", folds = false), BOTTOM("Bottom screen"), TOP("Top screen", folds = false), CONTROLLER("Controller"), ADDONS("Add-ons"),
         PERFORMANCE("Performance")
     }
 
     /** the tabs the room shows, in order (a hidden one is never on the row, never stepped onto) */
     val visible: List<Tab> get() = Tab.values().filter { !it.hidden }
 
-    /** a heading that folds (the user's pick: a tab opens with its FIRST group open, the rest folded) */
-    enum class Group(val tab: Tab, val heading: String) {
+    /** a heading that folds (the user's pick: a tab opens with its FIRST group open, the rest folded). [headless] = a group with NO
+     *  heading: nothing to fold, no heading stop, always open (Add-ons' Import button: the user, 2026-11-16, "Import addons should be a
+     *  single button at the top of the list"); the first group that opens is then the first one WITH a heading */
+    enum class Group(val tab: Tab, val heading: String, val headless: Boolean = false) {
         LOOK(Tab.GENERAL, "Look"), ACCOUNT(Tab.GENERAL, "Account"), HELP(Tab.GENERAL, "Help"),
         // GitHub #43 cb3 (the user, 2026-11-13: "the tap to cast bar should get its own bottom screen section"): its own group
         HOME(Tab.BOTTOM, "Home"), CAST_BAR(Tab.BOTTOM, "Tap-to-cast bar"), MAP(Tab.BOTTOM, "Map"), CHAT(Tab.BOTTOM, "Chat"),
+        // the layout editor (the user, 2026-11-16: "we need to make a way to basically edit the UI locations on the top screen from our UI
+        // menu"; the design's pick: a first group "Layout" on Top screen, so it is the one that opens; Your HUD then opens folded)
+        LAYOUT(Tab.TOP, "Layout"),
         HUD(Tab.TOP, "Your HUD"), TARGET(Tab.TOP, "Target"), PARTY(Tab.TOP, "Party"), NAVIGATION(Tab.TOP, "Navigation"),
         WINDOWS(Tab.TOP, "Game windows"),
         BUTTONS(Tab.CONTROLLER, "Buttons"), WHEELS(Tab.CONTROLLER, "Wheels"), SMART_Y(Tab.CONTROLLER, "Smart Y"),
         COMBAT(Tab.CONTROLLER, "Combat helpers"),
+        // the user, 2026-11-16: "Import addons should be a single button at the top of the list": first on the tab, no heading
+        IMPORT(Tab.ADDONS, "Import add-ons", headless = true),
         POLESTAR(Tab.ADDONS, "Polestar"), SPOKEN(Tab.ADDONS, "Spoken"), QUESTTRAIL(Tab.ADDONS, "QuestTrail"), MANNERS(Tab.ADDONS, "Manners"),
+        // offline voice's model files (the user, 2026-11-16: "we could make the per languege downloads part of the addons folder"): app
+        // files, never the game's AddOns; after Manners, so Polestar's group still opens first
+        VOICE(Tab.ADDONS, "Voice"),
+        // the player's own add-ons (the user, 2026-11-16: "maybe we just do an import addons button then?"): the list, last; its Import
+        // button is IMPORT's, at the top
+        IMPORTED(Tab.ADDONS, "Imported"),
         FRAMES(Tab.PERFORMANCE, "Frames"), MEMORY(Tab.PERFORMANCE, "Memory"), INDOOR(Tab.PERFORMANCE, "Indoor maps"),
         STREAMING(Tab.PERFORMANCE, "Streaming"),
     }
@@ -48,6 +62,8 @@ object SettingsTabs {
         // 2026-11-12 (the user: "an oled theme, but different color variations for menus"): the theme picker, the language under it
         THEME(Group.LOOK, "Theme", listOf("Theme")),
         LANGUAGE(Group.LOOK, "Language", listOf("Language")),
+        // the user's pick 2026-11-16 (voice to text): This device / Online / Off under Language, app-wide like it
+        VOICE(Group.LOOK, "Voice typing", listOf("Voice typing")),
         // GitHub #232 (the user, 2026-11-14: build it): which screen has the game; only with a second screen, Restart under it after a
         // change (ScreenSwap)
         SCREENS(Group.LOOK, "Screens", listOf("Swap screens", "Restart DS Forever")),
@@ -64,24 +80,33 @@ object SettingsTabs {
             // "Stance bar", "Pet bar": hidden for now (test40, the user: "hide the settings that don't do anything for now")
             "Focused quest",
             // the clock extras (the user's picks 2026-11-13): one row each
-            "Hearthstone", "Class teleport", "Gold", "Free bag slots", "Ammo", "DS WoW toolbar"), Drawer.HOME),
+            "Hearthstone", "Class teleport", "Gold", "Free bag slots", "Ammo", "DS WoW toolbar",
+            // hold to talk (the user, 2026-11-16): under the toolbar, "On release" under its switch (HoldTalk)
+            HomeSettingsSection.TALK_ROW, HomeSettingsSection.RELEASE_ROW), Drawer.HOME),
         // GitHub #43 cb3: Off / Left / Right / Both (Home's section draws it, as it drew the old Home row)
         // the bar in a fight (the user 2026-11-13: "a settings toggle to make them Hide/stay in combat"): Hide (the default) / Stay
         CAST_BAR(Group.CAST_BAR, "Tap-to-cast bar", listOf("Tap-to-cast bar", "In combat"), Drawer.HOME),
         MAP(Group.MAP, "Map", listOf("Minimap zoom outdoors", "Minimap zoom indoors", "World map")),
         CHAT(Group.CHAT, "Chat", listOf("Message input")),
         // ---- Top screen (GameUiSection's parts: the same rows, ids, taps and channels as on QOL / Top screen before)
-        HUD(Group.HUD, "Your HUD", listOf("Resource bar", "Pet bar", "HUD height", "HUD width", "HUD scale"), Drawer.GAME_UI),
+        // the layout editor's one row: its own page (LayoutView); shown once the add-on set has the editor (a "lay" document came)
+        LAYOUT(Group.LAYOUT, "Layout", listOf("Edit layout")),
+        // HUD height and HUD scale moved into the layout editor (the design's pick); the width stays a row
+        HUD(Group.HUD, "Your HUD", listOf("Resource bar", "Pet bar", "HUD width"), Drawer.GAME_UI),
         TARGET(Group.TARGET, "Target", listOf("Target bar", "Target health text", "Target of target", "Aggro tint", "Enemy nameplates", "Friendly plates"),
             Drawer.GAME_UI),
         PARTY(Group.PARTY, "Party", listOf("DS party frames", "Party frames"), Drawer.GAME_UI),
         NAVIGATION(Group.NAVIGATION, "Navigation", listOf("Compass bar", "Compass follows the camera", "World markers"), Drawer.GAME_UI),
-        // hub31: Polestar's own frame on the top screen (it was under Add-ons > Polestar), shown while Polestar is in use
-        POLESTAR_TOP(Group.NAVIGATION, "Polestar on the top screen", listOf("Polestar on the top screen")),
+        // hub31: Polestar's own frame on the top screen (it was under Add-ons > Polestar), shown while Polestar is in use. 2026-11-16 (the
+        // tiles): Navigation's third tile, drawn by Navigation's GameUiSection part (it was SettingsView's row)
+        POLESTAR_TOP(Group.NAVIGATION, "Polestar on the top screen", listOf("Polestar on the top screen"), Drawer.GAME_UI),
         GAME_UI(Group.WINDOWS, "Game windows", listOf("Minimap", "Quest tracker", "Chat window", "NPC windows", "Loot window",
             "Game tooltips", "Cast bar", "Player frame", "Target frame", "Controller bars, buffs and XP"), Drawer.GAME_UI),
         // ---- Controller
         CONTROLLER(Group.BUTTONS, "Buttons", listOf("ABXY location", "Button glyphs")),
+        // the user, 2026-11-16 ("a pet class specific option where pressing B in the out of combat home menu basically stops the pet
+        // attacking"): B on Home's rest, per character; shown only for a pet class (PetFollowB)
+        PET_B(Group.BUTTONS, "B on Home", listOf(PetFollowB.ROW_ID)),
         // f-radial-settings (1.0.9, the user: "better organize each radial setting into categories so its clear what each one is"): a
         // sub-heading per wheel, naming the button that opens it
         // the user's pick 2026-11-13 ("Make it a setting toggle defaulted to our wheel"): Start over a game window, Our wheel / Game's wheel
@@ -98,11 +123,19 @@ object SettingsTabs {
         ATTACK_CAST(Group.COMBAT, "Start the attack when a spell is cast", listOf("Start the attack when a spell is cast"), Drawer.HOME),
         AUTO_SHOT(Group.COMBAT, "Combat Auto Shot", listOf("Combat Auto Shot"), Drawer.GAME_UI),
         // ---- Add-ons: one group per third-party add-on (ThirdPartyAddons); Polestar's carries Quest tracking (it was under Map)
+        // Import (a .zip through Android's picker): ONE full-width button first on the tab (so first in this enum's Add-ons part), its status line and confirm card under it
+        // (the user, 2026-11-16: "Import addons should be a single button at the top of the list"; SettingsView.drawImport)
+        IMPORT(Group.IMPORT, "Import add-ons", listOf("Import add-ons")),
         ADDON_POLESTAR(Group.POLESTAR, "Polestar", ThirdPartyAddons.POLESTAR.rowWords()),
         QUEST_TRACKING(Group.POLESTAR, "Quest tracking", listOf("Quest tracking")),
         ADDON_SPOKEN(Group.SPOKEN, "Spoken", ThirdPartyAddons.SPOKEN.rowWords()),
         ADDON_QUESTTRAIL(Group.QUESTTRAIL, "QuestTrail", ThirdPartyAddons.QUESTTRAIL.rowWords()),
         ADDON_MANNERS(Group.MANNERS, "Manners", ThirdPartyAddons.MANNERS.rowWords()),
+        // offline voice (VoiceModels): English, and every other language in one file, each small and full ("Voice: English · 60 MB");
+        // shown only in a build with libdsfwhisper.so
+        ADDON_VOICE(Group.VOICE, "Voice", VoiceModels.Model.values().map { it.label }),
+        // the imported list and the replacements waiting (ImportedAddons; SettingsView.drawImported): rows named by the add-ons themselves
+        IMPORTED(Group.IMPORTED, "Imported", emptyList()),
         // ---- Performance
         FRAMES(Group.FRAMES, "Frame limit and generation", listOf("Frame limit", "Lossless.dll", "Frame generation", "Multiplier",
             "Flow scale", "Performance mode", "Restart the game")),
@@ -130,11 +163,19 @@ object SettingsTabs {
 
     /** the groups OPEN when [tab] is shown (the user's pick, 2026-11-12: every time a tab shows, its first group open, the rest folded) */
     fun openOnShow(tab: Tab, hasRows: (Group) -> Boolean = { true }): Set<Group> =
-        if (!tab.folds) groups(tab).toSet() else groups(tab).filter(hasRows).take(1).toSet()
+        // a tab that does not fold opens every group WITH ROWS (11-16 merge: Top screen's Layout group has none until the add-on set
+        // sends its first "lay" document; the tiles' groups always have their fixed slots); a folding one its headless groups (never
+        // folded: Add-ons' Import button) and its first group with a heading
+        if (!tab.folds) groups(tab).filter(hasRows).toSet()
+        else groups(tab).filter(hasRows).let { gs -> gs.filter { it.headless }.toSet() + gs.filter { !it.headless }.take(1) }
+
+    /** [g] folds (a tap / A on its heading opens or folds it): a folding tab's group with a heading */
+    fun folds(g: Group): Boolean = g.tab.folds && !g.headless
 
     /** 1.0.9 (the user: "Disable the safe path, quest trail and polestar buttons for now"): with the route modes held back, the
      *  Polestar and QuestTrail blocks are not shown (Spoken stays) */
     fun shown(b: Block): Boolean = when {
+        b == Block.ADDON_VOICE -> VoiceModels.offered()
         !Settings.ROUTE_MODES_ON -> b != Block.ADDON_POLESTAR && b != Block.ADDON_QUESTTRAIL
         // 2026-11-12 (the user: "remove ... quest trail from the options"): QuestTrail is never offered; a copy a player installed keeps
         // its block (its Uninstall) while it is there or on its way in

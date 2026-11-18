@@ -20,6 +20,13 @@ object TargetRadial {
     }
     val ROOT = Page()
 
+    /** what the wheel's own controller reader takes for its opener's [input]. HOLD / READ: the sticks and the buttons. KEYS (Party
+     *  mode: the PartyPad hands the presses in by `key`): the sticks only, so no press counts twice (the user, 2026-11-16: "the control
+     *  sticks arent working on the party inspect radials, they are still walking and looking around"; the add-on keeps both sticks
+     *  from the game meanwhile, Radial r22) */
+    data class Reads(val sticks: Boolean, val buttons: Boolean)
+    fun reads(input: TargetRadialView.Input): Reads = Reads(sticks = true, buttons = input != TargetRadialView.Input.KEYS)
+
     /** one slice: the menu [entry] it runs, or a wheel to open ([next]: More / a sub-menu) */
     data class Slice(val label: String, val icon: String, val entry: PlayerMenu.Entry?, val next: Page? = null) {
         val more get() = next != null && entry == null
@@ -27,6 +34,8 @@ object TargetRadial {
         /** the context menu's icon mixed from game art (MenuIcons), when it has one; an entry's own game icon first (Quests q56: the
          *  pet's actions - the user, 2026-11-13: "The pet inspect radial should include some of the pet actions like dismiss or feed pet") */
         val menu: String? get() = if (more) "more" else entry?.let { e -> e.icon?.let { MenuIcons.iconKey(it) } ?: MenuIcons.keyOf(e.key, e.text) }
+        /** Quests q62: a pet ability that may cast itself - its pet bar slot (PetAuto's key); null = not one */
+        val autoSlot: Int? get() = entry?.takeIf { it.auto != null }?.autoSlot
     }
 
     /** the preferred places: the entry key's words (the mixin's name, lower case) and the slice's kit picture (the wheel's ricon_*) */
@@ -95,6 +104,15 @@ object TargetRadial {
                 chunk(s, page.offset) { o -> Page(sub = page.sub, offset = o) }
             }
         }
+    }
+
+    /** a slice in the kit's terms; Quests q62: a pet ability's autocast state live ([PetAuto]; the menu's word until it knows), greyed
+     *  once the pet is gone or dead ([gone]) */
+    fun kitSlice(s: Slice, now: Long, gone: Boolean = false): UiKit.PauseSlice {
+        val slot = s.autoSlot ?: return UiKit.PauseSlice(s.icon, s.label, s.enabled, menu = s.menu)
+        // review: the state of THIS ability (its name), never of whatever the slot holds after a pet swap
+        val on = PetAuto.on(slot, s.entry?.text, now) ?: (s.entry?.auto == 1)
+        return UiKit.PauseSlice(s.icon, s.label, s.enabled && !gone, menu = s.menu, auto = if (on) 1 else 0)
     }
 
     /** the document's name (nm), or "" */

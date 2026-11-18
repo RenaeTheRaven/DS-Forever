@@ -110,6 +110,8 @@ fun WoWForeverScreen(
     var artReady by remember { mutableStateOf(false) }
     // interiors (Track C): the optional 7th step's own row; it never gates Play
     var interiors by remember { mutableStateOf(com.jrees.wowcompanion.IndoorSchedulerStep.readiness(context)) }
+    // the user's pick, 2026-11-16 (#284): the maps' own row on the top screen (true = built, false = still to build, null = no build)
+    var mapsReady by remember { mutableStateOf<Boolean?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     // DS FOREVER SETUP ON TWO SCREENS (the user's fresh-install test 2026-10-12, Track C): this top screen shows the checks only;
     // Play and ONE pop-up at a time are on the bottom screen (SetupBridge -> the companion's SetupPanel). The Battle.net login is a
@@ -239,12 +241,24 @@ fun WoWForeverScreen(
         scope.launch { fetchVersionStatus() }
     }
 
+    /** the maps' row reads the stamp and the game's build again, off the main thread (ArtHarvest.mapsReady) */
+    fun refreshMaps() {
+        scope.launch(Dispatchers.IO) {
+            val r = runCatching { com.jrees.wowcompanion.ArtHarvest.mapsReady(context) }.getOrNull()
+            withContext(Dispatchers.Main) { mapsReady = r }
+        }
+    }
+
     fun checkFiles(): Boolean {
         GamePath.save(context, gamePath)
         files = GamePath.status(context, gamePath)
         artReady = runCatching { com.jrees.wowcompanion.ArtHarvest.beforePlayReady(context) }.getOrDefault(false)
+        refreshMaps()
         loginSaved = com.jrees.wowcompanion.HomeLoginStore.has(context)
         addonsInstalled = File(WowClientDownloader.flavorDir(File(gamePath)), "Interface/AddOns/WowCompanion").isDirectory
+        // Settings > Add-ons > Import (ImportedAddons): the flavour folder of the game folder checked here
+        val root = gamePath
+        com.jrees.wowcompanion.LauncherHooks.flavorRoot = { runCatching { WowClientDownloader.flavorDir(File(root)) }.getOrNull()?.takeIf { File(root).isDirectory } }
         addonsProblem = runCatching { com.jrees.wowcompanion.LauncherSetup.problem(context) }.getOrNull()
         if (files.isWrongGame) {
             errorMessage = "Incompatible game (${files.product}). DS Forever needs " +
@@ -384,6 +398,7 @@ fun WoWForeverScreen(
                     is com.jrees.wowcompanion.ArtHarvest.State.Running -> {
                         isHarvesting = true
                         if (state.beforePlay) artFailed = null
+                        if (state.beforePlay && artReady) refreshMaps()          // a new game build's art: the maps' row looks again
                         if (state.beforePlay) artReady = false else if (!artReady) checkFiles()
                         artProgress = state.fraction
                         val phase = if (state.beforePlay) "Harvesting art" else "Harvesting background art"
@@ -414,6 +429,10 @@ fun WoWForeverScreen(
         }
         com.jrees.wowcompanion.ArtHarvest.onState(harvestListener)
         harvestListener(com.jrees.wowcompanion.ArtHarvest.state)
+        // the maps' row: the world map or Home's map stamped (the art's worker thread; also beside the game on the Thor Max)
+        val mapsListener: (String) -> Unit = { id -> if (com.jrees.wowcompanion.ArtHarvest.mapStep(id)) refreshMaps() }
+        com.jrees.wowcompanion.ArtHarvest.onStepDone(mapsListener)
+        refreshMaps()
         val interiorsListener: () -> Unit = {
             val r = com.jrees.wowcompanion.IndoorSchedulerStep.readiness(context)
             scope.launch(Dispatchers.Main) { interiors = r }
@@ -424,6 +443,7 @@ fun WoWForeverScreen(
         PluviaApp.events.on<AndroidEvent.GuestProgramTerminated, Unit>(reset)
         onDispose {
             com.jrees.wowcompanion.ArtHarvest.offState(harvestListener)
+            com.jrees.wowcompanion.ArtHarvest.offStepDone(mapsListener)
             com.jrees.wowcompanion.IndoorSchedulerStep.offChange(interiorsListener)
             PluviaApp.events.off<AndroidEvent.ForceCloseApp, Unit>(reset)
             PluviaApp.events.off<AndroidEvent.GuestProgramTerminated, Unit>(reset)
@@ -852,6 +872,7 @@ fun WoWForeverScreen(
                 if (com.jrees.wowcompanion.DirectTest.LOW_SPACE_ALWAYS) Long.MAX_VALUE else com.jrees.wowcompanion.SetupFlow.LOW_SPACE_BYTES) else null,
         staleData = remember { com.jrees.wowcompanion.DataStaleness.init(context); 0 }.let { com.jrees.wowcompanion.DataStaleness.current() },
         iconsLine = com.jrees.wowcompanion.AllIcons.line(com.jrees.wowcompanion.ArtHarvest.state is com.jrees.wowcompanion.ArtHarvest.State.Ready),
+        maps = mapsReady,
         updating = isUpdating,
         busy = when {
             isUpdating -> updateStatusText
@@ -1127,9 +1148,13 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
         // Low-memory graphics (Settings > System; on by default for the 8 / 12 GB Thors): the smaller textures in Config.wtf
         // Game account (Settings > General, #47): "Ask each time" clears the game's remembered game account so its own picker shows;
         // the log names the keys cleared, never a value (a value is an account name)
+        // #305 (the user's pick 2026-11-16: "force the game to fill the top screen at EVERY start"): gxMaximize 1 and gxWindowedResolution
+        // the size of the screen the game shows on, at every start
+        val screen = gameScreenSize(context)
+        Timber.i("Config.wtf: the game's window fills its screen (gxMaximize 1, gxWindowedResolution %s)", screen ?: "1920x1080: size unread")
         val accountCleared = com.jrees.wowcompanion.GameConfigWtf.ensure(gameRoot, product, choice?.row,
             com.jrees.wowcompanion.GameRegion.chosen(context), lowMemory = com.jrees.wowcompanion.Settings.lowMemGraphics,
-            askAccount = com.jrees.wowcompanion.Settings.gameAccountAsk)
+            askAccount = com.jrees.wowcompanion.Settings.gameAccountAsk, screen = screen)
         if (com.jrees.wowcompanion.Settings.gameAccountAsk) {
             Timber.i("Config.wtf game account: ask each time; cleared %s", accountCleared.joinToString(" ").ifEmpty { "nothing (no remembered choice)" })
         }
@@ -1174,6 +1199,17 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
     containerManager.getContainerById(CONTAINER_ID)?.let { app.gamenative.utils.LsfgVkManager.applyDsForever(it); it.saveData() }
     return CONTAINER_ID
 }
+
+/**
+ * #305: the size of the screen the game shows on, landscape ("1920x1080"), from the display's PHYSICAL MODE (stable on the Thor, where
+ * getRealSize on display 0 can answer with the bottom screen's: TapBridge.gameDisplay). Display 0 = the Thor's top screen; with Swap
+ * screens in use the game's own display (ScreenSwap.gameDisplay, DsForeverScreen's choice). Null = unreadable.
+ */
+private fun gameScreenSize(context: Context): String? = runCatching {
+    val dm = context.getSystemService(android.hardware.display.DisplayManager::class.java) ?: return@runCatching null
+    val d = dm.getDisplay(com.jrees.wowcompanion.ScreenSwap.gameDisplay) ?: dm.getDisplay(android.view.Display.DEFAULT_DISPLAY)
+    d?.mode?.let { com.jrees.wowcompanion.GameConfigWtf.screenSize(it.physicalWidth, it.physicalHeight) }
+}.getOrNull()
 
 private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: String): JSONObject {
     val samsungEnv = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) " FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1" else ""

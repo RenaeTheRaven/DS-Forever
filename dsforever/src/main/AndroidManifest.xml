@@ -3,6 +3,9 @@
     <!-- Streaming (S2): the PC on the LAN (normal permissions, no prompt; the launcher already holds them) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Swap screens (#383 / #384): the game's task back to the front of its screen (ActivityManager.moveTaskToFront; a normal
+         permission, no prompt). Used only while Swap screens is On (DsForeverScreen.toFront) -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
     <application>
         <!-- Streaming mode (S2): WoW on the PC through Moonlight's core, on the top screen; the companion stays on the bottom -->
         <activity
@@ -25,6 +28,20 @@
         <!-- Settings > Frame generation: picks the player's own Lossless.dll (FrameGenPickActivity.kt) -->
         <activity
             android:name="com.jrees.wowcompanion.FrameGenPickActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Settings > Add-ons > Import: the player's own add-on zips through Android's picker (AddonImportActivity.kt); read access to
+             the picked files only, no permission asked for -->
+        <activity
+            android:name="com.jrees.wowcompanion.AddonImportActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- Voice to text (the user's pick 2026-11-16: "Android's own 'Allow microphone?' box, shown once on the bottom screen the first
+             time you press X (never in a fight)"): asks for the microphone on the bottom screen's display and closes (VoiceAskActivity.kt) -->
+        <activity
+            android:name="com.jrees.wowcompanion.VoiceAskActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />

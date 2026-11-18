@@ -157,6 +157,31 @@ class QuestsView(
     private var splitX = 0f
     private var bodyTop = 0f
 
+    // ---------------------------------------------------------------- THE POLESTAR TAB (pg1; the user, 2026-11-16: "if Polestar is active
+    // it should have its own tab at the top of the quests tab" - a Polestar menu: change zone and do whatever the player normally would
+    // there). While Quest tracking is Polestar and Polestar has answered (Map.lua's pguide), the header is the tab row [Quests n/max]
+    // [Polestar] with the kit's gold arrows on the highlighted tab (no L / R glyphs); Up from the first row lands on it, landing on a tab
+    // opens it (the cursor stays), Down enters its list, LB / RB switch from anywhere. The room opens on Quests, except from Home's
+    // "Choose your path" row (D4). Model / controller: [PolestarTab]; drawing: [PolestarPane]. The add-on is told the tab is open
+    // (frame op 13, again every 20 s) so it sends the statuses, the titles, the list; closed (op 14) when the tab or the room is left.
+    /** pm1: the Polestar menu itself (its documents, cursor, frames: [PolestarMenu]); the host hands the same one to the Map room's X */
+    val psMenu = PolestarMenu(context) { pad() }
+    private val psCur get() = psMenu.cur
+    private val psPane = PolestarPane { postInvalidate() }
+    private var tab = 0                              // 0 Quests, 1 Polestar
+    private var onTabs = false                       // the cursor is on the tab row
+    private var psOnShow: String? = null             // "path": the next showing opens on the path choice (Home's row, D4)
+    private val tabHits = ArrayList<Pair<RectF, Int>>()
+    /** in a fight (D3): the host's fight state, else the quests document's */
+    var fight: () -> Boolean = { doc?.optBoolean("cb") == true }
+    /** Skip ([prev] false) / Previous on Polestar's shown step: the host's one pnav tap (38 then 10 / 11); false = not sent */
+    var onPolestarSkip: ((prev: Boolean) -> Boolean)? = null
+    init {
+        psMenu.fight = { fight() }
+        psMenu.onSkip = { prev -> onPolestarSkip?.invoke(prev) == true }
+        psMenu.note = { note(it, false) }
+    }
+
     // ---------------------------------------------------------------- input from MainActivity
 
     fun update(q: JSONObject) {
@@ -213,6 +238,58 @@ class QuestsView(
 
     private fun note(s: String, ok: Boolean) {
         noteText = s; noteOk = ok; noteAt = System.currentTimeMillis(); postInvalidate()
+    }
+
+    // ---------------------------------------------------------------- the Polestar tab: the documents, the frames (pm1: [PolestarMenu])
+    /** the tab shows: Quest tracking is Polestar, Polestar loaded and answering */
+    fun psShows(): Boolean = psMenu.shows()
+
+    /** a refused Skip / Previous pressed in this room: its line here */
+    fun psNote(line: String) = note(line, false)
+    /** the Polestar tab is the one shown (the host: a pskip refusal's line goes here) */
+    fun psTabShown(): Boolean = isShown && tab == 1
+
+    /** {"type":"pguide" / "pgsteps" / "pglist" / "pgstep" / "pgroute" / "pgop"} (current documents only): into the one menu */
+    fun onPolestarDoc(d: JSONObject) {
+        if (!psMenu.onDoc(d)) return
+        if (d.optString("type") == "pguide" && !psShows() && tab == 1) { tab = 0; onTabs = false; psMenu.shownIn = null; syncB() }
+        postInvalidate()
+    }
+
+    /** Home's light blue "Choose your path" row (D4): the next showing opens this tab on the choice (now, when it shows already) */
+    fun openPolestar(path: Boolean) {
+        psOnShow = if (path) "path" else "tab"
+        if (isShown && held) psApplyOnShow()
+    }
+    private fun psApplyOnShow() {
+        val how = psOnShow ?: return
+        psOnShow = null
+        if (!psShows()) return
+        switchTab(1)
+        if (how == "path") psMenu.openPath()
+        syncB(); invalidate()
+    }
+
+    /** to tab [t] (0 Quests, 1 Polestar): landing on it opens it; the Polestar tab is entered on its shown step */
+    private fun switchTab(t: Int) {
+        if (t == 1 && !psShows()) return
+        if (t == tab) return
+        tab = t
+        menuSel = -1
+        if (t == 1) {
+            psMenu.shownIn = "quests"; psMenu.note = { note(it, false) }
+            psMenu.enter()
+        } else { psMenu.close(); psMenu.shownIn = null }
+        syncB(); invalidate()
+    }
+
+    /** one press while the Polestar tab is open (below the tab row) */
+    private fun psPress(k: String, direct: Boolean) {
+        when (psMenu.press(k)) {
+            PolestarMenu.Out.UP_TOP -> onTabs = true
+            PolestarMenu.Out.LEAVE -> leave(direct)
+            PolestarMenu.Out.NONE -> {}
+        }
     }
 
     private fun live(now: Long) = GameInput.live(now)
@@ -386,6 +463,8 @@ class QuestsView(
     }
 
     private fun tap(x: Float, y: Float) {
+        for ((box, t) in tabHits) if (box.contains(x, y)) { switchTab(t); onTabs = false; invalidate(); return }
+        if (tab == 1 && psShows()) { psTouch(x, y); return }
         if (menuSel >= 0) {
             // the More menu: a row chooses it; anywhere else closes the menu (and does nothing else)
             for ((box, i) in menuHits) if (box.contains(x, y)) { pick(i); return }
@@ -394,6 +473,15 @@ class QuestsView(
         for ((box, act) in btnHits) if (box.contains(x, y)) { lingerPress(act); action(act); return }
         if (pressed.isNotEmpty()) { pressed = ""; invalidate() }
         for ((box, id) in rowHits) if (box.contains(x, y)) { select(id); invalidate(); return }
+    }
+
+    /** a touch on the Polestar tab: a button presses its key; a row selects it (a pick / an option / a goal in its view) */
+    private fun psTouch(x: Float, y: Float) {
+        for ((box, key) in psPane.btnHits) if (box.contains(x, y)) { lingerPress(key); press(key, direct = true); return }
+        for ((box, key) in psPane.rowHits) if (box.contains(x, y)) {
+            psMenu.touchRow(key)
+            onTabs = false; syncB(); invalidate(); return
+        }
     }
 
     /**
@@ -569,11 +657,14 @@ class QuestsView(
     fun onShown() {
         lastPadN = -1; bSaid = "home"; openTapped = false; openPending = false
         cursor.reset()
+        tab = 0; onTabs = false; psCur.toList()                 // pg1: the room opens on Quests (Home's Choose your path row: psOnShow)
         holdAsk.shown(); askHold()
         padNow.setActive(true)
     }
 
     fun onHidden() {
+        if (tab == 1) { psMenu.close(); psMenu.shownIn = null }
+        tab = 0; onTabs = false
         holdAsk.hidden(); removeCallbacks(holdTick)
         padNow.setActive(false)
         menuSel = -1
@@ -638,6 +729,7 @@ class QuestsView(
                 if (msg.optBoolean("ok")) {
                     held = msg.optString("why") != "pending"; bSaid = "home"; cursor.show(); invalidate()
                     maybeOpen()
+                    if (held) psApplyOnShow()
                 }
             }
             "free", "leave" -> when {
@@ -678,10 +770,28 @@ class QuestsView(
         // the button carrying this key's glyph pushes in AT ONCE (it was drawn last frame: the glyphs show while the room holds)
         glyphHits[when (k) { "PAD1" -> "rev_a"; "PAD2" -> UiKit.backGlyph(); "PAD3" -> "rev_x"; "PAD4" -> "rev_y"; else -> "" }]
             ?.let { lingerPress(it) }
+        if (psOnShow != null) psApplyOnShow()
+        // pg1: the tab row and LB / RB (the Polestar tab shows); the Polestar tab's own presses
+        val tabsOn = psShows()
+        if (!tabsOn && (tab != 0 || onTabs)) { tab = 0; onTabs = false }
+        if (tabsOn && (k == DirectPadKeys.LB || k == DirectPadKeys.RB)) {
+            switchTab(if (k == DirectPadKeys.RB) 1 else 0); syncB(); invalidate(); return
+        }
+        if (tabsOn && onTabs) {
+            when (k) {
+                "PADDLEFT" -> switchTab(0)
+                "PADDRIGHT" -> switchTab(1)
+                "PADDDOWN", "PAD1" -> onTabs = false
+                "PAD2" -> leave(direct)
+            }
+            syncB(); invalidate(); return
+        }
+        if (tabsOn && tab == 1) { psPress(k, direct); syncB(); invalidate(); return }
         val q = selectedQuest()
         val confirm = q != null && confirmAbandonId == q.optInt("id")
         val rows = if (menuSel >= 0 && q != null) moreItems(q, System.currentTimeMillis()).size else 0
-        when (val d = cursor.key(k, quests.map { it.optInt("id") }, selectedId, confirm, menuSel, rows)) {
+        when (val d = cursor.key(k, quests.map { it.optInt("id") }, selectedId, confirm, menuSel, rows, tabs = tabsOn)) {
+            QuestCursor.Do.ToTabs -> onTabs = true
             is QuestCursor.Do.Select -> select(d.id)
             QuestCursor.Do.More -> action("more")
             is QuestCursor.Do.MenuMove -> menuSel = d.i
@@ -712,7 +822,7 @@ class QuestsView(
     private fun syncB() {
         if (!held) return
         val confirm = confirmAbandonId != -1 && confirmAbandonId == selectedId
-        val where = cursor.bLeads(confirm, menuSel >= 0)
+        val where = if (onTabs) "home" else if (tab == 1 && psShows()) psCur.bLeads() else cursor.bLeads(confirm, menuSel >= 0)
         if (where != bSaid && guestTap(GuestPad.bnext(pad(), home = where == "home"))) bSaid = where
     }
 
@@ -762,10 +872,12 @@ class QuestsView(
         }
         if (confirmAbandonId != -1 && now - confirmAt > CONFIRM_TIMEOUT_MS) { confirmAbandonId = -1; syncB() }
 
-        // ---- header
+        // ---- header (pg1: the tab row while the Polestar tab shows)
         val d = doc
-        UiKit.header(c, w, "Quests",
-            if (d == null) null else if (d.has("maxQ")) "${quests.size} / ${d.optInt("maxQ")}" else "${quests.size}", HEADER)
+        tabHits.clear()
+        val count = if (d == null) null else if (d.has("maxQ")) "${quests.size} / ${d.optInt("maxQ")}" else "${quests.size}"
+        if (psShows()) drawTabs(c, w, count) else { if (tab != 0 || onTabs) { tab = 0; onTabs = false }; UiKit.header(c, w, "Quests", count, HEADER) }
+        psMenu.tick(now, tab == 1 && isShown)
         val status: Pair<String, Int>? = when {
             noteText != null && now - noteAt < NOTE_MS -> noteText!! to (if (noteOk) Theme.ok else Theme.warn)
             else -> blocked(now)?.takeIf { d != null && pendingOp == null }?.let { it to Theme.dim }
@@ -778,6 +890,13 @@ class QuestsView(
 
         bodyTop = HEADER
         splitX = floor(w * 0.57f)
+        if (tab == 1 && psShows()) {
+            psPane.draw(c, w, h, bodyTop, PolestarPane.Frame(psMenu.book, psCur, psMenu.rows(), psMenu.picks(), fight(), held && cursor.shown && !onTabs,
+                pressed, waiting = false, quiet = onTabs))
+            for ((g, key) in psPane.glyphHits) glyphHits[g] = key
+            if (isShown) postInvalidateDelayed(REFRESH_MS)
+            return
+        }
         if (d == null) {
             pRowSub.color = Theme.dim
             c.drawText(Tr.t("Waiting for quests. The WowCompanionQuests addon starts on the next /reload."),
@@ -796,6 +915,34 @@ class QuestsView(
 
         // keep distances and bearings current while the room is on screen
         if (isShown) postInvalidateDelayed(REFRESH_MS)
+    }
+
+    /** pg1: the header as the tab row - [Quests n / max] [Polestar] - the room's note at the right; the cursor's gold arrows on the
+     *  highlighted tab while it is on the row (no L / R glyphs: the 10-07 ruling) */
+    private fun drawTabs(c: Canvas, w: Float, count: String?) {
+        pFill.color = Theme.panel; c.drawRect(0f, 0f, w, HEADER, pFill)
+        pFill.color = Theme.bronzeDim; c.drawRect(0f, HEADER - 1.5f, w, HEADER, pFill)
+        val cp = UiKit.bodyPaint(22f, Theme.dim)
+        val labels = listOf("Quests", PolestarTab.TAB)
+        var x = 60f
+        for ((i, l) in labels.withIndex()) {
+            val lp = UiKit.bodyPaint(28f, Color.WHITE)
+            val extra = if (i == 0 && count != null) cp.measureText(count) + 16f else 0f
+            val tw = lp.measureText(Tr.t(l)) + extra + 64f
+            val r = RectF(x, 6f, x + tw, HEADER - 2f)
+            val active = i == tab
+            UiKit.tab(c, r, if (i == 0 && count != null) "" else l, active, cursor = onTabs && active, textSize = 28f)
+            if (i == 0 && count != null) {
+                val p = UiKit.bodyPaint(28f, if (active) Color.WHITE else Theme.gold)
+                val ty = r.centerY() + 8f - (p.ascent() + p.descent()) / 2f
+                val lx = r.left + 32f
+                c.drawText(Tr.t(l), lx, ty, p)
+                c.drawText(count, lx + p.measureText(Tr.t(l)) + 14f, ty, UiKit.numberPaint(22f, Theme.dim))
+            }
+            if (onTabs && active) UiKit.moveArrows(c, r, left = i > 0, right = i < labels.size - 1, words = false)
+            tabHits.add(r to i)
+            x += tw + UiKit.TAB_GAP_H                      // (room for the cursor's gold arrow between the two)
+        }
     }
 
     private fun drawList(c: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
@@ -818,7 +965,7 @@ class QuestsView(
             val sel = q.optInt("id") == selectedId
             if (sel) y += SEL_GAP
             val box = RectF(x0, y, x1, y + ROW_H)
-            if (box.bottom > y0 - SEL_GAP && box.top < y1 + SEL_GAP) drawRow(c, q, box, up = i > 0, down = i < quests.size - 1)
+            if (box.bottom > y0 - SEL_GAP && box.top < y1 + SEL_GAP) drawRow(c, q, box, up = i > 0 || psShows(), down = i < quests.size - 1)
             if (box.bottom > y0 && box.top < y1) {
                 rowHits.add(RectF(box.left, max(box.top, y0), box.right, min(box.bottom, y1)) to q.optInt("id"))
             }
@@ -835,9 +982,9 @@ class QuestsView(
         val inset = RectF(box.left + 8f, box.top + 3f, box.right - 8f, box.bottom - 3f)
         if (sel) {
             // THE selector (UI Art's SHEET_quests_v3): the kit's selection box; its up / down arrows in the gaps while the
-            // controller is the room's
-            UiKit.focus(c, inset)
-            if (held && cursor.shown) UiKit.moveArrowsUpDown(c, inset, up = up, down = down, size = 22f, width = 34f,
+            // controller is the room's. pg1: while the cursor is on the tab row, the row is only the selection (one selector)
+            if (onTabs) UiKit.selectedRow(c, inset) else UiKit.focus(c, inset)
+            if (held && cursor.shown && !onTabs) UiKit.moveArrowsUpDown(c, inset, up = up, down = down, size = 22f, width = 34f,
                 around = true, gap = SEL_GAP)
         }
         if (q.optBoolean("focus")) {
@@ -1073,7 +1220,7 @@ class QuestsView(
         val reachable = QuestPad.cells(padDoc, QuestPad.Act.WATCH, slot) != null
         val tracked = tracked(q)
         val menuOpen = menuSel >= 0
-        val glyphs = held && cursor.shown && !menuOpen
+        val glyphs = held && cursor.shown && !menuOpen && !onTabs
         button(c, RectF(bx, bTop, bx + bw, bBot), if (tracked) "Untrack" else "Track", "track",
             enabled = block == null && reachable, glyph = if (glyphs) "rev_a" else null)
         bx += bw + gap

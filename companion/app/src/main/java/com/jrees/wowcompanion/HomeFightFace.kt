@@ -20,10 +20,31 @@ object HomeFightFace {
      *  D-pad's overlay one), for the state the add-on sends by spell id (hudS.fs) */
     fun ids(map: PadMapModel.Map, fight: Boolean = map.fight): Map<Int, Int> {
         val out = HashMap<Int, Int>()
-        for (pos in PadMapModel.FACES) PadMapModel.slot(map, BASE_SET, pos)?.fight?.id?.takeIf { it > 0 }?.let { out[pos] = it }
+        // PadMap m165: a macro's by the spell it casts now (Ref.stateId: `ms`), as the game's own macro button
+        for (pos in PadMapModel.FACES) PadMapModel.slot(map, BASE_SET, pos)?.fight?.stateId?.takeIf { it > 0 }?.let { out[pos] = it }
         if (fight) for (pos in 1..4) PadMapModel.slot(map, BASE_SET, pos)?.takeIf { it.kind == PadMapModel.Kind.COMBAT && it.ov }
-            ?.combat?.id?.takeIf { it > 0 }?.let { out[pos] = it }
-        formOwn(map).forEach { (pos, r) -> if (pos in PadMapModel.FACES || fight) r.id?.takeIf { it > 0 }?.let { out[pos] = it } }
+            ?.combat?.stateId?.takeIf { it > 0 }?.let { out[pos] = it }
+        // review of m165: a form's own entry is what that button DRAWS ([icons] / [dpadIcons]), so one with no spell (a command, an item,
+        // a macro using an item or casting nothing now) takes none of the caster's spell's state or cast time - as [items] reads it
+        formOwn(map).forEach { (pos, r) ->
+            if (pos in PadMapModel.FACES || fight) { val s = r.stateId?.takeIf { it > 0 }; if (s != null) out[pos] = s else out.remove(pos) }
+        }
+        return out
+    }
+
+    /**
+     * PadMap m165 (the user, 2026-11-16: "when using show tooltip on a macro it doesn't actually show the GCD when using it"): the base
+     * set's game position -> the ITEM a macro drawn there would use now (Ref.mt, GetMacroItem), for its cooldown from the `itemcd`
+     * document ([ItemCd]) - the positions and the order [ids] reads (X / Y / A; the D-pad's in a fight; a form's own over them)
+     */
+    fun items(map: PadMapModel.Map, fight: Boolean = map.fight): Map<Int, Int> {
+        val out = HashMap<Int, Int>()
+        for (pos in PadMapModel.FACES) PadMapModel.slot(map, BASE_SET, pos)?.fight?.mt?.takeIf { it > 0 }?.let { out[pos] = it }
+        if (fight) for (pos in 1..4) PadMapModel.slot(map, BASE_SET, pos)?.takeIf { it.kind == PadMapModel.Kind.COMBAT && it.ov }
+            ?.combat?.mt?.takeIf { it > 0 }?.let { out[pos] = it }
+        formOwn(map).forEach { (pos, r) ->
+            if (pos in PadMapModel.FACES || fight) { val m = r.mt?.takeIf { it > 0 }; if (m != null) out[pos] = m else out.remove(pos) }
+        }
         return out
     }
 
@@ -56,6 +77,32 @@ object HomeFightFace {
                 ?.let { pos to it }
         }.toMap()
 
+    /** the bare D-pad's Down (game position 4) */
+    const val DOWN = 4
+
+    /** bare-set D-pad position [pos]'s In-combat entry as the router takes it in the fight switch (PadMap m44 / m55): a form's own
+     *  first, else the caster's overlay one (a COMBAT slot with `ov`); null = none (the position keeps DS Forever's action). Combat
+     *  controls off (m27, the padmap's `face.cc` false): none - the router arms no fight text then (routerMacros' combatOn() gate on
+     *  `wc-ft` / `wc-ff` / `wc-ffc`), the entries are only kept, so the D-pad keeps DS Forever's action in fights too */
+    fun dpadFight(map: PadMapModel.Map, pos: Int): PadMapModel.Ref? = if (map.faceCc == false) null else
+        formOwn(map)[pos] ?: PadMapModel.slot(map, BASE_SET, pos)?.takeIf { it.kind == PadMapModel.Kind.COMBAT && it.ov }?.combat
+
+    /**
+     * WK-DPAD (the user, 2026-11-16: "using the down ability in combat on the D-pad is flashing the home button again with its arrows as if
+     * it was doing the down DS toolbar action and then changing its mind to fix it"): the bare D-pad Down IS Home's room bar right now, so
+     * the app's early bar (b98, opened on its own reader's Down before the game's command) may come up. The router's rule (PadMap m29 /
+     * m44 / m55; tools/test_fight_layer.py case 10): in the fight switch ([fight]: the padmap's `fight`, nothing given back) a Down with an
+     * In-combat entry runs that entry - the bar only when that entry is the Home Bar command itself; with none, or out of the switch, Down
+     * is the bar while the DS WoW toolbar is on ([toolbar]) or the Home Bar command is on the bare button (p35). p35 gated only the
+     * toolbar; p36 gave In combat's D-pad back its fight spells with the toolbar on, so a fight's Down lit the bar and the game never
+     * confirmed it (EARLY_MS later it closed).
+     */
+    fun downIsHomeBar(map: PadMapModel.Map?, toolbar: Boolean, fight: Boolean): Boolean {
+        val f = if (fight && map != null) dpadFight(map, DOWN) else null
+        if (f != null) return f.layer == "command" && f.key == PadMapModel.HOME_KEY
+        return toolbar || map?.let { PadMapModel.slot(it, BASE_SET, DOWN)?.key == PadMapModel.HOME_KEY } == true
+    }
+
     /**
      * THE COMPANION'S COMMANDS ON THE BAR (Track C, the user after test17: the Spell Radial on ZL+ZR + Y worked but "The button was not
      * there"): a command is the router's OVERLAY (PadMap m41, no macro, nothing in the game's slot), so the game's bar shows that slot
@@ -82,7 +129,7 @@ object HomeFightFace {
         map.sets.filter { it.set in 2..4 }.flatMap { st ->
             st.slots.filter { it.kind == PadMapModel.Kind.COMBAT && it.ov && it.pos in 1..8 }.mapNotNull { sl ->
                 val r = sl.combat ?: return@mapNotNull null
-                r.icon.takeIf { it != 0 }?.let { cmdKey(st.set, sl.pos) to (it to (r.id ?: 0)) }
+                r.icon.takeIf { it != 0 }?.let { cmdKey(st.set, sl.pos) to (it to (r.stateId ?: 0)) }       // m165: a macro's spell now
             }
         }.toMap()
 

@@ -8,7 +8,6 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.ColorDrawable
 import android.text.Editable
-import android.text.InputFilter
 import android.text.SpannableStringBuilder
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
@@ -103,46 +102,39 @@ private class Line(o: JSONObject) {
         get() = who.isNotEmpty() && !me && ch !in NOT_PEOPLE
 
     companion object {
-        val NOT_PEOPLE = setOf("npc", "system", "loot", "money", "currency", "info", "error", "other")
+        // chat37's experience / honor / reputation / skill-up lines are the game's sentences, never a person's
+        val NOT_PEOPLE = setOf("npc", "system", "loot", "money", "currency", "info", "error", "other", "xp", "honor", "rep", "skill")
     }
 }
 
 /** a thing on a selected line the cursor can pick: its sender, or what its text links; [range] = its words in the drawn line */
 private class Pick(val link: ChatLinks.Link, val range: IntRange, val sender: Boolean)
 
-/** The filters, now in Start's menu (the user, 2026-10-07). A filter never hides a line for good: All always has everything. */
-private enum class Filter(val label: String, val channels: Set<String>?) {
-    ALL("All", null),
-    NEARBY("Nearby", setOf("say", "yell", "emote", "npc")),
-    GROUP("Group", setOf("party", "raid", "guild", "officer")),
-    WHISPER("Whispers", setOf("whisper")),
-    CHANNEL("Channels", setOf("channel")),
-    SYSTEM("System", setOf("system", "loot", "money", "currency", "info", "error", "other"));
-
-    fun shows(ch: String) = this == ALL || of(ch) == this
-
-    companion object {
-        /** the one filter a channel belongs to; a channel nobody has named yet reads as SYSTEM */
-        fun of(ch: String): Filter = values().firstOrNull { it.channels?.contains(ch) == true } ?: SYSTEM
-    }
-}
+/** one box of the filter checklist as drawn: its [ChatFilter] key, its words and its chat colour (the game's swatch) */
+private class Box(val key: String, val label: String, val colour: Int)
 
 /** a chat type the module sends on (ChatStream.TYPES' keys); [usable] = the player can talk there right now */
 private class Kind(val key: String, val label: String, val colour: Int, val usable: Boolean = true)
 
-/** the game's own limit on one chat message */
+/** the game's own limit on one chat message (the voice page's words stop there: feat/big-voice) */
 private const val MAX_MESSAGE = 255
+
+/** the bar's Send (quick chat): its width right of the field */
+private const val SEND_W = 220
 
 /**
  * THE CHAT MODULE: the game's chat on the bottom screen, read and written without covering play.
  *
  * THE CHAT REWORK (the user, 2026-10-07; UI Art's SHEET_chat_rework, "we can build it as shown", without the Send by the bar):
  *  - a header with Select's (View) glyph and the Map room's funnel: Select opens the FILTER MENU (the filter row is gone; Start
- *    is Home's pause wheel in every room, the user 10-09);
+ *    is Home's pause wheel in every room, the user 10-09), a CHECKLIST of the message types since 2026-11-16 ([ChatFilter]);
  *  - the log; a selected line offers its LINKS (its sender, then the items / spells / quests / players its text links): left /
  *    right picks one (the gold box round its words), A opens its view (the game's tooltip; a player's Whisper);
  *  - the message bar: the chat TYPE as three of the game's hanging tabs (LB / RB slide them; the X menu is gone), the field;
- *  - under it THE BOARD, two pages X swaps: QUICK CHAT (12 phrases, A sends at once) and the companion's KEYBOARD (Start = Send);
+ *  - the field shows the game's edit box HEADER ("Say:", "Tell Name:", "2. Trade - City:") and the words in the type's colour
+ *    ([ChatHeader], the user 2026-11-16);
+ *  - under it THE BOARD, two pages X swaps: QUICK CHAT (11 phrases; since 2026-11-16 a phrase goes INTO THE BAR and the bar's Send,
+ *    or Start, sends it) and the companion's KEYBOARD (Start = Send);
  *  - while the board is up the log also shows big on the TOP screen, see-through over the game: the ADD-ON draws it (Chat.lua
  *    chat13, the user: "can we make it part of the wow addon instead of an overlay?"); this view only says when.
  * The rules of the controller are [ChatPad]'s; this view draws them and does the acts.
@@ -195,9 +187,9 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
 
     private val history = ArrayList<Line>()
     private val shown = ArrayList<Line>()
-    private var filter = Filter.ALL
     private var selected: Line? = null
-    private val unread = HashSet<Filter>()
+    /** the checklist's boxes (ChatFilter keys) where something for the player arrived unseen: a whisper or group chat */
+    private val unread = HashSet<String>()
 
     private var lastS = 0L      // the addon session the last numbered line came from
     private var lastI = 0       // and its line number
@@ -244,10 +236,38 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
     private var viewOpen = false
 
     // ---- the add-on's half
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
     private val tips = ChatLinks.Tips<JSONObject>(300)
     private val stream = ChatStream({ cells, gap -> tapper(cells, gap) })
     private var notice = ""
     private var noticeUntil = 0L
+
+    /**
+     * chat40 (the user, 2026-11-16: "the ! notice part should be a button to trigger the refresh"): Home's world-refresh notice and its
+     * Battle.net notices, drawn over the top of the log (HomeView owns them and draws them, as on its chat pane). The "!" is touch here
+     * and a controller stop ([ChatPad.Focus.Notice]: up from the top line, A presses it).
+     */
+    interface WorldNotice {
+        /** the refresh notice (its "!") shows */
+        fun live(): Boolean
+        /** anything shows (the refresh notice or a Battle.net notice) */
+        fun shows(): Boolean
+        /** draws at the top of [r]; [bang] set to the "!" box (empty = none); [v] asked for the next frames. Returns the height used */
+        fun draw(c: Canvas, r: RectF, focused: Boolean, bang: RectF, v: View): Float
+        /** the "!" pressed: the game's Refresh now */
+        fun go()
+    }
+    var world: WorldNotice? = null
+    private val worldBang = RectF()
+    private var onWorldBang = false
+    /** the log's top inset under the notices (px), so no line hides under them */
+    private var worldInset = 0
+
+    /** Home's notices changed: the cursor leaves a "!" that went, and the log redraws */
+    fun worldChanged() {
+        if (pad.focus != null) { val was = pad.focus; pad.settle(scene()); if (pad.focus != was) refreshBack() }
+        invalidate()
+    }
 
     // ---- the parts
     private val head = Head(c)
@@ -257,13 +277,24 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
     private val composer = LinearLayout(c)
     private val boardBox = LinearLayout(c)
     private val quick = QuickTiles(c)
-    // the companion's own keyboard (the user's pick 2026-09-30): what a controller types with
-    private val keyboard = ChatKeyboard(c)
+    // the companion's own keyboard (the user's pick 2026-09-30): what a controller types with; its VOICE page too (the user's pick
+    // 2026-11-16: X starts voice in the message box; the words go after what is written, the channel's prefix before them)
+    private val keyboard = ChatKeyboard(c, voice = true)
+    /** the bar's Send while quick chat is up (the user, 2026-11-16: "add a send button to that menu to the right of the message bar") */
+    private val barSend = BarSend(c)
     private val logBox = FrameLayout(c)
     /** 0: the log screen; 1: the input screen (the board up, the log gone up behind the row); between: the move */
     private var inputK = 0f
     /** what is written: the field only SHOWS it (its end, when it needs more than the field's lines) */
     private var typed = ""
+    /** the quick chat phrase the bar holds as it was picked (its preset), or -1: sent as it is by the add-on's own preset cell */
+    private var quickFill = -1
+    /** the phrase put in the bar last (-1: none) and the player's own words it went after: a second pick replaces that phrase only */
+    private var quickPick = -1
+    private var quickBase = ""
+    /** where the caret stands in the field's text (after the header and what is written) */
+    private var caretAt = 0
+    private var fieldKey = ""
 
     private var touchX = 0f
     private var touchY = 0f
@@ -343,17 +374,20 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         input.isFocusable = false
         input.isFocusableInTouchMode = false
         input.isCursorVisible = false
-        input.setOnClickListener { if (board == Board.NONE) { openInput(); afterAct() } }
-        input.filters = arrayOf(
-            InputFilter { src, a, b, _, _, _ ->
-                if ((a until b).all { ChatStream.cellOf(src[it]) != null }) null
-                else src.subSequence(a, b).filter { ChatStream.cellOf(it) != null }
-            },
-            InputFilter.LengthFilter(MAX_MESSAGE))
+        // a finger on the field is A on it (rooms the same on every route): the input the Settings name; with quick chat up, the keyboard
+        input.setOnClickListener { if (board != Board.KEYS) { pad.focus = Focus.Field; press("PAD1") } }
+        // the field only SHOWS (showTyped): what is written is cleaned by the stream, and the header (a whisper's name, "…") is not
+        // chat text, so no filter stands between them and the field
         input.background = UiKit.background { cv, r -> UiKit.inputBox(cv, r) }
-        input.setPadding(26, 0, 34 + BAR_GLYPH_W, 0)    // room at the right for the A / Y glyph
+        insetField(BAR_H - 10)
+        // what fits is measured on the field as it is: a field that changed width (the bar's Send comes and goes with quick chat) is
+        // measured again, so the end of a long message stays in view
+        input.addOnLayoutChangeListener { _, l, _, r, _, ol, _, or, _ -> if (r - l != or - ol) main.post { showTyped() } }
         input.gravity = Gravity.CENTER_VERTICAL
         composer.addView(input, lp(0, MATCH, 1f).apply { leftMargin = 16; topMargin = 5; bottomMargin = 5 })
+        barSend.visibility = View.GONE
+        barSend.setOnClickListener { pad.focus = Focus.Send; doSend(); afterAct() }
+        composer.addView(barSend, lp(SEND_W, MATCH).apply { leftMargin = 2 })
         addView(composer, lp(MATCH, BAR_H + HOME_CLEAR))
 
         // ---- THE BOARD under the bar: quick chat and the keyboard, two pages of one board (X turns the page)
@@ -361,26 +395,68 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         ThemeLive.bg(boardBox, Tok.INK)
         boardBox.visibility = View.GONE
         boardBox.setPadding(0, 0, 0, HOME_CLEAR)
-        quick.onTile = { t -> pad.focus = Focus.Quick(t); quickTile(t); afterAct() }
+        // a finger on a tile is A on it: the phrase into the bar and the cursor onto the bar's Send, as the controller's A does
+        quick.onTile = { t -> pad.focus = Focus.Quick(t); press("PAD1") }
         boardBox.addView(quick, lp(MATCH, MATCH))
         keyboard.text = { typed }
         keyboard.onText = { t -> setTyped(t); restartBlink(); invalidate() }
         keyboard.onSend = { doSend() }
         keyboard.onClose = { setBoard(Board.NONE); pad.focus = Focus.Field; afterAct() }      // B: the input goes, the log again
         keyboard.onSwap = { setBoard(Board.QUICK); pad.focus = pad.quickFocus(scene()); afterAct() }
+        keyboard.voiceAppend = true
+        keyboard.voiceMax = MAX_MESSAGE
+        keyboard.voicePrefix = { prefixFor(type) to (kinds().firstOrNull { it.key == type }?.colour ?: Theme.text) }
+        keyboard.copyLeftMs = { stream.copyLeftMs() }
+        keyboard.onVoice = { refreshBack() }
         boardBox.addView(keyboard, lp(MATCH, MATCH))
         addView(boardBox, lp(MATCH, 0))
 
-        stream.onEvent = { e -> post { onStream(e) } }
+        // the main thread's own queue, not the view's: a view's post waits for a window, and an answer must never wait for one
+        stream.onEvent = { e -> main.post { onStream(e) } }
+        // the checklist's ticks, per character (the app's prefs; Home's chat pane reads the same)
+        val prefs = c.applicationContext.getSharedPreferences("chat_filter", Context.MODE_PRIVATE)
+        ChatFilter.init(object : ChatFilter.Store {
+            override fun read(): String? = prefs.getString("all", null)
+            override fun write(s: String) { prefs.edit().putString("all", s).apply() }
+        })
+        ChatFilter.onChange { if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) filterChanged() else main.post { filterChanged() } }
+        // hold to talk's last used chat, per character (the user's pick, 2026-11-16: "Remember per character"); never the words
+        val talkPrefs = c.applicationContext.getSharedPreferences("chat_talk", Context.MODE_PRIVATE)
+        TalkKeep.init(object : TalkKeep.Store {
+            override fun read(): String? = talkPrefs.getString("all", null)
+            override fun write(s: String) { talkPrefs.edit().putString("all", s).apply() }
+        })
+        TalkKeep.onChange { main.post { onTalkChannel() } }
         applySendState()
+    }
+
+    /**
+     * THE TEXT CLEAR OF THE BOX'S EDGE (the user, 2026-11-16: "visually right now the text in the message box clips a bit with the border
+     * art at the beginning of it"): the box's end pieces are drawn square at the field's height (UiKit.inputBox), so their metal edge
+     * grows with the field (the input screen's is twice the log screen's). The words start where the game starts them in its own 32 px
+     * edit box (SetTextInsets(15 + header, ...)): 15 / 32 of the height in, never less than before. Returns whether the inset changed
+     * (what fits in the field is then measured again).
+     */
+    private fun insetField(h: Int): Boolean {
+        val left = maxOf(26, Math.round(h * 15f / 32f))
+        if (input.paddingLeft == left && input.paddingRight == 34 + BAR_GLYPH_W) return false
+        input.setPadding(left, 0, 34 + BAR_GLYPH_W, 0)
+        return true
     }
 
     /** the game's type (UI art, fonts step) on the views this room keeps */
     private fun fonts() { UiKit.asBody(input) }
 
+    /** the field's words stop before its glyphs: A's, and X's microphone while voice is offered */
+    private fun padField() {
+        val g = 48f
+        input.setPadding(26, 0, if (VoiceUi.micShown(context)) (34 + VoiceUi.glyphsWidth(g, true)).toInt() else 34 + BAR_GLYPH_W, 0)
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
         fonts()
+        padField()
         removeCallbacks(watch)
         post(watch)
     }
@@ -405,7 +481,9 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
                 canParty = party; canGuild = guild; canRaid = raid; chans = cs
                 // a type that has just gone away cannot stay chosen
                 if (kinds().none { it.key == type }) { type = "SAY"; stream.setType(type) }      // gone (left the group / city)
+                onTalkChannel()                                  // hold to talk's chat may be there now, or gone (Say)
                 head.invalidate()
+                showTyped()
             }
         }
         val lines = chat.optJSONArray("lines") ?: return
@@ -446,27 +524,50 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
                 replyTo = l.who
                 head.invalidate()
             }
-            val f = Filter.of(l.ch)
-            if ((f == Filter.WHISPER || f == Filter.GROUP) && !(looking && filter.shows(l.ch))) unread.add(f)
+            val key = ChatFilter.keyOf(l.ch, l.chan)
+            if (key in ALERT && !(looking && ChatFilter.shows(l.ch, l.chan))) unread.add(key)
         }
         head.invalidate()
         refill()
+        showTyped()                             // the header may name what changed (Reply's person, a channel's name)
     }
 
     private fun refill() {
         shown.clear()
-        for (l in history) if (filter.shows(l.ch)) shown.add(l)
+        for (l in history) if (ChatFilter.shows(l.ch, l.chan)) shown.add(l)
         adapter.notifyDataSetChanged()
     }
 
-    private fun pick(f: Filter) {
-        filter = f
-        unread.remove(f)
-        if (f == Filter.ALL) unread.clear()
-        if (selected?.let { f.shows(it.ch) } == false) select(null)
+    /** the checklist changed (a tick here, another character's ticks): the list shows only the ticked types */
+    private fun filterChanged() {
+        unread.removeAll { ChatFilter.ticked(it) }
+        if (selected?.let { !ChatFilter.shows(it.ch, it.chan) } == true) select(null)
         head.invalidate()
         refill()
         list.setSelection(adapter.count - 1)
+        if (pad.focus != null) pad.settle(scene())
+        invalidate()
+    }
+
+    /** the checklist's columns: the game's Chat Settings groups, then the joined channels by name (in their log colours) */
+    private fun menuColumns(): List<Pair<String, List<Box>>> {
+        val groups = ChatFilter.GROUPS.map { g -> g.label to g.types.map { t -> Box(t.key, t.label, colour(t.chs.first())) } }
+        val seen = HashSet<String>()
+        val channels = chans.mapNotNull { (i, n) ->
+            val key = ChatFilter.chanKey(n)
+            if (!seen.add(key)) null else Box(key, chanLabel(n), NUMBERED[i] ?: Color.rgb(255, 192, 192))
+        }
+        return groups + (ChatFilter.CHANNELS to channels)
+    }
+
+    private fun menuBoxes(): List<Box> = menuColumns().flatMap { it.second }
+
+    /** box [m] of the checklist ticked or unticked (0 = All: every box ticked, or when all were, every box unticked); the list follows
+     *  ([filterChanged], ChatFilter's listener) */
+    private fun toggleBox(m: Int) {
+        val boxes = menuBoxes()
+        if (m == 0) ChatFilter.toggleAll(boxes.map { it.key })
+        else boxes.getOrNull(m - 1)?.let { ChatFilter.toggle(it.key) }
     }
 
     private fun select(l: Line?) {
@@ -587,6 +688,7 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
     private fun applyType() {
         tellType()
         head.invalidate()
+        showTyped()                             // the field's header follows the type
     }
 
     /** the type to the add-on: a whisper spells its person, a channel its number (chq 11), the rest are one tap */
@@ -643,9 +745,9 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
 
     private fun applySendState() {
         // the field stays usable while the game is quiet: what is written is kept, and only the send waits
-        input.hint = hint()
+        showTyped()
         keyboard.sendEnabled = sendEnabled
-        quick.live = sendEnabled
+        barSend.invalidate()
     }
 
     /**
@@ -659,6 +761,8 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         if (to == Board.KEYS) { keyboard.sendEnabled = sendEnabled; keyboard.open() }
         if (to != Board.NONE) { quick.visibility = if (to == Board.QUICK) View.VISIBLE else View.GONE
                                 keyboard.visibility = if (to == Board.KEYS) View.VISIBLE else View.GONE }
+        // the bar's Send: quick chat's (the keyboard has its own Send key)
+        barSend.visibility = if (to == Board.QUICK) View.VISIBLE else View.GONE
         if ((was == Board.NONE) != (to == Board.NONE)) {
             val up = to != Board.NONE
             if (up) { menuOpen = false; viewOpen = false }
@@ -729,7 +833,10 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         val logH = maxOf(0, total - headH - barH - boardH)
         quick.fillHeight = boardFull - HOME_CLEAR
         keyboard.fillHeight = boardFull - HOME_CLEAR
-        composer.setPadding(0, 0, 16, ((1f - k) * HOME_CLEAR).toInt())
+        val barPad = ((1f - k) * HOME_CLEAR).toInt()
+        composer.setPadding(0, 0, 16, barPad)
+        // the field's height: the bar's, less its padding and margins; a new inset is less (or more) room, so what fits is measured again
+        if (insetField(barH - barPad - 10)) showTyped()
         fun set(v: View, h: Int) { val p = v.layoutParams as LayoutParams; if (p.height != h || p.weight != 0f) { p.height = h; p.weight = 0f; v.layoutParams = p } }
         set(head, headH); set(logBox, logH); set(composer, barH); set(boardBox, boardH)
         head.k = k
@@ -755,31 +862,118 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         invalidate()
     }
 
+    /**
+     * The game's own chat-box header for the type (GlobalStrings CHAT_SAY_SEND "Say: ", CHAT_WHISPER_SEND "Tell %s: ", CHAT_CHANNEL_SEND
+     * "%d. %s: " ...): the voice page's words start with it, in the type's colour
+     */
+    private fun prefixFor(t: String): String = when {
+        // the type's word in the app's language, as its tab above shows it (review: "Say:" stood under the "Decir" tab); names as they are
+        t == "WHISPER" -> "${Tr.t("Tell")} $whisperName: "
+        t.startsWith("CHANNEL:") -> t.substringAfter(":").let { i -> "$i. ${chans.firstOrNull { it.first.toString() == i }?.second?.let { chanLabel(it) } ?: ""}: " }
+        else -> Tr.t(kinds().firstOrNull { it.key == t }?.label ?: "Say") + ": "
+    }
+
+    /** the names voice may hear here (the on-device recognizer's hints): who wrote lately, who is whispered; never logged */
+    fun voiceNames(): List<String> =
+        (listOf(whisperName, replyTo) + history.takeLast(120).map { it.who }).filter { it.isNotEmpty() }.map { it.substringBefore('-').trim() }.distinct()
+
+    /** X on the log screen (or a finger on the bar's microphone): the board comes up on its VOICE page, the cursor on the bar */
+    private fun startVoice() {
+        if (!VoiceUi.micShown(context)) return
+        if (board != Board.KEYS) setBoard(Board.KEYS)
+        pad.focus = Focus.Field
+        if (!keyboard.startVoice(fromKeys = false)) setBoard(Board.NONE)
+        afterAct()
+    }
+
     /** what is written changed: to the add-on's buffer ([ChatStream]) and into the field */
     private fun setTyped(t: String) {
         typed = stream.clean(t)
+        if (quickFill >= 0 && typed != ChatLinks.PRESETS.getOrNull(quickFill)) quickFill = -1     // changed: a message of its own now
         stream.setBody(typed)
         showTyped()
     }
 
     /**
-     * The field shows what is written; when it needs more than the field's lines (one on the log screen, two on the input screen:
-     * UI Art) it shows the END, with "…" before it, so the caret is always where typing goes.
+     * A QUICK CHAT PHRASE GOES INTO THE BAR, never straight out (the user, 2026-11-16: "after selecting the option I get surprised by it
+     * auto sending"): the bar's Send (or Start) sends it. A phrase replaces the phrase picked before it; words of the player's own stay
+     * and the phrase goes after them. Nothing reaches the add-on until the send: a phrase as it was picked goes by the add-on's own
+     * preset cell (one tap, as before), anything else as a typed message.
+     */
+    private fun fillQuick(t: Int) {
+        val phrase = ChatLinks.PRESETS.getOrNull(t) ?: return
+        // the bar still holds the last pick as it was put there: that phrase goes, the words before it stay (else what is in the bar
+        // now, the keyboard's changes included, is the player's own and the phrase goes after it)
+        val last = ChatLinks.PRESETS.getOrNull(quickPick)?.let { withPhrase(quickBase, it) }
+        if (last == null || typed != last) quickBase = typed
+        typed = withPhrase(quickBase, phrase)
+        quickPick = t
+        quickFill = if (typed == phrase) t else -1
+        showTyped()
+        barSend.invalidate()
+    }
+
+    /** [phrase] after the player's own words [base] (alone when there are none), as chat can carry it */
+    private fun withPhrase(base: String, phrase: String): String =
+        stream.clean(if (base.isBlank()) phrase else base.trimEnd() + " " + phrase)
+
+    /** the composer's type now as a kind of the row (its colour); the first when it is gone */
+    private fun kindNow(): Kind? = kinds().let { ks -> ks.firstOrNull { it.key == type } ?: ks.firstOrNull() }
+
+    /** the channel's name for the header: as the game's lines name it ("Trade - City"), else as the joined list does ("Trade") */
+    private fun chanName(t: String): String {
+        val i = t.substringAfter(":").toIntOrNull() ?: return ""
+        val joined = chans.firstOrNull { it.first == i }?.second ?: ""
+        // a line of THIS channel only: a number the game gave another channel before (one left, another joined) names that one
+        val base = ChatFilter.chanBase(joined)
+        history.lastOrNull { it.ch == "channel" && it.idx == i && it.chan.isNotEmpty() && (base.isEmpty() || ChatFilter.chanBase(it.chan) == base) }
+            ?.let { l -> return l.chan.substringAfter(". ", l.chan) }
+        return joined
+    }
+
+    /** the game's edit box header for the type now (ChatHeader): "Say: ", "Tell Name: ", "2. Trade - City: " */
+    private fun headerNow(): String = ChatHeader.shown(type, when (type) {
+        "WHISPER" -> whisperName
+        "REPLY" -> replyTo
+        else -> ""
+    }, if (type.startsWith("CHANNEL:")) chanName(type) else "") { Tr.t(it) } + " "
+
+    /**
+     * The field shows THE GAME'S HEADER and then what is written, both in the type's chat colour (the user, 2026-11-16: "I want the added
+     * prefix to the message for where I am about to send the message just like in game, also changing the color of that message
+     * accordingly"; ChatFrameEditBoxMixin:UpdateHeader colours the header and the text in ChatTypeInfo's colour). With nothing written,
+     * the hint after the header, dim. When it needs more than the field's lines (one on the log screen, two on the input screen: UI Art)
+     * it shows the END, with "…" before it, so the caret is always where typing goes.
      */
     private fun showTyped() {
         val lines = if (board == Board.NONE) 1 else 2
         val room = input.width - input.totalPaddingLeft - input.totalPaddingRight
-        var shown = typed
+        val header = headerNow()
+        val colour = kindNow()?.colour ?: colour("say")
+        var body = typed
         if (room > 0 && typed.isNotEmpty()) {
             val p = android.text.TextPaint(input.paint)
-            fun fits(s: String) = android.text.StaticLayout.Builder.obtain(Tr.span(s), 0, Tr.span(s).length, p, room).build().lineCount <= lines
+            fun fits(s: String) = android.text.StaticLayout.Builder.obtain(header + s, 0, header.length + s.length, p, room).build().lineCount <= lines
             if (!fits(typed)) {
                 var lo = 0; var hi = typed.length          // the longest end that fits behind "…"
                 while (lo < hi) { val mid = (lo + hi + 1) / 2; if (fits("\u2026" + typed.takeLast(mid))) lo = mid else hi = mid - 1 }
-                shown = "\u2026" + typed.takeLast(lo)
+                body = "\u2026" + typed.takeLast(lo)
             }
         }
-        if (input.text.toString() != shown) { input.setText(shown); input.setSelection(input.text.length) }
+        val hintWords = if (body.isEmpty()) Tr.t(hint()) else ""
+        val key = "$header|$body|$hintWords|$colour|$lines"
+        caretAt = header.length + body.length
+        if (key != fieldKey) {
+            fieldKey = key
+            val sb = SpannableStringBuilder()
+            fun put(s: String, c: Int) { val a = sb.length; sb.append(s); sb.setSpan(ForegroundColorSpan(c), a, sb.length, 0) }
+            put(header, colour)
+            if (body.isNotEmpty()) put(body, colour) else put(hintWords, Theme.dim)
+            input.setText(sb)
+            // the selection where typing goes (an EditText's setText puts it at the start): a field that holds more than its lines keeps
+            // that end in view, as before the header
+            input.setSelection(caretAt.coerceIn(0, input.text.length))
+        }
         input.maxLines = lines
     }
 
@@ -792,35 +986,111 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         if (!GameInput.live()) { sendEnabled = false; say("Waiting for the game"); return }
         if (stream.sending) return
         tellType()
+        sendingTo = type to whisperName                        // hold to talk: the chat this send uses, kept once it went
+        // a quick chat phrase as it was picked: the add-on's own preset cell (one tap; the answer is QuickSent)
+        val k = quickFill
+        if (k >= 0 && text == ChatLinks.PRESETS.getOrNull(k)) { stream.quick(k); return }
         stream.setBody(text)
         if (stream.send()) say("Sending…", 4000)
     }
 
-    /** a quick chat tile: a phrase goes at once; the bottom-right one is the Keyboard button */
+    /** a quick chat tile: its phrase into the bar (the cursor is on the bar's Send now); the bottom-right one is the Keyboard button */
     private fun quickTile(t: Int) {
         if (t == ChatLinks.KEYBOARD_TILE) { setBoard(Board.KEYS); pad.focus = Focus.Field; return }      // the way to the keyboard
-        sendQuick(t)
+        fillQuick(t)
     }
 
-    private fun sendQuick(t: Int) {
-        if (!GameInput.live()) { sendEnabled = false; say("Waiting for the game"); return }
+    // ---------------------------------------------------------------- hold to talk (the DS toolbar's Chat held: HoldTalk)
+
+    /** the chat the player's last send went to (type, whisper name) as it is now: TalkKeep's, per character; Say until one went */
+    private fun usedNow(): Pair<String, String> = TalkKeep.resolve(TalkKeep.used, kinds().map { it.key }.toSet(), chans)
+    /** the chat a send on its way uses (kept in TalkKeep once it went) */
+    private var sendingTo: Pair<String, String>? = null
+    /** the last used chat changed (hold to talk's microphone takes its colour) */
+    var onTalkChannel: () -> Unit = {}
+    /** a hold-to-talk send on its way: its answer goes here, not to the composer ([sent] / its notice) */
+    private var talkDone: ((Boolean, String) -> Unit)? = null
+    private var talkKept: Triple<String, String, String>? = null
+
+    /** the last used chat: its key, the game's header for it ("Party: ", "Tell Name: ") and its colour */
+    fun talkChannel(): Triple<String, String, Int> {
+        val (t, usedW) = usedNow()
+        val keepW = whisperName
+        if (t == "WHISPER") whisperName = usedW
+        val prefix = prefixFor(t)
+        whisperName = keepW
+        val colour = kinds().firstOrNull { it.key == t }?.colour ?: when {
+            t == "WHISPER" || t == "REPLY" -> colour("whisper")
+            t.startsWith("CHANNEL:") -> NUMBERED[t.substringAfter(":").toIntOrNull() ?: 0] ?: Color.rgb(255, 192, 192)
+            else -> colour(t.lowercase())
+        }
+        return Triple(t, prefix, colour)
+    }
+
+    /**
+     * HOLD TO TALK'S SEND (the player's press: the release, or A on its line): [text] to the last used chat through the same add-on
+     * path as the composer's Send (its type, the check, the ONE send tap; the add-on's rules refuse what the game would). The composer
+     * keeps its own type and draft. [done] (main thread): sent, or the reason it was not. False = nothing went (the reason given).
+     */
+    fun talkSend(text: String, done: (Boolean, String) -> Unit): Boolean {
+        val body = HoldTalk.body(text)
+        if (body.isBlank()) { done(false, HoldTalk.NOT_HEARD); return false }
+        if (!GameInput.live()) { done(false, "Waiting for the game"); return false }
+        if (stream.sending || talkDone != null) { done(false, "Sending…"); return false }
+        talkKept = Triple(type, whisperName, typed)
+        val (usedT, usedW) = usedNow()
+        type = usedT
+        if (type == "WHISPER") whisperName = usedW
+        talkDone = done
         tellType()
-        stream.quick(t)
+        stream.setBody(body)
+        if (!stream.send()) { talkEnd(false, "The game is not ready"); return false }
+        return true
+    }
+
+    /** a hold-to-talk send's answer: the composer's type and draft back, the host told */
+    private fun talkEnd(ok: Boolean, why: String) {
+        val d = talkDone ?: return
+        talkDone = null
+        talkKept?.let { (t, w, draft) -> type = t; whisperName = w; tellType(); stream.setBody(draft); head.invalidate(); showTyped() }
+        talkKept = null
+        d(ok, why)
     }
 
     private fun onStream(e: ChatStream.Event) {
-        when (e) {
-            ChatStream.Event.Sent -> {
-                noticeUntil = 0
-                setTyped("")
-                // the input goes after a typed send, as the game's chat box does (the user, 2026-09-28: "close after"): the log again
-                if (board == Board.KEYS) setBoard(Board.NONE)
-                pad.focus = Focus.Field
-                afterAct()
+        if (talkDone != null) {
+            // the hold's own send: the chat it went to stays the last used one; the composer is not touched
+            when (e) {
+                ChatStream.Event.Sent -> talkEnd(true, "")
+                is ChatStream.Event.Refused -> talkEnd(false, e.why.replaceFirstChar { it.uppercase() })
+                is ChatStream.Event.QuickSent -> {}
             }
-            is ChatStream.Event.Refused -> say("Not sent: " + e.why.replaceFirstChar { it.uppercase() })
-            is ChatStream.Event.QuickSent -> say("“" + ChatLinks.PRESETS[e.k] + "”", 1500)
+            return
         }
+        if (e == ChatStream.Event.Sent || e is ChatStream.Event.QuickSent) {
+            // kept per character (TalkKeep: the kind, the whisper's person, a channel's name; never the words); its listener redraws
+            (sendingTo ?: (type to whisperName)).let { (t, w) ->
+                val chan = if (t.startsWith("CHANNEL:")) chans.firstOrNull { it.first.toString() == t.substringAfter(":") }?.second ?: "" else ""
+                TalkKeep.went(TalkKeep.Used(t, if (t == "WHISPER") w else "", chan))
+            }
+        }
+        sendingTo = null
+        when (e) {
+            ChatStream.Event.Sent -> sent()
+            is ChatStream.Event.Refused -> say("Not sent: " + e.why.replaceFirstChar { it.uppercase() })
+            // a phrase sent by its preset cell: the bar empties and the input goes, as after a typed send
+            is ChatStream.Event.QuickSent -> { sent(); say("“" + ChatLinks.PRESETS[e.k] + "”", 1500) }
+        }
+    }
+
+    /** a message went: the bar empties and the input goes, as the game's chat box does (the user, 2026-09-28: "close after") */
+    private fun sent() {
+        noticeUntil = 0
+        quickFill = -1; quickPick = -1; quickBase = ""
+        setTyped("")
+        if (board != Board.NONE) setBoard(Board.NONE)
+        pad.focus = Focus.Field
+        afterAct()
     }
 
     /** a short word over the bottom of the log */
@@ -878,9 +1148,12 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
 
     override fun onVisibilityChanged(changedView: View, visibility: Int) {
         super.onVisibilityChanged(changedView, visibility)
+        // Android's microphone question (the voice page's Allow) hides the whole window and shows it again: the board stays as it was
+        if (keyboard.voiceAsking) return
         if (visibility == View.VISIBLE && isShown) {
-            if (filter == Filter.ALL) unread.clear() else unread.remove(filter)
+            unread.removeAll { ChatFilter.ticked(it) }
             head.invalidate()
+            padField()                      // Settings > Voice typing may have changed: the bar's microphone comes or goes
             // A new hold starts with B leading Home, so B's state is said again once the hub has asked for the controller
             lastLeadsHome = null
             // THE LOG FIRST (the user, b121: "I didn't mean that quick chat should immediately open when opening the chat module- it
@@ -917,12 +1190,13 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
             links = if (sel != null) picks.size else 0,
             board = board,
             menu = menuOpen,
-            menuItems = Filter.values().size,
-            menuCurrent = filter.ordinal,
+            menuCols = menuColumns().map { it.second.size },
             view = viewOpen,
             viewAct = viewOpen && k != null && picks.getOrNull(k)?.link?.k == "player",
             quickTiles = ChatLinks.TILES,
             defaultBoard = defaultBoard(),
+            voice = VoiceUi.micShown(context),
+            notice = !morphOn && world?.live() == true,
         )
     }
 
@@ -955,10 +1229,10 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
     }
 
     /**
-     * Start belongs to the room only while the KEYBOARD is up (its Send); everywhere else it opens Home's pause wheel (the user,
-     * 10-09). Home sends Start here only while this says so.
+     * Start belongs to the room only while a BOARD is up: the keyboard's Send, and quick chat's (the bar's Send: the user, 2026-11-16);
+     * everywhere else it opens Home's pause wheel (the user, 10-09). Home sends Start here only while this says so.
      */
-    fun ownsStart(): Boolean = board == Board.KEYS
+    fun ownsStart(): Boolean = board != Board.NONE
 
     /** one controller key, from the addon's relay or from this window's own key events */
     private fun press(k: String) {
@@ -972,11 +1246,14 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
             is ChatPad.Act.Board -> setBoard(act.to)
             is ChatPad.Act.Quick -> quickTile(act.t)
             is ChatPad.Act.Menu -> setMenu(act.open)
-            is ChatPad.Act.Filter -> pick(Filter.values()[act.m.coerceIn(0, Filter.values().size - 1)])
+            is ChatPad.Act.Filter -> toggleBox(act.m)
+            ChatPad.Act.Send -> doSend()
             is ChatPad.Act.Open -> openView()
             ChatPad.Act.CloseView -> { viewOpen = false; invalidate() }
             is ChatPad.Act.ViewAct -> viewAction(act.k)
             ChatPad.Act.Leave -> onLeave()
+            ChatPad.Act.Voice -> startVoice()
+            ChatPad.Act.NoticeGo -> world?.go()
         }
         afterAct()
     }
@@ -988,6 +1265,7 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         val i = when (val f = pad.focus) { is Focus.Line -> f.i; is Focus.Link -> f.i; else -> -1 }
         if (i >= 0 && (i < list.firstVisiblePosition || i > list.lastVisiblePosition - 1)) list.smoothScrollToPosition(i)
         quick.invalidate()
+        barSend.invalidate()
         head.invalidate()
         refreshBack()
         restartBlink()
@@ -1039,9 +1317,10 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
                 android.graphics.Shader.TileMode.CLAMP)
             canvas.drawRect(r.left, r.top, r.right, r.top + 70f, fadePaint)
         }
-        if (morphOn) return                     // along Home's glide: the lines only
+        if (morphOn) { worldBang.setEmpty(); return }        // along Home's glide: the lines only
         barMarks(canvas)
         linkMarks(canvas)
+        drawWorld(canvas)
         drawView(canvas)
         drawMenu(canvas)
         drawNotice(canvas)
@@ -1104,20 +1383,24 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
             is Focus.Line, is Focus.Link -> "rev_y"                      // Y comes back down here
             else -> null
         }
+        micHit = null
         if (fieldGlyph != null) {
             val g = minOf(48f, glowRect.height() * 0.6f)
-            UiKit.pad(c, fieldGlyph, glowRect.right - 36f, glowRect.exactCenterY(), g)
+            // the box focused on the log screen: A with the keyboard, X with the microphone (the design: X shows while voice is offered)
+            if (f == Focus.Field && board == Board.NONE && VoiceUi.micShown(context))
+                micHit = VoiceUi.boxGlyphs(c, glowRect.right - 22f, glowRect.exactCenterY(), g, voice = true).mic
+            else UiKit.pad(c, fieldGlyph, glowRect.right - 36f, glowRect.exactCenterY(), g)
         }
         if (f == Focus.Field && caretOn && board != Board.QUICK) {
-            // the caret where typing goes: just after the text; in an empty field 4 px BEFORE where the hint starts
+            // the caret where typing goes: after the header and what is written (before the hint when nothing is)
             val lay = input.layout
+            val at = caretAt.coerceIn(0, input.text.length)
             val start = glowRect.left + input.totalPaddingLeft - input.scrollX
-            val x = if (lay != null && input.text.isNotEmpty()) start + lay.getPrimaryHorizontal(input.text.length) + 2f
-                    else start - 4f
+            val x = if (lay != null && at > 0) start + lay.getPrimaryHorizontal(at) + 2f else start - 4f
             val h = input.lineHeight * 0.55f
             // on the line the text ends on (the input screen's field has two)
-            val cy = if (lay != null && input.text.isNotEmpty()) {
-                val line = lay.getLineForOffset(input.text.length)
+            val cy = if (lay != null && at > 0) {
+                val line = lay.getLineForOffset(at)
                 glowRect.top + input.totalPaddingTop - input.scrollY + (lay.getLineTop(line) + lay.getLineBottom(line)) / 2f
             } else glowRect.exactCenterY()
             c.drawLine(x, cy - h, x, cy + h, caretPaint)
@@ -1179,26 +1462,91 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         if (acts.isNotEmpty()) whisperCell = UiKit.tooltipActions(c, box, acts).firstOrNull()
     }
 
-    /** Start's FILTER MENU under the funnel (the Map room's Show:): the filters, the one shown now ticked */
+    /**
+     * Select's FILTER CHECKLIST over the log (the user, 2026-11-16: "open a menu where I can check a radio box for all of the message
+     * types that I care about seeing so that I can mix and match my preferences"), laid out as the game's Chat Settings window lays its
+     * message types: a column per group (Chat, Combat, Other) and one for the joined channels, every box's word in its chat colour (the
+     * game's colour swatch), All in the title row. A ticks the box under the cursor and the list stays open; Select or B closes it.
+     */
     private fun drawMenu(c: Canvas) {
         menuRows.clear(); menuBox = null
         if (!menuOpen) return
-        val names = Filter.values()
-        val rowH = 98f
-        val box = RectF(width - 440f, HEAD_H + 2f, width - 16f, HEAD_H + 2f + names.size * rowH + 24f)
+        val cols = menuColumns()
+        val keys = cols.flatMap { col -> col.second.map { it.key } }
+        val box = RectF(16f, HEAD_H + 2f, width - 16f, composer.top + composer.translationY - 6f)
         menuBox = box
         val inner = UiKit.menu(c, box, solid = true)
         val cur = (pad.focus as? Focus.Menu)?.m
-        for ((i, f) in names.withIndex()) {
-            val r = RectF(inner.left, inner.top + i * rowH, inner.right, inner.top + (i + 1) * rowH)
-            UiKit.menuChoice(c, r, f.label, cur == i, f == filter, radio = true)
-            if (f in unread && f != filter) { dot.color = Theme.gold; c.drawCircle(r.right - 30f, r.centerY(), 7f, dot) }
-            menuRows.add(r)
+        // the title row: the menu's word, and All at its right
+        val titleH = 78f
+        val tp = UiKit.bodyPaint(32f, Theme.gold)
+        c.drawText(Tr.t("Show"), inner.left + 26f, inner.top + titleH / 2f - (tp.ascent() + tp.descent()) / 2f, tp)
+        val allR = RectF(inner.right - 250f, inner.top + 4f, inner.right - 10f, inner.top + titleH - 4f)
+        checkRow(c, allR, "All", Theme.text, ChatFilter.allTicked(keys), cur == 0, false)
+        menuRows.add(allR)
+        UiKit.divider(c, inner.left + 16f, inner.top + titleH + 4f, inner.right - 16f, inner.top + titleH + 4f)
+        // the columns, each under its group's heading; rows as tall as the longest column allows
+        val hintsH = 66f
+        val headH = 50f
+        val top = inner.top + titleH + 14f
+        val colW = (inner.width() - 20f) / cols.size
+        val most = maxOf(1, cols.maxOf { it.second.size })
+        val rowH = minOf(78f, (inner.bottom - hintsH - top - headH) / most)
+        val hp = UiKit.bodyPaint(28f, Theme.textDim)
+        for ((ci, col) in cols.withIndex()) {
+            val x0 = inner.left + 10f + ci * colW
+            c.drawText(Tr.t(col.first), x0 + 18f, top + headH / 2f - (hp.ascent() + hp.descent()) / 2f, hp)
+            for ((ri, b) in col.second.withIndex()) {
+                val r = RectF(x0, top + headH + ri * rowH, x0 + colW - 6f, top + headH + (ri + 1) * rowH)
+                val on = ChatFilter.ticked(b.key)
+                checkRow(c, r, b.label, b.colour, on, cur == menuRows.size, !on && b.key in unread)
+                menuRows.add(r)
+            }
         }
+        UiKit.hints(c, inner.right - 24f, inner.bottom - hintsH / 2f, "rev_a" to "Tick", UiKit.backGlyph() to "Back")
+    }
+
+    /** one box of the checklist: the game's check box, the word in the type's colour (dimmed when unticked); [dot]: unread waits */
+    private fun checkRow(c: Canvas, r: RectF, label: String, colour: Int, on: Boolean, selected: Boolean, dot: Boolean) {
+        if (selected) UiKit.focus(c, RectF(r.left + 4f, r.top + 5f, r.right - 4f, r.bottom - 5f))
+        val box = minOf(46f, r.height() * 0.62f)
+        UiKit.check(c, r.left + 14f + box / 2f, r.centerY(), box, on)
+        val x = r.left + 26f + box
+        val room = r.right - 14f - x - (if (dot) 22f else 0f)
+        val col = if (on) colour else Color.argb(150, Color.red(colour), Color.green(colour), Color.blue(colour))
+        val p = UiKit.bodyPaint(minOf(30f, r.height() * 0.42f), col)
+        val words = Tr.t(label)
+        while (p.measureText(words) > room && p.textSize > 20f) p.textSize -= 1f
+        val line = android.text.TextUtils.ellipsize(words, android.text.TextPaint(p), room, android.text.TextUtils.TruncateAt.END).toString()
+        c.drawText(line, x, r.centerY() - (p.ascent() + p.descent()) / 2f, p)
+        if (dot) { this.dot.color = Theme.gold; c.drawCircle(r.right - 18f, r.centerY(), 7f, this.dot) }
     }
 
     private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
     private val noticePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val worldGround = Paint()
+
+    /** chat40: Home's notices over the top of the log, on the log screen only (the input screen's board covers the log) */
+    private fun drawWorld(c: Canvas) {
+        val w = world
+        val on = w != null && w.shows() && board == Board.NONE && inputK < 0.5f && list.visibility == View.VISIBLE
+        var h = 0
+        if (on) {
+            val log = logRect()
+            val r = RectF(log.left + 20f, log.top + 8f, log.right - 20f, log.bottom)
+            worldGround.color = Theme.ink
+            c.save(); c.clipRect(log)
+            // the ground first (a line still under them before the log's inset lands), then the notices; their height is that inset
+            if (worldInset > 0) c.drawRect(log.left, log.top, log.right, log.top + worldInset, worldGround)
+            val used = w!!.draw(c, RectF(r), pad.focus == Focus.Notice, worldBang, this)
+            c.restore()
+            h = (used + 4f).toInt()
+        } else worldBang.setEmpty()
+        if (h != worldInset) {
+            worldInset = h
+            post { list.setPadding(list.paddingLeft, worldInset, list.paddingRight, list.paddingBottom) }
+        }
+    }
 
     private fun drawNotice(c: Canvas) {
         if (noticeUntil == 0L || notice.isEmpty()) return
@@ -1211,12 +1559,25 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         c.drawText(Tr.t(notice), r.centerX(), r.centerY() + 10f, p)
     }
 
+    /** where the bar's microphone was drawn (a finger on it = X) */
+    private var micHit: RectF? = null
+
     /** a finger on the menu or a view's action; anywhere else with the menu open closes it */
     override fun dispatchTouchEvent(e: MotionEvent): Boolean {
+        // chat40: a touch that starts on the world-refresh "!" is its press (the game's Refresh now), with a little slack round it
+        if (e.actionMasked == MotionEvent.ACTION_DOWN) onWorldBang = !worldBang.isEmpty && world?.live() == true &&
+            RectF(worldBang).apply { inset(-10f, -10f) }.contains(e.x, e.y)
+        if (onWorldBang) {
+            if (e.actionMasked == MotionEvent.ACTION_UP) { onWorldBang = false; world?.go() }
+            if (e.actionMasked == MotionEvent.ACTION_CANCEL) onWorldBang = false
+            return true
+        }
+        if (e.actionMasked == MotionEvent.ACTION_DOWN && board == Board.NONE && micHit?.contains(e.x, e.y) == true) { startVoice(); return true }
         if (e.actionMasked == MotionEvent.ACTION_DOWN) {
             menuBox?.let { box ->
                 val i = menuRows.indexOfFirst { it.contains(e.x, e.y) }
-                if (i >= 0) { pick(Filter.values()[i]); setMenu(false); pad.settle(scene()); afterAct(); return true }
+                // a finger on a box ticks it; the list stays open (a finger outside it closes it)
+                if (i >= 0) { pad.focus = Focus.Menu(i); toggleBox(i); afterAct(); return true }
                 if (!box.contains(e.x, e.y) && !head.funnelHit(e.x, e.y - head.top)) { setMenu(false); afterAct(); return true }
                 if (box.contains(e.x, e.y)) return true
             }
@@ -1310,14 +1671,13 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
     }
 
     /**
-     * QUICK CHAT: the board's first page, up from the moment the module opens: the 11 phrases as keys (the keyboard's own caps), A
-     * or a finger sends one at once; the bottom-right key opens the keyboard (the user: "make the keyboard one of the buttons in
-     * the bottom right (replace Inviting)"), the X glyph on it as X does the same.
+     * QUICK CHAT: the board's first page: the 11 phrases as keys (the keyboard's own caps); A or a finger PUTS ONE IN THE BAR (the
+     * user, 2026-11-16: "after selecting the option I get surprised by it auto sending") and the bar's Send sends it; the bottom-right
+     * key opens the keyboard (the user: "make the keyboard one of the buttons in the bottom right (replace Inviting)"), the X glyph on
+     * it as X does the same. Putting a phrase in the bar waits for nobody (as typing does): the tiles are never faint, the Send is.
      */
     private inner class QuickTiles(context: Context) : View(context) {
         var onTile: (Int) -> Unit = {}
-        var live = true
-            set(v) { field = v; invalidate() }
         private val tiles = ArrayList<RectF>()
 
         /** the board's height at rest (the room's): drawn at it while it slides, so the tiles come up whole */
@@ -1327,7 +1687,7 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
         override fun onTouchEvent(e: MotionEvent): Boolean {
             if (e.actionMasked == MotionEvent.ACTION_DOWN) {
                 val t = tiles.indexOfFirst { it.contains(e.x, e.y) }
-                if (t >= 0 && (live || t == ChatLinks.KEYBOARD_TILE)) onTile(t)
+                if (t >= 0) onTile(t)
             }
             return true
         }
@@ -1342,21 +1702,38 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
             for (i in 0 until ChatLinks.TILES) {
                 val col = i % cols; val row = i / cols
                 val k = RectF(r.left + col * (kw + gap), r.top + row * (kh + gap), r.left + col * (kw + gap) + kw, r.top + row * (kh + gap) + kh)
-                // the phrases faint while the game cannot take them; the Keyboard button never (writing waits for nobody)
-                val faint = !live && i != ChatLinks.KEYBOARD_TILE
-                val layer = if (faint) c.saveLayerAlpha(k.left - 2f, k.top - 2f, k.right + 2f, k.bottom + 2f, 110) else -1
+                // never faint: a phrase goes into the bar whether the game can take it now or not (the bar's Send is faint then)
                 if (i == ChatLinks.KEYBOARD_TILE) UiKit.keyCap(c, k, "Keyboard", 1, mod = true, glyph = "rev_x")
                 else UiKit.keyCap(c, k, ChatLinks.PRESETS[i], 1)
-                if (layer >= 0) c.restoreToCount(layer)
                 if ((pad.focus as? Focus.Quick)?.t == i) UiKit.focus(c, k)
                 tiles.add(k)
             }
         }
     }
 
+    /**
+     * THE BAR'S SEND while quick chat is up (the user, 2026-11-16: "I think we need to add a send button to that menu to the right of the
+     * message bar"): the keyboard's own Send key (its Start glyph: Start sends here too), faint while there is nothing to send or the
+     * game cannot take it; the gold box when the cursor is on it.
+     */
+    private inner class BarSend(context: Context) : View(context) {
+        override fun onDraw(c: Canvas) {
+            // the key 10 px inside the view: the gold box's edge stands 5 px out with an 8 px stroke, and a view draws only inside itself
+            val r = RectF(10f, 10f, width - 10f, height - 10f)
+            val can = sendEnabled && typed.isNotBlank()
+            val layer = if (can) -1 else c.saveLayerAlpha(r.left, r.top, r.right, r.bottom, 110)
+            UiKit.keyCap(c, r, "Send", ChatKeyboard.LOOK, mod = true, glyph = "gen_forward", icon = "enter")
+            if (layer >= 0) c.restoreToCount(layer)
+            if (pad.focus == Focus.Send && !morphOn) UiKit.focus(c, r)
+        }
+    }
+
     private companion object {
 
         const val KEEP = 500
+
+        /** the boxes whose lines earn the funnel's dot when they arrive unseen: whispers and group chat */
+        val ALERT = setOf("whisper", "party", "raid", "guild", "officer")
 
         val CHANNEL_COLOUR: Map<String, Int> = mapOf(
             "say" to Color.parseColor("#FFFFFF"),
@@ -1375,6 +1752,12 @@ class ChatView(c: Context, @Suppress("UNUSED_PARAMETER") onSend: (String) -> Uni
             "system" to Color.parseColor("#FFFF00"),
             "info" to Color.parseColor("#FFFF00"),
             "error" to Color.parseColor("#FF5050"),
+            // Chat.lua chat37's own kinds, in the game's ChatTypeInfo colours (COMBAT_XP_GAIN, COMBAT_HONOR_GAIN,
+            // COMBAT_FACTION_CHANGE, SKILL: the game's chat-cache COLORS)
+            "xp" to Color.parseColor("#6F6FFF"),
+            "honor" to Color.parseColor("#E0CA0A"),
+            "rep" to Color.parseColor("#8080FF"),
+            "skill" to Color.parseColor("#5555FF"),
         )
         val GROUP_TAG: Map<String, String> = mapOf("party" to "Party", "raid" to "Raid", "guild" to "Guild", "officer" to "Officer")
 

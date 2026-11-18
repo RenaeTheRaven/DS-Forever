@@ -213,6 +213,21 @@ class InteractView(context: Context) : View(context) {
         refresh()
     }
 
+    /** the vendor strip's bag / ammo figures (feat/vendor-bag-slots: used / total, ammo / what it fits), from the last Bags document */
+    private var vendorSlots: VendorSlots.Slots? = null
+
+    /**
+     * The Bags document (`full.bags`; Bags.lua sends it at every BAG_UPDATE_DELAYED, so a purchase shows at once): the vendor's bag and
+     * ammo figures ([VendorSlots]). Redrawn only when they changed while a vendor is up.
+     */
+    fun updateBags(bags: JSONObject) {
+        if (!bags.has("freeGeneral") && !bags.has("bags")) return       // a bags section without the counts keeps what was said
+        val s = VendorSlots.of(bags, vendorSlots)
+        if (s == vendorSlots) return
+        vendorSlots = s
+        if (kind == Kind.MERCHANT) invalidate()
+    }
+
     private var navSel: String? = null          // the add-on's last vendor selection, as last taken
 
     /** the addon's controller state: draw its highlight; take its picks when a press changed them */
@@ -324,8 +339,22 @@ class InteractView(context: Context) : View(context) {
         kb.onText = { t -> kbText = fieldStream.clean(t, kbMax); fieldStream.setBody(kbText); invalidate() }
         kb.onSend = { if (fieldStream.send()) { removeCallbacks(fieldTick); postDelayed(fieldTick, 500L) } }
         kb.onClose = { closeField() }
+        // VOICE (the user's pick 2026-11-16; Interact i161): on the words fields only (Subject, the letter, the search); the letter adds
+        // to its words, the others are replaced; the words copy into the add-on's field at Chat's pace (the finish button's gold fill)
+        kb.voiceBox = name in VOICE_FIELDS
+        kb.voiceAppend = name == "mailbody"
+        kb.voiceMax = kbMax
+        kb.copyLeftMs = { fieldStream.copyLeftMs() }
         kb.open(); kb.visibility = VISIBLE
+        // X on the field (doc.kbd.v), or a finger on its microphone a moment ago: the keyboard opens on its voice page
+        val wanted = voiceWanted == name && System.currentTimeMillis() - voiceWantedAt < VOICE_WANT_MS
+        voiceWanted = null
+        if (kb.voiceBox && (k.optInt("v", 0) == 1 || wanted)) kb.startVoice(fromKeys = false)
     }
+
+    /** a finger on a words field's microphone: the field's own cell (as A), and its voice page when the field opens */
+    private var voiceWanted: String? = null
+    private var voiceWantedAt = 0L
 
     /** B / the keyboard's close: the add-on drops the field (the value stays as it was), the keyboard goes */
     private fun closeField() {
@@ -334,6 +363,8 @@ class InteractView(context: Context) : View(context) {
     }
 
     private fun hideKeyboard() {
+        // the field is gone (the add-on closed it): a voice page on it stops without copying anything back (no taps into Chat's own buffer)
+        keyboard?.stopVoice(restore = false)
         kbField = null; kbRepeat = null
         removeCallbacks(kbTick); removeCallbacks(fieldTick)
         keyboard?.visibility = GONE
@@ -955,6 +986,12 @@ class InteractView(context: Context) : View(context) {
                 send(parts[0], parts[1].toInt())
             }
             hit.startsWith("why:") -> note(hit.substring(4), false)
+            hit.startsWith("voice:") -> {
+                // i161: the field opens (its own cell, as A) and the app opens its voice page on it
+                val parts = hit.substring(6).split('|')
+                voiceWanted = parts[0]; voiceWantedAt = System.currentTimeMillis()
+                send(parts[1], parts[2].toInt())
+            }
         }
         invalidate()
     }
@@ -2763,7 +2800,9 @@ class InteractView(context: Context) : View(context) {
         val p = if (shown.isEmpty()) UiKit.bodyPaint(size, Theme.dim) else if (digits) UiKit.numberPaint(size, Color.WHITE) else UiKit.bodyPaint(size, Color.WHITE)
         val words = if (shown.isEmpty()) hint else shown
         val x = box.left + 18f
-        val maxW = box.width() - 36f
+        // the words stop before the voice glyphs while they show (the field under the cursor, below)
+        val glyphs = cur == cmd && !typing && field in VOICE_FIELDS && col >= 0 && VoiceUi.micShown(context)
+        val maxW = box.width() - 36f - (if (glyphs) VoiceUi.glyphsWidth(minOf(40f, box.height() * 0.6f), true) + 10f else 0f)
         // the end of what is typed stays in view (the game's own box scrolls with the caret)
         val drawn = if (typing && p.measureText(words) > maxW) "…" + words.takeLast(p.breakText(words.reversed(), true, maxW - 24f, null)) else fit(p, words, maxW)
         val by = box.centerY() - (p.ascent() + p.descent()) / 2f
@@ -2778,6 +2817,12 @@ class InteractView(context: Context) : View(context) {
         }
         if (col >= 0) hits.add(box to "act:$cmd|$col")
         if (cur == cmd || typing) UiKit.focus(c, box)
+        // the words field under the cursor: A with the keyboard, X with the microphone (the voice design); a finger on it = X
+        if (glyphs) {
+            val g = minOf(40f, box.height() * 0.6f)
+            VoiceUi.boxGlyphs(c, box.right - 14f, box.centerY(), g, voice = true).mic
+                ?.let { hits.add(it to "voice:$field|$cmd|$col") }
+        }
     }
 
     private fun sendPage(c: Canvas, r: RectF, inner: RectF, top: Float, sd: JSONObject, act: JSONObject?, purse: Long, now: Long) {
@@ -2830,6 +2875,10 @@ class InteractView(context: Context) : View(context) {
         if (kbField == "mailbody") postInvalidateDelayed(500L)
         col("edit_body").takeIf { it >= 0 }?.let { hits.add(paper to "act:mailedit body|$it") }
         if (cur == "mailedit body" || kbField == "mailbody") UiKit.focus(c, paper, onPaper = true)
+        // the letter under the cursor: A with the keyboard, X with the microphone, at the paper's top right (a finger on it = X)
+        if (cur == "mailedit body" && kbField != "mailbody" && VoiceUi.micShown(context)) col("edit_body").takeIf { it >= 0 }?.let { bc ->
+            VoiceUi.boxGlyphs(c, paper.right - 18f, paper.top + 34f, 40f, voice = true, onPaper = true).mic?.let { hits.add(it to "voice:mailbody|mailedit body|$bc") }
+        }
         UiKit.divider(c, x0, ruleY, x1, ruleY)
         // the attachment slots: the game's empty slot, the item in it; the first empty one opens the bags
         val items = arr(sd, "items")
@@ -3709,6 +3758,27 @@ class InteractView(context: Context) : View(context) {
 
     private fun lootClosing() = lootCloseAt > 0L && (System.currentTimeMillis() - lootCloseAt < Motion.MODULE_CLOSE || fxBusy())
 
+    // ---- loot-pop: the compact window's slide aside for its tooltip (0 = centred, 1 = at the left); one slide at a time, from where it is
+    private var sideOpen = -1L                 // the open (lootOpenAt) the slide belongs to: a new open starts centred
+    private var sideFrom = 0f
+    private var sideTo = 0f
+    private var sideAt = 0L
+    private var tipSeenAt = 0L                 // the chosen item's tooltip last there (a new card's tooltip comes a moment after the cursor)
+    private val LOOT_TIP_HOLD = 300L           // no tooltip this long = back to the centre (not between two cards' tooltips)
+
+    /** the slide toward [want] (aside) at [now]: a change of mind starts from where the window is */
+    private fun lootSide(now: Long, want: Boolean): Float {
+        val target = if (want) 1f else 0f
+        if (target != sideTo) { sideFrom = sideNow(now); sideTo = target; sideAt = now }
+        return sideNow(now)
+    }
+
+    private fun sideNow(now: Long): Float {
+        val t = if (sideAt == 0L) 1f else ((now - sideAt).toFloat() / Motion.SLIDE).coerceIn(0f, 1f)
+        if (t < 1f) postInvalidateOnAnimation()
+        return sideFrom + (sideTo - sideFrom) * lootCurve.getInterpolation(t)
+    }
+
     // LOOTWIN_SPEC 7's beats, in ms
     private val LOOT_GROW = 320L
     private val LOOT_CLOSE = 260L
@@ -3734,10 +3804,27 @@ class InteractView(context: Context) : View(context) {
         val shownN = min(5, max(1, items.size))
         if (lootOpenAt != fxOpenSeen) { fxOpenSeen = lootOpenAt; slides.clear() }
         val ch = 84f; val gap = 10f; val cardsTop = 150f
-        // AT THE LEFT (the user, 2026-10-22: "The loot window needs to shift left to make space for the larger tooltips"; was centred
-        // since 10-02): the room at its right is the tooltip's
-        val wl = 24f
-        val r = RectF(wl, 30f, wl + 600f, 30f + cardsTop + shownN * (ch + gap) + 64f + 22f)
+        // IN A FIGHT (the user, 10-22: "When I'm in combat I am not able to control the loot window"): the game won't hand us the
+        // controller until the fight ends, so the app reads the pad itself (read only: padSubHeld) and drives THIS window like a finger:
+        // Up / Down choose the card, A loots it, X loots all, B closes; its highlight is our own selection
+        fightLootCmds = items.map { "loot ${it.optInt("i")}" }
+        fightLootAll = lt.optJSONObject("act")?.let { slotOf(it, "all") } ?: -1
+        val inFight = doc?.optJSONObject("nav")?.optJSONObject("fight") != null
+        if (inFight && (selected == null || selected !in fightLootCmds)) selected = fightLootCmds.firstOrNull()
+        val curNow = if (inFight) selected else cur
+        val shown = curNow?.takeIf { it.startsWith("loot ") } ?: selected?.takeIf { it.startsWith("loot ") }
+        // loot-pop (the user, 2026-11-16: "The loot pop up looks weird offset, I want it to be centered and then animate over to the side
+        // to make space for the tooltip"): CENTRED as it opens; once the pop is over and the chosen item's tooltip is there, the window
+        // SLIDES to the left (Motion.SLIDE, Home's quick ease) and the tooltip comes in beside it, riding its right edge; no tooltip
+        // (coins, nothing chosen) for a moment = back to the centre. (10-22 had it at the left for good: "The loot window needs to shift
+        // left to make space for the larger tooltips".) The same window over the Bags room (bags-open1).
+        if (lootOpenAt != sideOpen) { sideOpen = lootOpenAt; sideFrom = 0f; sideTo = 0f; sideAt = 0L; tipSeenAt = 0L }
+        if (!closing && shown != null && tipFor(shown) != null) tipSeenAt = now
+        val tipWanted = !closing && x >= 1f && shown != null && now - tipSeenAt <= LOOT_TIP_HOLD
+        val side = if (closing) sideNow(now) else lootSide(now, tipWanted)
+        val ww = 600f
+        val wl = (full.width() - ww) / 2f + (24f - (full.width() - ww) / 2f) * side
+        val r = RectF(wl, 30f, wl + ww, 30f + cardsTop + shownN * (ch + gap) + 64f + 22f)
         lootRect = r
         val save = c.save()
         val sc = if (closing) 0.95f + 0.05f * k else 0.88f + 0.12f * k
@@ -3748,16 +3835,7 @@ class InteractView(context: Context) : View(context) {
         val view = RectF(inner.left, r.top + cardsTop - 8f, inner.right, r.top + cardsTop + shownN * (ch + gap))
         viewA = view; contentA = items.size * (ch + gap)
         scrollA = scrollA.coerceIn(0f, max(0f, contentA - view.height()))
-        // IN A FIGHT (the user, 10-22: "When I'm in combat I am not able to control the loot window"): the game won't hand us the
-        // controller until the fight ends, so the app reads the pad itself (read only: padSubHeld) and drives THIS window like a finger:
-        // Up / Down choose the card, A loots it, X loots all, B closes; its highlight is our own selection
-        fightLootCmds = items.map { "loot ${it.optInt("i")}" }
-        fightLootAll = lt.optJSONObject("act")?.let { slotOf(it, "all") } ?: -1
-        val inFight = doc?.optJSONObject("nav")?.optJSONObject("fight") != null
-        if (inFight && (selected == null || selected !in fightLootCmds)) selected = fightLootCmds.firstOrNull()
-        val curNow = if (inFight) selected else cur
         if (!closing) follow(items.indexOfFirst { "loot ${it.optInt("i")}" == curNow }, ch + gap, view.height())
-        val shown = curNow?.takeIf { it.startsWith("loot ") } ?: selected?.takeIf { it.startsWith("loot ") }
         var cardAt: RectF? = null; var shownItem: JSONObject? = null
         c.save(); c.clipRect(view)
         for ((i, it) in items.withIndex()) {
@@ -3804,13 +3882,15 @@ class InteractView(context: Context) : View(context) {
             c.save(); c.clipRect(r); c.drawRect(r, gp); c.restore()
         }
         c.restoreToCount(save)
-        // the tooltip OUTSIDE at the window's right, level with the chosen card: comes last (open), goes first (close)
-        val ta = if (closing) (1f - x * 2f).coerceIn(0f, 1f) else ((x - 0.6f) / 0.4f).coerceIn(0f, 1f)    // full when the open ends
+        // the tooltip OUTSIDE at the window's right, level with the chosen card: comes in as the window slides aside (loot-pop), goes
+        // first (close)
+        val ta = if (closing) (1f - x * 2f).coerceIn(0f, 1f) * side else side
         val ca = cardAt
         if (ta > 0f && ca != null && shown != null) tipFor(shown)?.let { tp ->
-            // the tooltip beside the window: at its right, as wide as the room there allows (larger gear tooltips, 10-22)
-            val tw = (full.right - 10f - (r.right + 14f)).coerceIn(280f, 560f)
-            val tx = if (r.right + 14f + tw <= full.right - 10f) r.right + 14f else max(10f, r.left - 14f - tw)
+            // the tooltip beside the window: at its right, as wide as the room there allows once the window is aside (larger gear
+            // tooltips, 10-22); while the window slides it rides the window's edge at that width, coming in from the right (loot-pop)
+            val tw = (full.right - 10f - (24f + ww + 14f)).coerceIn(280f, 560f)
+            val tx = r.right + 14f
             val ty = max(r.top + 60f, ca.top - 10f)
             val layer = c.saveLayerAlpha(RectF(0f, 0f, full.width(), full.height()), (255 * ta).toInt())
             tipStack.draw(c, tx, ty, tw, shownItem?.optString("name", "") ?: "", shownItem?.optInt("q", 1) ?: 1, tp,
@@ -4921,6 +5001,34 @@ class InteractView(context: Context) : View(context) {
         return min(most, m.optInt("qtyMax"))
     }
 
+    /**
+     * The vendor strip's figures ([vendorSlots]: bags, then ammo while a quiver / ammo pouch is worn), right-aligned to [right] on [cy]:
+     * each the icon in the game's slot well and "have / of" beside it ([VendorSlots.text]), in its tone (red = bags full / no ammo,
+     * amber = ammo low). One cell = one row at full size; two (a hunter's bags + ammo) = STACKED, bags over ammo, smaller, so the wider
+     * "1850 / 3200" leaves Repair and Junk their room and the block never changes shape with them. Shown only, never a touch. Returns
+     * the block's left edge ([right] = nothing drawn).
+     */
+    private fun vendorSlotsCells(c: Canvas, right: Float, cy: Float): Float {
+        val cells = vendorSlots?.cells ?: return right
+        if (cells.isEmpty()) return right
+        val stacked = cells.size > 1
+        val s = if (stacked) SLOTS_ICON_2 else SLOTS_ICON; val well = s * 0.31f      // UiKit.slot's well: 0.31 of the icon out each side
+        val paints = cells.map {
+            UiKit.numberPaint(if (stacked) SLOTS_TEXT_2 else SLOTS_TEXT, when (it.tone) {
+                VendorSlots.Tone.OUT -> Theme.unusable; VendorSlots.Tone.LOW -> Theme.warn; VendorSlots.Tone.PLAIN -> Theme.text
+            })
+        }
+        val texts = cells.map { VendorSlots.text(it) }                  // figures: no words, no Tr
+        val left = right - (well + s + well + SLOTS_PAD + cells.indices.maxOf { paints[it].measureText(texts[it]) })
+        for ((i, cell) in cells.withIndex()) {
+            val ry = cy + (i - (cells.size - 1) / 2f) * SLOTS_ROW
+            UiKit.slot(c, Icons.getOrUnknown(cell.icon), left + well, ry - s / 2f, s)
+            val p = paints[i]
+            c.drawText(texts[i], left + well + s + well + SLOTS_PAD, ry - (p.ascent() + p.descent()) / 2f, p)
+        }
+        return left
+    }
+
     private fun vendorWindow(c: Canvas, r: RectF, m: JSONObject, now: Long) {
         val inner = UiKit.windowGround(c, r, marble = true)
         val block = blocked(now)
@@ -5041,7 +5149,11 @@ class InteractView(context: Context) : View(context) {
         val e = list.firstOrNull { it.cmd == selected }
         val word = when (tab) { Tab.BUY -> "Buy"; Tab.SELL -> "Sell"; Tab.BACK -> "Buyback" }
         qtyMost = 1
-        val leftEnd = btn.left - 24f
+        // THE BAG / AMMO FIGURES (feat/vendor-bag-slots; the user, 2026-11-16: "when talking to a vendor in the buy screen I should see
+        // my bag slots available as well as ammo slots available (if applicable)", then "It should show like bag slots out of how many
+        // available and for ammo it should show ammo/total available space"): on every tab, just left of the action button, so a buy,
+        // a sale or a buyback shows its change beside the button that made it; the result line and Repair / Junk keep the rest
+        val leftEnd = vendorSlotsCells(c, btn.left - 24f, cy).let { if (it < btn.left - 24f) it - 28f else it }
         if (e == null) {
             goWhy = "Select an item first"
             stripButton(c, btn, word, "go", enabled = false, busy = false, id = "go")
@@ -5087,11 +5199,19 @@ class InteractView(context: Context) : View(context) {
                 if (onTab && !rh.startsWith("why:")) glyphHits["rev_x"] = rh      // X = Repair All: its press shows here
                 x += 292f
             }
-            if (m.optInt("junk", 0) > 0 && x + 270f < leftEnd) {
+            // review (feat/vendor-bag-slots): the free-slot cells took the strip's spare room, and with two two-digit counts the full
+            // 270 box no longer fitted - Sell junk vanished (the fallback font, a repair due: measured in VendorSlotsShotsTest). The box
+            // now gives up its slack instead (down to JUNK_MIN_W); it is never pushed out by the counts
+            val jRight = min(x + 270f, leftEnd)
+            if (m.optInt("junk", 0) > 0 && jRight - x >= JUNK_MIN_W) {
                 val slot = act?.let { slotOf(it, "junk") } ?: -1
-                val box = RectF(x, cy - 54f, x + 270f, cy + 54f)
+                val box = RectF(x, cy - 54f, jRight, cy + 54f)
                 UiKit.slot(c, UiKit.tex("icon_junk"), x + 8f, cy - 44f, 88f)
-                c.drawText(Tr.t("Sell junk"), x + 112f, cy - 10f, UiKit.bodyPaint(24f))
+                // the words run past the box in French ("Vendre la camelote"); with the free-slot cells to the right they would touch
+                // the bag cell, so they shrink (to 20) and then cut to end before leftEnd
+                val jp = UiKit.bodyPaint(24f); val jRoom = leftEnd - (x + 112f); val jw = jp.measureText(Tr.t("Sell junk"))
+                if (jw > jRoom) jp.textSize = max(20f, 24f * jRoom / jw)
+                c.drawText(fit(jp, "Sell junk", jRoom), x + 112f, cy - 10f, jp)
                 if (onTab) UiKit.pad(c, "rev_y", x + 22f, cy - 30f, 40f)
                 UiKit.money(c, m.optLong("junkValue", 0), x + 112f, cy + 18f, 25f)
                 if (pendingCmd == "junk" || pressed.startsWith("act:junk")) UiKit.glow(c, box, Theme.gold, 0.4f)
@@ -5105,6 +5225,10 @@ class InteractView(context: Context) : View(context) {
     }
 
     companion object {
+        /** i161: the words fields X opens on the voice page (never To, the money or the level range) */
+        val VOICE_FIELDS = setOf("mailsubject", "mailbody", "ahtext")
+        /** a finger on a field's microphone: its voice page when the field opens this soon after */
+        const val VOICE_WANT_MS = 4000L
         const val SPK_EVERY_MS = 3_000L
         const val PAPER_GOLD = 2            // UI Art's gold selection look; the user's pick replaces it
         const val CLOSE_B_LOOK = 1
@@ -5112,6 +5236,16 @@ class InteractView(context: Context) : View(context) {
         const val TIP_MIN_ROOM = 260f           // a tooltip starts no lower than this above the list's foot        // the user's pick (2026-09-29 11:23, replacing 2): a small B on the X's corner
         const val LINE_H = 111f           // a line of a gossip page: 48 dp, the touch floor
         const val VROW = 132f             // a vendor row and the gap under it
+        /** the vendor strip's bag / ammo figures (feat/vendor-bag-slots): one cell = the icon and the figures' size, icon-to-figures gap */
+        const val SLOTS_ICON = 58f
+        const val SLOTS_TEXT = 36f
+        const val SLOTS_PAD = 6f
+        /** two cells, stacked: the icon, the figures' size, centre to centre (36 px icons in their wells: 58 px each, end to end) */
+        const val SLOTS_ICON_2 = 36f
+        const val SLOTS_TEXT_2 = 30f
+        const val SLOTS_ROW = 58f
+        /** Sell junk's narrowest box (its icon and the start of its words), when the free-slot cells leave less than the 270 */
+        const val JUNK_MIN_W = 220f
 
         const val DISMISS_BACK_MS = 2_500L
         const val STALE_MS = 40_000L      // the addon re-sends every 15 s; two missed = the game is gone

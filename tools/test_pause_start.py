@@ -53,7 +53,7 @@ def settle(L):
 
 OURS = "CLICK WowCompanionFaceStart:LeftButton"
 
-check('local PV = "m164"' in SRC["padmap"], "PadMap says m162 (m161 + the 1.0.32 merge)")
+check('local PV = "m169"' in SRC["padmap"], "PadMap says m162 (m161 + the 1.0.32 merge)")
 check('function R.startWanted(aside, holder)' in SRC["padmap"] and SRC["padmap"].count('R.startWanted(aside, holder) and rbOn') == 1
       and SRC["padmap"].count('R.startWanted(aside, roomHolder())') == 1,
       "routerBind and routerCheck both ask R.startWanted (one rule for the bind and its check)")
@@ -158,7 +158,7 @@ F.execute('COMBAT = false; fire("PLAYER_REGEN_ENABLED"); advance(0.3); MerchantF
 settle(F)
 
 # ---------------------------------------------------------------- m161: the setting (the user: "Make it a setting toggle defaulted to our wheel")
-check('local BV = "b65"' in SRC["book"] and 'local PV = "m164"' in SRC["padmap"], "Book b62, PadMap m162 (b61 / m161 + the 1.0.32 merge)")
+check('local BV = "b66"' in SRC["book"] and 'local PV = "m169"' in SRC["padmap"], "Book b62, PadMap m162 (b61 / m161 + the 1.0.32 merge)")
 
 
 def padtab(L, *cols):
@@ -215,7 +215,7 @@ for L in (W, T, F, G):
 # ---------------------------------------------------------------- issue #278: Spells DISABLED, pad15 never switched it on (TapPad pad20)
 # the report: "our add-ons: 9 loaded, NOT loaded: WowCompanionSpells:DISABLED" and NO "addonsoff" probe that run. The game's own reason
 # (GetAddOnInfo, what the probe reads) said DISABLED while pad15's one test, GetAddOnEnableState(name, character) == 0, did not hold.
-check('local PADV = "pad21"' in SRC["tappad"], "TapPad says pad21 (pad20 + the shared row)")
+check((int(__import__('re').search(r'local PADV = "pad(\d+)"', SRC["tappad"]).group(1)) >= 21), "TapPad says pad21 (pad20 + the shared row)")
 ADDONS_STUB = r'''
 OFF = { WowCompanionSpells = true }
 ENABLED_CALLS = {}

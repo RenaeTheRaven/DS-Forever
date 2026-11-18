@@ -238,6 +238,69 @@ object UiKit {
      *  it was set (postInvalidateOnAnimation, or ~every 50 ms) */
     @JvmField var bookGlowLive = false
 
+    // ---------------------------------------------------------------- the pet's AUTOCAST look (Quests q62 / ActionBar pa1)
+    // The user, 2026-11-16: "hunters need to be able to visually see when their pets abilities are active like growl, and a way to turn
+    // it off from those radials". The game's own look (blizzard_uipaneltemplates AutoCastOverlayTemplate, the gamepad flyout's circle
+    // slot): gold CORNERS on every ability that may cast itself, and while it does, the SHINE - the "ants" texture turning -360 degrees
+    // every 4 s, masked to the slot's edge. REVIEW: the game's Rotation turns COUNTER-clockwise for a positive angle (its spinners all use
+    // -360 to spin clockwise), so the ants march CLOCKWISE. The kit has no ants art (nothing new is harvested for it), so the shine is
+    // drawn: short bright gold dashes round the edge, marching clockwise at the game's speed, over a soft gold glow.
+
+    /** one turn of the shine, ms (the game's Rotation duration="4") */
+    const val AUTO_TURN_MS = 4_000L
+    /** set when [autoCastRing] / [spell] drew a marching shine; the view reads and clears it after drawing, and keeps redrawing while set */
+    @JvmField var autoCastLive = false
+    private const val AUTO_GOLD = 0xFFFFD100.toInt()          // the game's GameFontNormal gold (1, 0.82, 0)
+    private const val AUTO_SPARK = 0xFFFFF2A8.toInt()
+    private val pAuto = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val autoRect = RectF()
+
+    /** the shine's turn now, degrees on Android's canvas (positive = clockwise on the screen, the game's -360), [now] uptime ms */
+    fun autoCastAngle(now: Long = SystemClock.uptimeMillis()): Float = 360f * (now % AUTO_TURN_MS) / AUTO_TURN_MS
+
+    /**
+     * THE AUTOCAST LOOK ON A ROUND SLOT centred ([cx], [cy]) whose edge is at radius [r]: the four gold corners (at the diagonals, as the
+     * game's circle-slot corners), quiet while it is off; [on] = it casts itself: the corners bright and the marching shine round the
+     * edge. [alpha] 0..255 (a wheel's fade-in).
+     */
+    fun autoCastRing(c: Canvas, cx: Float, cy: Float, r: Float, on: Boolean, alpha: Int = 255, now: Long = SystemClock.uptimeMillis()) {
+        val a = alpha.coerceIn(0, 255)
+        if (a <= 0) return
+        autoRect.set(cx - r, cy - r, cx + r, cy + r)
+        if (on) {
+            pAuto.pathEffect = null
+            pAuto.color = AUTO_GOLD; pAuto.alpha = a * 110 / 255; pAuto.strokeWidth = r * 0.22f
+            c.drawCircle(cx, cy, r, pAuto)
+            val save = c.save()
+            c.rotate(autoCastAngle(now), cx, cy)
+            pAuto.strokeWidth = maxOf(2.5f, r * 0.11f); pAuto.color = AUTO_SPARK; pAuto.alpha = a
+            for (k in 0 until 12) c.drawArc(autoRect, k * 30f, 17f, false, pAuto)
+            c.restoreToCount(save)
+            autoCastLive = true
+        }
+        pAuto.pathEffect = null
+        pAuto.color = AUTO_GOLD; pAuto.alpha = if (on) a else a * 150 / 255; pAuto.strokeWidth = maxOf(2.5f, r * 0.1f)
+        autoRect.set(cx - r - r * 0.06f, cy - r - r * 0.06f, cx + r + r * 0.06f, cy + r + r * 0.06f)
+        for (d in floatArrayOf(45f, 135f, 225f, 315f)) c.drawArc(autoRect, d - 15f, 30f, false, pAuto)
+        pAuto.alpha = 255
+    }
+
+    /** the marching shine round a SQUARE slot ([r], the icon's box): the spellbook's pet entry while it casts itself */
+    private fun autoCastSquare(c: Canvas, r: RectF, alpha: Int = 255, now: Long = SystemClock.uptimeMillis()) {
+        val w = r.width()
+        val per = 4f * w
+        val dash = per / 24f
+        pAuto.color = AUTO_GOLD; pAuto.alpha = alpha * 70 / 255; pAuto.strokeWidth = w * 0.08f; pAuto.pathEffect = null
+        c.drawRect(r, pAuto)
+        pAuto.color = AUTO_SPARK; pAuto.alpha = alpha; pAuto.strokeWidth = maxOf(2f, w * 0.04f)
+        // clockwise on the screen (the game's -360): a FALLING phase moves the dashes forward along the rectangle's clockwise path
+        pAuto.pathEffect = android.graphics.DashPathEffect(floatArrayOf(dash * 0.55f, dash * 0.45f),
+            per * (AUTO_TURN_MS - now % AUTO_TURN_MS) / AUTO_TURN_MS)
+        c.drawRect(r, pAuto)
+        pAuto.pathEffect = null; pAuto.alpha = 255
+        autoCastLive = true
+    }
+
     /** a waiting red button: the spinner at its right end, inside the plate, the plate's height */
     private fun waitOnButton(c: Canvas, r: RectF) {
         val s = r.height() * 0.62f
@@ -459,6 +522,34 @@ object UiKit {
      * ends kept and its middle stretched to [r]'s width). [colour] as the game colours the zone: `Theme.zoneColour(pvp)`.
      */
     fun zoneBand(c: Canvas, r: RectF, zone: String, colour: Int = Theme.gold) {
+        bandPlate(c, r)
+        val p = bodyPaint(zoneTextSize(zone, r.width(), r.height()), colour).apply { textAlign = Paint.Align.CENTER }
+        // the zone's name is the GAME's text (GetZoneText): never through Tr.t, the menus' translator (the user's ruling 2026-11-07:
+        // "menus only"; fixed with the Calendar button, the Macros room's change)
+        val shown = fitEnd(zone, p, r.width() - ZONE_TEXT_INSET)
+        c.drawText(shown, r.centerX(), r.centerY() - (p.ascent() + p.descent()) / 2f, p)
+    }
+
+    /** the zone band's text room: its width less this (the plate's rounded ends) */
+    const val ZONE_TEXT_INSET = 40f
+    /** the zone's name at its smallest: this part of the band's height (half of it is the name's own size) */
+    const val ZONE_MIN_K = 0.42f
+
+    /**
+     * The zone name's size on a band [w] x [h]: half the band's height (the user 09-30: "the map name is SUPER small"), and a name too
+     * long for that steps down just enough to fit, to [ZONE_MIN_K] of the height at the least, before [fitEnd] cuts it (the mail
+     * envelope, 2026-11-16: the band is one more button shorter while it shows; "long zone names still fit")
+     */
+    fun zoneTextSize(zone: String, w: Float, h: Float): Float {
+        val full = h * 0.5f
+        val room = w - ZONE_TEXT_INSET
+        val wide = bodyPaint(full).measureText(zone)
+        if (wide <= room || wide <= 0f) return full
+        return maxOf(h * ZONE_MIN_K, full * room / wide)
+    }
+
+    /** the band's own plate (the classic minimap's zone bar, kit `zone_band`, its rounded ends kept, its middle stretched to [r]) */
+    private fun bandPlate(c: Canvas, r: RectF) {
         val t = tex("zone_band")
         if (t != null) {
             val k = r.height() / t.height
@@ -471,11 +562,6 @@ object UiKit {
             pFlat.style = Paint.Style.FILL; pFlat.color = Color.rgb(20, 18, 14); c.drawRect(r, pFlat)
             pFlat.style = Paint.Style.STROKE; pFlat.strokeWidth = 2f; pFlat.color = Theme.bronzeDim; c.drawRect(r, pFlat)
         }
-        val p = bodyPaint(r.height() * 0.5f, colour).apply { textAlign = Paint.Align.CENTER }
-        // the zone's name is the GAME's text (GetZoneText): never through Tr.t, the menus' translator (the user's ruling 2026-11-07:
-        // "menus only"; fixed with the Calendar button, the Macros room's change)
-        val shown = fitEnd(zone, p, r.width() - 40f)
-        c.drawText(shown, r.centerX(), r.centerY() - (p.ascent() + p.descent()) / 2f, p)
     }
 
     /** [text] cut to [maxW] with an ellipsis (Paint.breakText: the device's and the off-device canvas's measure alike) */
@@ -493,18 +579,7 @@ object UiKit {
      */
     fun calendarButton(c: Canvas, r: RectF, pending: Boolean, focus: Boolean = false, down: Boolean = false) {
         pressed(c, r, down) {
-            val t = tex("zone_band")
-            if (t != null) {
-                val k = r.height() / t.height
-                val cap = 12
-                val cw = cap * k
-                c.drawBitmap(t, Rect(0, 0, cap, t.height), RectF(r.left, r.top, r.left + cw, r.bottom), pBmp)
-                c.drawBitmap(t, Rect(cap, 0, t.width - cap, t.height), RectF(r.left + cw, r.top, r.right - cw, r.bottom), pBmp)
-                c.drawBitmap(t, Rect(t.width - cap, 0, t.width, t.height), RectF(r.right - cw, r.top, r.right, r.bottom), pBmp)
-            } else {
-                pFlat.style = Paint.Style.FILL; pFlat.color = Color.rgb(20, 18, 14); c.drawRect(r, pFlat)
-                pFlat.style = Paint.Style.STROKE; pFlat.strokeWidth = 2f; pFlat.color = Theme.bronzeDim; c.drawRect(r, pFlat)
-            }
+            bandPlate(c, r)
             val pic = tex("icon_calendar") ?: tex("ricon_calendar")
             val s = r.height() * 0.7f
             val box = RectF(r.centerX() - s / 2f, r.centerY() - s / 2f, r.centerX() + s / 2f, r.centerY() + s / 2f)
@@ -526,6 +601,69 @@ object UiKit {
             }
         }
         if (focus) focus(c, r)
+    }
+
+    /**
+     * THE MAIL ENVELOPE beside the Calendar button on Home's map-name band (the user, 2026-11-16: "we need to add an icon somewhere to
+     * the home menu for when the player has mail"; HomeMailButton), [r] square, the band's height: the band's own plate as the Calendar
+     * button has it, the game's own minimap mail picture on it (the kit's `mm_mailbox`, the classic minimap's envelope; a stand-in
+     * until UI Art's pass), a drawn envelope while the kit has none; a soft gold wash while its card is open ([lit]), the gold box
+     * while the open map module's cursor is on it ([focus]).
+     */
+    fun mailButton(c: Canvas, r: RectF, lit: Boolean = false, focus: Boolean = false, down: Boolean = false) {
+        pressed(c, r, down) {
+            bandPlate(c, r)
+            // the wash inside the plate's metal edge only (over it the bar's square ends showed past the plate's rounded corners)
+            if (lit) glow(c, RectF(r.left + r.width() * 0.16f, r.top + r.height() * 0.16f, r.right - r.width() * 0.16f, r.bottom - r.height() * 0.16f),
+                SOFT_GOLD, 0.7f)
+            val pic = tex("mm_mailbox")
+            val s = r.height() * 0.72f
+            if (pic != null) {
+                val k = minOf(s / pic.width, s / pic.height)
+                val w = pic.width * k; val h = pic.height * k
+                c.drawBitmap(pic, null, RectF(r.centerX() - w / 2f, r.centerY() - h / 2f, r.centerX() + w / 2f, r.centerY() + h / 2f), pBmp)
+            } else envelope(c, RectF(r.centerX() - s / 2f, r.centerY() - s * 0.34f, r.centerX() + s / 2f, r.centerY() + s * 0.34f))
+        }
+        if (focus) focus(c, r)
+    }
+
+    /** a drawn envelope in the HUD's colours (no kit picture on the device yet): the parchment body, its flap's V, a gold edge */
+    private fun envelope(c: Canvas, b: RectF) {
+        pFlat.style = Paint.Style.FILL; pFlat.color = Color.rgb(222, 205, 168)
+        c.drawRoundRect(b, 4f, 4f, pFlat)
+        pFlat.style = Paint.Style.STROKE; pFlat.strokeWidth = 3f; pFlat.color = Color.rgb(96, 70, 34)
+        c.drawLine(b.left + 3f, b.top + 3f, b.centerX(), b.top + b.height() * 0.58f, pFlat)
+        c.drawLine(b.right - 3f, b.top + 3f, b.centerX(), b.top + b.height() * 0.58f, pFlat)
+        pFlat.color = Theme.gold
+        c.drawRoundRect(b, 4f, 4f, pFlat)
+    }
+
+    /**
+     * THE MAIL CARD under the envelope (HomeMailButton): the kit's card (the game's tooltip box with its shadow), [heading] (Tr.t: our
+     * words) over up to three [names] (the GAME'S text: never Tr.t, each cut to the card's width). Its right edge on [anchorRight],
+     * its top at [top], never left of [minLeft]. Returns the card's box.
+     */
+    fun mailCard(c: Canvas, anchorRight: Float, top: Float, minLeft: Float, heading: String, names: List<String>): RectF {
+        val ph = titlePaint(HomeMailButton.HEAD_SIZE)
+        val pn = bodyPaint(HomeMailButton.NAME_SIZE, Theme.text)
+        val head = Tr.t(heading)
+        val shown = names.take(HomeMail.MAX)
+        var textW = ph.measureText(head)
+        for (n in shown) textW = maxOf(textW, pn.measureText(n))
+        val w = HomeMailButton.cardWidth(textW, anchorRight - minLeft)
+        val left = HomeMailButton.cardLeft(anchorRight, w, minLeft)
+        val r = RectF(left, top, left + w, top + HomeMailButton.cardHeight(shown.size))
+        card(c, r)
+        val pad = HomeMailButton.CARD_PAD
+        val room = r.width() - pad * 2f
+        var y = r.top + pad
+        c.drawText(fitEnd(head, ph, room), r.left + pad, y + HomeMailButton.HEAD_LINE / 2f - (ph.ascent() + ph.descent()) / 2f, ph)
+        y += HomeMailButton.HEAD_LINE
+        for (n in shown) {
+            c.drawText(fitEnd(n, pn, room), r.left + pad, y + HomeMailButton.NAME_LINE / 2f - (pn.ascent() + pn.descent()) / 2f, pn)
+            y += HomeMailButton.NAME_LINE
+        }
+        return r
     }
 
     /** D7's stand-in for the Macros room's picture: the game's question-mark icon (134400) in the radial menu's dark disc and bronze ring */
@@ -2914,10 +3052,40 @@ object UiKit {
      * lies round the frame and not over the picture. The Controller room's button being edited while a chooser is open (the chooser's
      * gold box is the one cursor). Draw it after the slot. Without the picture: nothing.
      */
-    fun checkedGlow(c: Canvas, r: RectF) {
-        val t = tex("slot_checked") ?: return
+    fun checkedGlow(c: Canvas, r: RectF, orHilite: Boolean = false) {
+        // bags-gear1 ([orHilite]: the equip slide-out's slot it is open for): without the kit's picture, the game's own checked hilite
+        // (checkbuttonhilight, the Bags room's selected slot) over the slot itself
+        val t = tex("slot_checked") ?: run {
+            if (orHilite) Icons.ui("checkbuttonhilight")?.let { b -> pHilite.colorFilter = hiliteFilter(); c.drawBitmap(b, null, r, pHilite) }
+            return
+        }
         val g = r.width() * 0.2f
         c.drawBitmap(t, null, RectF(r.left - g, r.top - g, r.right + g, r.bottom + g), pBmp)
+    }
+
+    /**
+     * char-popout-current WORN, NOT A CURSOR: the slide-out's tile of what the slot wears now: a round dark badge with a gold rim inside its
+     * top-right corner holding the game's tick (kit `check_tick`, else a drawn one). No edge round the tile: the gold box is the cursor's.
+     */
+    fun wornMark(c: Canvas, r: RectF) {
+        val d = r.width() * 0.36f
+        // inside the tile's corner (a rail sliding up stands its tiles close: a badge over the edge read as the next tile's)
+        val cx = r.right - d / 2f - r.width() * 0.04f; val cy = r.top + d / 2f + r.width() * 0.04f
+        pFlat.style = Paint.Style.FILL; pFlat.color = Color.argb(230, 12, 10, 8)
+        c.drawCircle(cx, cy, d / 2f, pFlat)
+        pFlat.style = Paint.Style.STROKE; pFlat.strokeWidth = maxOf(2f, d * 0.07f); pFlat.color = Theme.gold
+        c.drawCircle(cx, cy, d / 2f, pFlat)
+        val ts = d * 0.78f
+        val t = RectF(cx - ts / 2f, cy - ts / 2f, cx + ts / 2f, cy + ts / 2f)
+        val tick = tex("check_tick")
+        if (tick != null) c.drawBitmap(tick, null, t, pixel)
+        else {
+            pFlat.strokeWidth = ts * 0.14f; pFlat.strokeCap = Paint.Cap.ROUND
+            c.drawLine(t.left + ts * 0.2f, t.centerY(), t.centerX() - ts * 0.06f, t.bottom - ts * 0.24f, pFlat)
+            c.drawLine(t.centerX() - ts * 0.06f, t.bottom - ts * 0.24f, t.right - ts * 0.16f, t.top + ts * 0.2f, pFlat)
+            pFlat.strokeCap = Paint.Cap.BUTT
+        }
+        pFlat.style = Paint.Style.FILL
     }
 
     /**
@@ -2940,6 +3108,29 @@ object UiKit {
             val p = numberPaint(s * 0.38f, Color.WHITE).apply { textAlign = Paint.Align.RIGHT }
             c.drawText(Tr.t(count.toString()), r.right - 5f, r.bottom - 6f, p)
         }
+    }
+
+    private val pHilite = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD) }
+
+    /** which way a [chevron] points */
+    enum class Chevron { UP, DOWN, LEFT, RIGHT }
+
+    private val pChevron = Paint(Paint.ANTI_ALIAS_FLAG)
+    /**
+     * A SMALL GOLD CHEVRON: "there is more this way" (Bags' cut tooltip first; bags-gear1: the equip slide-out's rail when it holds
+     * more than it shows). Centred on ([cx], [cy]), 24 px across, pointing [dir], at [alpha].
+     */
+    fun chevron(c: Canvas, cx: Float, cy: Float, dir: Chevron, alpha: Int = 255) {
+        pChevron.color = Theme.gold; pChevron.alpha = alpha; pChevron.style = Paint.Style.FILL
+        val p = android.graphics.Path()
+        when (dir) {
+            Chevron.UP -> { p.moveTo(cx - 12f, cy + 6f); p.lineTo(cx + 12f, cy + 6f); p.lineTo(cx, cy - 8f) }
+            Chevron.DOWN -> { p.moveTo(cx - 12f, cy - 6f); p.lineTo(cx + 12f, cy - 6f); p.lineTo(cx, cy + 8f) }
+            Chevron.LEFT -> { p.moveTo(cx + 6f, cy - 12f); p.lineTo(cx + 6f, cy + 12f); p.lineTo(cx - 8f, cy) }
+            Chevron.RIGHT -> { p.moveTo(cx - 6f, cy - 12f); p.lineTo(cx - 6f, cy + 12f); p.lineTo(cx + 8f, cy) }
+        }
+        p.close()
+        c.drawPath(p, pChevron)
     }
 
     /**
@@ -3623,6 +3814,8 @@ object UiKit {
                 c.drawBitmap(it, null, RectF(ir.left - 2f * k, ir.top - 2f * k, ir.right + 2f * k, ir.bottom + 2f * k), pTint)
                 pTint.alpha = 255
             }
+            // q62: while it casts itself, the game's marching shine round the frame (the room keeps redrawing: bookGlowLive)
+            if (autoCast == 2) { autoCastSquare(c, RectF(ir.left - 3f * k, ir.top - 3f * k, ir.right + 3f * k, ir.bottom + 3f * k)); bookGlowLive = true }
             tex("book_autocast")?.let {
                 pBmp.alpha = if (autoCast == 2) 255 else 130
                 c.drawBitmap(it, null, RectF(ir.left - 5f * k, ir.top - 5f * k, ir.right + 5f * k, ir.bottom + 5f * k), pBmp)
@@ -4769,8 +4962,11 @@ object UiKit {
      * game's word; [enabled] false = the game's unavailable look (its grey wedge, the picture's _off art, a grey label); [note] = small
      * grey words on the label's outer side (optional; the "Coming later" of a greyed slice can instead be the red line, pauseRadial's line)
      */
-    /** [menu]: a context-menu icon (MenuIcons: game art mixed on the phone) drawn instead of the kit picture [key] */
-    class PauseSlice(val key: String, val label: String, val enabled: Boolean = true, val note: String? = null, val menu: String? = null)
+    /** [menu]: a context-menu icon (MenuIcons: game art mixed on the phone) drawn instead of the kit picture [key]; [auto] (Quests q62,
+     *  a pet ability that may cast itself): -1 none, 0 it does not (the game's quiet corners), 1 it does (the corners and the marching
+     *  shine, [autoCastRing]); the pointed one wears the X (its toggle) opposite the A */
+    class PauseSlice(val key: String, val label: String, val enabled: Boolean = true, val note: String? = null, val menu: String? = null,
+                     val auto: Int = -1)
 
     /** the disc: its middle and width, how red its swirl is (0..1), how far its B has come in (0..1), its halo (0..1) */
     class PauseDisc(val cx: Float, val cy: Float, val size: Float, val red: Float, val b: Float, val glow: Float)
@@ -5120,7 +5316,18 @@ object UiKit {
                 // THE A ON THE LIT SLICE while A picks (RC4, the user on RC3: "The pause menu is missing the button glyphs"): as the
                 // consumables wheel marks its pointed item, the A half over the icon's top-left corner
                 // (UI Art on 98a70ded: on the small plain emote icons the full-size A hid half the face: 0.7 of it there, centred on the corner)
-                if (pickGlyph && i == pt && sl.enabled && selK > 0f) {
+                // q62: a pet ability that may cast itself wears the game's autocast look round its medallion
+                // (greyed - the pet gone or dead - the quiet corners only, faded as the slice)
+                if (sl.auto >= 0) autoCastRing(c, ix, if (menuIcon) iy - 10f * g.s else iy, maxOf(aw, ah) * 0.43f, sl.auto == 1 && sl.enabled,
+                    (255 * k * (if (sl.enabled) 1f else 0.45f)).toInt())
+                if (pickGlyph && i == pt && sl.enabled && selK > 0f && sl.auto >= 0) {
+                    // q62: A (cast, the pet bar's left-click) and X (its autocast, the right-click) a little smaller, out on the medallion's
+                    // two top corners, so the autocast look between them stays in sight
+                    val gs = 41.6f * g.s / 1.3f * 0.85f
+                    val my = if (menuIcon) iy - 10f * g.s else iy
+                    pad(c, okGlyph().takeIf { n -> tex("pad_$n") != null } ?: "rev_a", ix - aw / 2f, my - ah / 2f, gs, (255 * selK).toInt())
+                    pad(c, xGlyph().takeIf { n -> tex("pad_$n") != null } ?: "rev_x", ix + aw / 2f, my - ah / 2f, gs, (255 * selK).toInt())
+                } else if (pickGlyph && i == pt && sl.enabled && selK > 0f) {
                     val gs = 41.6f * g.s / 1.3f * (if (plain) 0.7f else 1f)
                     val off = if (plain) 0f else gs / 2f - 0.35f * gs
                     pad(c, okGlyph().takeIf { n -> tex("pad_$n") != null } ?: "rev_a", ix - aw / 2f + off, iy - ah / 2f + off, gs, (255 * selK).toInt())
@@ -5335,38 +5542,147 @@ object UiKit {
     // refresh in %s %s" (minutes, then seconds in the last minute) and, at 0, SHARD_TRANSFER_ANYTIME. Picture: wow-companion-design\
     // home\notice\ (SHEET_notice.png, A).
 
-    /** the game's SYSTEM chat colour (ChatTypeInfo SYSTEM 1, 1, 0) */
-    private val NOTICE_YELLOW = Color.rgb(255, 255, 0)
+    // chat40 (the user, 2026-11-16: "the world refresh prompt should have blue text and the ! notice part should be a button to trigger
+    // the refresh"): the words in the game's own toast blue (ShardTransferImminentFrame's Text: r .510 g .773 b 1 = Theme.battleNet), the
+    // seconds too; the warning sign is a kit button (its press is the game's Refresh now, HomeView). The Battle.net friend notices
+    // ([bnetNotice]) stand under it in the same style.
 
     /**
-     * THE WORLD-REFRESH NOTICE pinned at the top of [rect] (the chat well's inside): the dialog's warning sign (kit `alert`), then the
-     * game's words in its system yellow: "The world around you will refresh" over "in 4 Minutes"; in the last minute "in 42 Seconds"
-     * in the game's error red; at 0 (both 0) "Refreshing your world at any time." over "Characters and creatures around you may
-     * change."; a thin bronze line under it. [scale] 1 = the 1240 x 1080 bottom screen. Returns its height: the log starts under it.
+     * THE WORLD-REFRESH NOTICE pinned at the top of [rect] (the chat well's inside): a button with the dialog's warning sign (kit `alert`;
+     * [pressed] = DOWN while its press waits for the game), then the game's words in its toast blue: "The world around you will refresh"
+     * over "in 4 Minutes"; in the last minute "in 42 Seconds"; at 0 (both 0) "Refreshing your world at any time." over "Characters and
+     * creatures around you may change."; a thin bronze line under it. [scale] 1 = the 1240 x 1080 bottom screen. [bang], when given, is set
+     * to the button's box (its touch target). [focused] = a controller cursor on the button (the chat module / Chat room's stop,
+     * ChatPad.Focus.Notice): the kit's focus round it and A on its corner. Returns its height: the log starts under it.
+     * chat41 (the user's pick, 2026-11-16: "Red in the last minute"): the words stay blue, the countdown line turns the game's error red
+     * (PAUSE_RED, the red it had before chat40) under 60 s: in the seconds, or when [urgent] (Chat's own `urgent`, NoticeModel.urgent).
      */
-    fun notice(c: Canvas, rect: RectF, minutes: Int, seconds: Int, scale: Float = 1f): Float {
+    fun notice(c: Canvas, rect: RectF, minutes: Int, seconds: Int, scale: Float = 1f, pressed: Boolean = false, bang: RectF? = null,
+               focused: Boolean = false, urgent: Boolean = false, flashMs: Long = -1L): Float {
         val s = scale
         val h = 78f * s
         val x0 = rect.left + 6f * s; val y0 = rect.top + 10f * s
-        tex("alert")?.let { c.drawBitmap(it, null, RectF(x0 + 4f * s, y0 + 8f * s, x0 + 56f * s, y0 + 60f * s), pBmp) }
-        val tx = x0 + 68f * s; val room = rect.right - 8f * s - tx
+        val b = RectF(x0, y0 + 4f * s, x0 + 60f * s, y0 + 64f * s)
+        iconButton(c, b, "alert", if (pressed) Button.DOWN else Button.UP)
+        bang?.set(b)
+        if (focused) {
+            focus(c, RectF(b).apply { inset(-6f * s, -6f * s) })
+            pad(c, "rev_a", b.right - 4f * s, b.bottom - 4f * s, 34f * s)            // A presses it
+        }
+        val tx = x0 + 78f * s; val room = rect.right - 8f * s - tx
         val anytime = minutes <= 0 && seconds <= 0
-        val urgent = !anytime && minutes <= 0
+        val inSeconds = !anytime && minutes <= 0
+        val red = !anytime && (inSeconds || urgent)
         val l1 = if (anytime) "Refreshing your world at any time." else "The world around you will refresh"
         val l2 = when {
             anytime -> "Characters and creatures around you may change."
-            urgent -> "in $seconds " + (if (seconds == 1) "Second" else "Seconds")
+            inSeconds -> "in $seconds " + (if (seconds == 1) "Second" else "Seconds")
             else -> "in $minutes " + (if (minutes == 1) "Minute" else "Minutes")
         }
         for ((i, line) in listOf(l1, l2).withIndex()) {
-            val p = bodyPaint(25f * s, if (i == 1 && urgent) PAUSE_RED else NOTICE_YELLOW)
+            val p = bodyPaint(25f * s, if (i == 1 && red) PAUSE_RED else Theme.battleNet)
             while (p.textSize > 19f * s && p.measureText(line) > room) p.textSize -= 1f
             c.drawText(Tr.t(TextUtils.ellipsize(line, TextPaint(p), room, TextUtils.TruncateAt.END).toString()), tx,
                 y0 + (4f + 32f * i) * s - p.ascent(), p)
         }
         pFlat.style = Paint.Style.FILL; pFlat.color = Color.rgb(110, 90, 50)
         c.drawRect(rect.left + 6f * s, y0 + 76f * s, rect.right - 8f * s, y0 + 78f * s, pFlat)
+        noticeFlash(c, RectF(rect.left + 6f * s, y0, rect.right - 8f * s, y0 + 76f * s), flashMs)        // chat42: once, when it is new
         return h + 10f * s
+    }
+
+    /**
+     * chat42 (the user, 2026-11-16: "There is a little white flash animation that happens whenever someone comes online in battlenet. We
+     * need to hit that on the top screen and make something similar on the bottom"): THE NOTICE'S FLASH, the game's toast glow
+     * (SocialToastTemplate's UI-Toast-Flair, added light: 0.2 s up, 0.5 s down) made short: its strength [ms] after the notice came, up
+     * to full in [NOTICE_FLASH_IN_MS], down to 0 at [NOTICE_FLASH_MS]; outside that (or [ms] < 0) 0. Drawn with [noticeFlash].
+     */
+    fun noticeFlash(ms: Long): Float = when {
+        ms < 0L || ms >= NOTICE_FLASH_MS -> 0f
+        ms < NOTICE_FLASH_IN_MS -> ms.toFloat() / NOTICE_FLASH_IN_MS
+        else -> 1f - (ms - NOTICE_FLASH_IN_MS).toFloat() / (NOTICE_FLASH_MS - NOTICE_FLASH_IN_MS)
+    }
+    const val NOTICE_FLASH_IN_MS = 100L
+    const val NOTICE_FLASH_MS = 450L
+
+    /** the flash over one notice line [r], [ms] after it came: the kit's additive highlight bar in white at [noticeFlash]'s strength,
+     *  and a soft white sweep crossing the line left to right over the flash's time (added light: dark stays dark, nothing is covered) */
+    fun noticeFlash(c: Canvas, r: RectF, ms: Long) {
+        val f = noticeFlash(ms)
+        if (f <= 0f || r.width() <= 0f) return
+        glow(c, r, Color.WHITE, 0.55f * f)
+        val band = r.width() * 0.28f
+        val x = r.left - band + (r.width() + 2f * band) * (ms.toFloat() / NOTICE_FLASH_MS)
+        val w = Color.argb((200 * f).toInt().coerceIn(0, 255), 255, 255, 255)
+        val clear = Color.argb(0, 255, 255, 255)
+        pFlashAdd.shader = LinearGradient(x - band, 0f, x + band, 0f, intArrayOf(clear, w, clear), floatArrayOf(0f, 0.5f, 1f),
+            Shader.TileMode.CLAMP)
+        c.drawRect(r, pFlashAdd)
+        pFlashAdd.shader = null
+    }
+    private val pFlashAdd = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD) }
+
+    /**
+     * ONE BATTLE.NET NOTICE at the top of [rect] (under the refresh notice: its top is [rect]'s), one short line as the game's toast says
+     * it, a small icon per kind ([b].t): a friend's login / logout = their status light, the name ([NoticeModel.Bnet.who]; null = "A
+     * friend") in the game's Battle.net blue, then "has come online" / "has gone offline" in grey; chat41 (the user's pick, 2026-11-16:
+     * "Yes, all of them"): a friend request (kit `tab_friends`) "New friend request", the waiting ones "Friend requests: 3"; a broadcast
+     * (`icon_chat`) the name, then its words when the game gave them plain (a player's: never translated), else "posted a broadcast"; a
+     * community invite (`tab_guild`) "Community invite: " and the community's name. A thin bronze line under it. [alpha] = the toast's
+     * fade. chat42: [flashMs] = ms since it came, its one white flash ([noticeFlash]; -1 = none). Returns its height.
+     */
+    fun bnetNotice(c: Canvas, rect: RectF, b: NoticeModel.Bnet, alpha: Float = 1f, scale: Float = 1f, flashMs: Long = -1L): Float {
+        val s = scale
+        val a = (alpha.coerceIn(0f, 1f) * 255f).toInt()
+        val x0 = rect.left + 6f * s; val y0 = rect.top + 6f * s
+        val light = b.t == NoticeModel.T_ON || b.t == NoticeModel.T_OFF
+        val icon = when (b.t) {
+            NoticeModel.T_ON -> "status_online"
+            NoticeModel.T_OFF -> "status_offline"
+            NoticeModel.T_INVITE, NoticeModel.T_PENDING -> "tab_friends"
+            NoticeModel.T_BCAST -> "icon_chat"
+            else -> "tab_guild"
+        }
+        tex(icon)?.let {
+            pBmp.alpha = a
+            val box = if (light) RectF(x0 + 16f * s, y0 + 8f * s, x0 + 44f * s, y0 + 36f * s)
+                      else RectF(x0 + 10f * s, y0 + 2f * s, x0 + 50f * s, y0 + 42f * s)
+            c.drawBitmap(it, null, box, pBmp)
+            pBmp.alpha = 255
+        }
+        // the line's parts: (words, colour, a player's value = never translated and the part that gives way first)
+        val blue = Theme.battleNet; val grey = Theme.dim
+        val friend = b.who ?: Tr.t("A friend")
+        val parts: List<Triple<String, Int, Boolean>> = when (b.t) {
+            NoticeModel.T_ON, NoticeModel.T_OFF -> listOf(Triple(friend, blue, true),
+                Triple(" " + Tr.t(if (b.t == NoticeModel.T_ON) "has come online" else "has gone offline"), grey, false))
+            NoticeModel.T_INVITE -> listOf(Triple(Tr.t("New friend request"), blue, false))
+            NoticeModel.T_PENDING -> listOf(Triple(Tr.t("Friend requests: ${b.n}"), blue, false))
+            NoticeModel.T_BCAST -> if (b.text != null) listOf(Triple(friend, blue, true), Triple(": " + b.text, grey, true))
+                                   else listOf(Triple(friend, blue, true), Triple(" " + Tr.t("posted a broadcast"), grey, false))
+            else -> if (b.name != null) listOf(Triple(Tr.t("Community invite") + ": ", grey, false), Triple(b.name, blue, true))
+                    else listOf(Triple(Tr.t("Community invite"), blue, false))
+        }
+        val tx = x0 + 78f * s; val room = rect.right - 8f * s - tx
+        val paints = parts.map { bodyPaint(25f * s, it.second).apply { this.alpha = a } }
+        fun total() = parts.indices.sumOf { paints[it].measureText(parts[it].first).toDouble() }.toFloat()
+        while (paints[0].textSize > 19f * s && total() > room) paints.forEach { it.textSize -= 1f }
+        val base = y0 + 6f * s - paints[0].ascent()
+        var x = tx
+        for ((i, part) in parts.withIndex()) {
+            val p = paints[i]
+            val rest = (i + 1 until parts.size).sumOf { paints[it].measureText(parts[it].first).toDouble() }.toFloat()
+            // a player's value gives way to the words after it, never under 40 % of the line; the last part takes what is left
+            val left = rect.right - 8f * s - x
+            val mine = if (i == parts.size - 1) left else if (part.third) (left - rest).coerceAtLeast(room * 0.4f) else left
+            val shown = TextUtils.ellipsize(part.first, TextPaint(p), mine.coerceAtLeast(0f), TextUtils.TruncateAt.END).toString()
+            c.drawText(shown, x, base, p)
+            x += p.measureText(shown)
+        }
+        pFlat.style = Paint.Style.FILL; pFlat.color = Color.argb(a, 110, 90, 50)
+        c.drawRect(rect.left + 6f * s, y0 + 44f * s, rect.right - 8f * s, y0 + 46f * s, pFlat)
+        noticeFlash(c, RectF(rect.left + 6f * s, y0 - 2f * s, rect.right - 8f * s, y0 + 44f * s), flashMs)   // chat42: its one flash
+        return 52f * s
     }
 
     // ---------------------------------------------------------------- the PIN PICKER (the radial's "+")

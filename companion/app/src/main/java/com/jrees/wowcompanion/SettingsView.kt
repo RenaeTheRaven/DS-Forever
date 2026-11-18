@@ -116,7 +116,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private var btnGuidePending = RectF()                             // its Restart game / Try again
     private val segDanger = Array(3) { RectF() }
     private val segFog = Array(2) { RectF() }
-    private val segPsTop = Array(2) { RectF() }          // hub31: Polestar on the top screen, Show / Hide
+    private val segVoice = Array(Voice.Mode.values().size) { RectF() }  // 2026-11-16: Settings > General > Look > Voice typing
     private val segLang = Array(Tr.LANGS.size) { RectF() }          // 2026-11-07: Settings > System > Language
     private val segTheme = Array(Theme.presets.size) { RectF() }    // 2026-11-12: Settings > System > Theme (one tile a preset)
     private val segLight = Array(2) { RectF() }
@@ -139,6 +139,10 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private var btnDeferred = RectF()
     /** Route data's "Review paths" (b-safepath-review): the host opens SafePath's review over this room */
     private var btnRouteReview = RectF()
+    /** Top screen > Layout > Edit layout (the layout editor; the user, 2026-11-16): the host opens its page over this room */
+    private var btnLayout = RectF()
+    var onEditLayout: () -> Unit = {}
+        get() = hub?.onEditLayout ?: field
     var onRouteReview: () -> Unit = {}
         get() = hub?.onRouteReview ?: field
     private var deferredOpen = false
@@ -174,6 +178,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private val segPausePick = Array(2) { RectF() }
     /** the user's pick 2026-11-13: Start over game windows (HomeSettings.pauseOverGame): Our wheel / Game's wheel */
     private val segPauseOver = Array(2) { RectF() }
+    /** the user, 2026-11-16: B: pet follow (HomeSettings.petFollowB, per character): Off / On; a pet class only (PetFollowB) */
+    private val segPetB = Array(2) { RectF() }
 
     /**
      * FRAME GENERATION (board f-frame-gen): the player's own Lossless.dll and its settings (FrameGen; applied at the next game start).
@@ -229,6 +235,10 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         Theme.onChange { postInvalidate() }
         ThirdPartyAddons.init(context)
         ThirdPartyAddons.onChange { postInvalidate() }
+        VoiceModels.init(context)
+        VoiceModels.onChange { postInvalidate() }
+        ImportedAddons.init(context)
+        ImportedAddons.onChange { post { requestLayout(); invalidate() } }   // the worker's thread: the card's rows come and go
         Settings.onChange { postInvalidate() }
         ReportFlow.init(context)
         ReportFlow.onChange { postInvalidate() }
@@ -268,14 +278,14 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
      */
     fun focusTargets(): List<RectF> =
         (listOf(btnReload) + (if (loginRow) listOf(btnLogin) else emptyList()) + listOf(btnReport, btnReportDismiss, btnStream) +
-            listOf(btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus) + segQt.toList() + segPsTop.toList() + segPq.flatMap { it.toList() } + segDanger.toList() + segFog.toList() + segChat.toList() +
-            segTheme.toList() + segLang.toList() + segSwap.toList() + listOf(btnSwapRestart) + segGameAcct.toList() + segWinId.toList() + listOf(btnWinIdRestart) + segLight.toList() + segLocation.toList() + segLayout.toList() + segPauseOpen.toList() + segPausePick.toList() + segPauseOver.toList() + segOpen.toList() + segPick.toList() +
+            listOf(btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus) + segQt.toList() + segPq.flatMap { it.toList() } + segDanger.toList() + segFog.toList() + segChat.toList() +
+            segTheme.toList() + segLang.toList() + segVoice.toList() + segSwap.toList() + listOf(btnSwapRestart) + segGameAcct.toList() + segWinId.toList() + listOf(btnWinIdRestart) + segLight.toList() + segLocation.toList() + segLayout.toList() + segPetB.toList() + segPauseOpen.toList() + segPausePick.toList() + segPauseOver.toList() + segOpen.toList() + segPick.toList() +
             // test40 ("I can't press down ... even though it appears like there are options below"): the spell wheel's and the class
             // radials' segments were drawn but never listed, so the cursor stopped at the item wheel
             segSpellOpen.toList() + segSpellPick.toList() + segClassLOpen.toList() + segClassLPick.toList() + segClassROpen.toList() +
             segClassRPick.toList() +
             segLimit.toList() + listOf(btnDll) + segFg.toList() + segMult.toList() + listOf(btnFlowMinus, btnFlowPlus) + segPerf.toList() +
-            listOf(btnRestart) + segIndoor.toList() + listOf(btnDeferred, btnRouteReview) + addonFocus() + sbHits.map { it.first })
+            listOf(btnRestart) + segIndoor.toList() + listOf(btnDeferred, btnRouteReview, btnLayout) + addonFocus() + sbHits.map { it.first })
             .filter { !it.isEmpty }.map { RectF(it) }.let { controls ->
                 // ... and a row with nothing to press (an add-on's greyed module before its install, a status line) is still a stop:
                 // the cursor walks every row it can see, A there does nothing
@@ -287,8 +297,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     fun isReload(r: RectF): Boolean = !btnReload.isEmpty && r == btnReload
 
     /** the Add-ons tab's controls, in reading order (each module's box, then each option's two segments) */
-    private fun addonFocus(): List<RectF> = segGuide.toList() + listOf(btnGuidePending, addonRestart) + addonCoreBtn.values.toList() + addonSettingsBtn.values.toList() + addonModuleBoxes.values.toList() +
-        addonOptionSegs.values.flatMap { it.toList() }
+    private fun addonFocus(): List<RectF> = importFocus() + segGuide.toList() + listOf(btnGuidePending, addonRestart) + addonCoreBtn.values.toList() + addonSettingsBtn.values.toList() + addonModuleBoxes.values.toList() +
+        addonOptionSegs.values.flatMap { it.toList() } + VoiceModels.Model.values().mapNotNull { voiceModelBtn[it] }
 
     /** the rows as last drawn, with their words (the "What it does" panel follows the row under the cursor or a touch) */
     private val rowHits = ArrayList<Pair<RectF, String>>()
@@ -300,11 +310,14 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private fun clearBoxes() {
         rowHits.clear(); sbHits.clear()
         addonModuleBoxes.clear(); addonOptionSegs.clear(); addonCoreBtn.clear(); addonRestart.setEmpty(); addonSettingsBtn.clear()
+        btnImport.setEmpty(); btnImportInstall.setEmpty(); btnImportCancel.setEmpty(); importRemove.clear(); importUnqueue.clear()
         btnGuidePending.setEmpty(); for (r in segGuide) r.setEmpty()
+        voiceModelBtn.clear()
         for (r in listOf(btnReload, btnLogin, btnReport, btnReportDismiss, btnStream, btnMiniMinus, btnMiniPlus, btnMiniInMinus, btnMiniInPlus,
-                         btnDeferred, btnRouteReview, btnDll, btnFlowMinus, btnFlowPlus, btnRestart, btnSwapRestart, btnWinIdRestart)) r.setEmpty()
-        for (a in listOf(segIndoor, segLocation, segLayout, segPauseOpen, segPausePick, segPauseOver, segOpen, segPick, segSpellOpen, segSpellPick, segClassLOpen, segClassLPick,
-                         segClassROpen, segClassRPick, segChat, segQt, segPsTop, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segTheme, segLight, segGameAcct, segSwap, segWinId,
+                         btnDeferred, btnRouteReview, btnDll, btnFlowMinus, btnFlowPlus, btnRestart, btnSwapRestart, btnWinIdRestart,
+                         btnLayout)) r.setEmpty()
+        for (a in listOf(segIndoor, segLocation, segLayout, segPetB, segPauseOpen, segPausePick, segPauseOver, segOpen, segPick, segSpellOpen, segSpellPick, segClassLOpen, segClassLPick,
+                         segClassROpen, segClassRPick, segChat, segQt, segPq[0], segPq[1], segPq[2], segDanger, segFog, segLang, segVoice, segTheme, segLight, segGameAcct, segSwap, segWinId,
                          segLimit, segFg, segMult, segPerf))
             for (r in a) r.setEmpty()
     }
@@ -344,15 +357,10 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** a block heading's room above its first row (its baseline 12 px above that row) */
     private fun headGap() = if (only == null) 16f else 52f
 
-    /** hub31: the "Polestar on the top screen" row shows (Polestar installed, the add-on has the switch) - the draw and the height agree */
-    private fun psTopRow(): Boolean =
-        ThirdPartyAddons.status(ThirdPartyAddons.POLESTAR, "core").kind == ThirdPartyAddons.Kind.INSTALLED && GameUi.swNow(GameUi.SW_PS) != null
-    /** Top screen > Navigation's Polestar row: shown when it was under Add-ons > Polestar (the guide on and installed) */
-    private fun psTopShown(): Boolean = guideOn() && ThirdPartyAddons.coreInstalled(ThirdPartyAddons.POLESTAR) && psTopRow()
-
     /** a block's rows' height (from its first row's top to its last row's bottom), laid out exactly as its draw function lays it out */
     private fun blockHeight(b: SettingsTabs.Block): Float = when (b) {
         SettingsTabs.Block.LANGUAGE -> ROW_H
+        SettingsTabs.Block.VOICE -> ROW_H
         // #232: only with a second screen; Restart under it while the saved choice is not the one in use
         SettingsTabs.Block.SCREENS -> if (!ScreenSwap.offered) 0f else ROW_H + (if (swapPending() == ScreenSwap.Pending.NONE) 0f else 10f + ROW_H)
         SettingsTabs.Block.THEME -> themeGridH()
@@ -362,18 +370,23 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         SettingsTabs.Block.WINDOWS_ID -> if (winIdRestart()) ROW_H + 10f + ROW_H else ROW_H
         SettingsTabs.Block.HELP -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.STREAMING -> ROW_H
+        // the layout editor: once the add-on set has it (its "lay" document came)
+        SettingsTabs.Block.LAYOUT -> if (LayoutModel.Live.available()) ROW_H else 0f
         // zoom out, zoom in, World map (Quest tracking moved to Add-ons > Polestar, 2026-11-12)
         SettingsTabs.Block.MAP -> 3 * ROW_H + 2 * 10f
         SettingsTabs.Block.QUEST_TRACKING -> ROW_H
-        SettingsTabs.Block.POLESTAR_TOP -> if (psTopShown()) ROW_H else 0f
         SettingsTabs.Block.INDOOR -> ROW_H + 10f + ROW_H + deferredListH() + 10f + ROW_H
         SettingsTabs.Block.CONTROLLER -> ROW_H + 10f + ROW_H
+        SettingsTabs.Block.PET_B -> if (PetFollowB.shown(petB())) ROW_H else 0f            // a pet class only
         SettingsTabs.Block.PAUSE_WHEEL -> ROW_H + 10f + ROW_H + 10f + ROW_H             // + Start over game windows
         SettingsTabs.Block.ITEM_WHEEL, SettingsTabs.Block.SPELL_WHEEL,
         SettingsTabs.Block.CLASS_LEFT, SettingsTabs.Block.CLASS_RIGHT -> ROW_H + 10f + ROW_H
         SettingsTabs.Block.CHAT -> ROW_H
         SettingsTabs.Block.FRAMES -> fgHeight()
         SettingsTabs.Block.SMART_Y -> sbLines().size.let { n -> n * ROW_H + (n - 1) * 10f } + pbHeight()
+        SettingsTabs.Block.ADDON_VOICE -> VoiceModels.Model.values().size.let { n -> n * ROW_H + (n - 1) * 10f }
+        SettingsTabs.Block.IMPORT -> importHeight()
+        SettingsTabs.Block.IMPORTED -> importedRows().let { n -> if (n == 0) 0f else n * ROW_H + (n - 1) * 10f }
         else -> SettingsTabs.addonOf(b)?.let { a -> val n = addonRows(a); n * ROW_H + (n - 1) * 10f } ?: 0f
     }
 
@@ -461,10 +474,13 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             segIndoor[1].contains(x, y) -> Settings.indoorBuild = false
             btnDeferred.contains(x, y) -> { deferredOpen = !deferredOpen; requestLayout(); invalidate() }
             btnRouteReview.contains(x, y) -> onRouteReview()
+            btnLayout.contains(x, y) -> onEditLayout()
             segPauseOpen[0].contains(x, y) -> HomeSettings.pauseTap = true
             segPauseOpen[1].contains(x, y) -> HomeSettings.pauseTap = false
             segPausePick[0].contains(x, y) -> HomeSettings.pausePickA = true
             segPausePick[1].contains(x, y) -> HomeSettings.pausePickA = false
+            segPetB[0].contains(x, y) -> HomeSettings.setPetFollowB(GameUi.character, false)
+            segPetB[1].contains(x, y) -> HomeSettings.setPetFollowB(GameUi.character, true)
             segPauseOver[0].contains(x, y) -> HomeSettings.pauseOverGame = false
             segPauseOver[1].contains(x, y) -> HomeSettings.pauseOverGame = true
             segOpen[0].contains(x, y) -> HomeSettings.radialTap = true
@@ -501,8 +517,6 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 val qi = segQt.indexOfFirst { it.contains(x, y) }
                 val di = segDanger.indexOfFirst { it.contains(x, y) }
                 val fi = segFog.indexOfFirst { it.contains(x, y) }
-                val psi = segPsTop.indexOfFirst { it.contains(x, y) }
-                if (psi >= 0) { GameUi.setSwitch(GameUi.SW_PS, psi == 1); invalidate(); return }
                 for ((k, segs) in segPq.withIndex()) {
                     val pi = segs.indexOfFirst { it.contains(x, y) }
                     if (pi >= 0) { PolestarQol.set(GameUi.character, listOf(PolestarQol.QUEST, PolestarQol.VENDOR, PolestarQol.REPAIR)[k], pi == 0); invalidate(); return }
@@ -525,6 +539,12 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 if (lgx >= 0) { Settings.lowMemGraphics = lgx == 0; invalidate(); return }
                 val thi = segTheme.indexOfFirst { it.contains(x, y) }
                 if (thi >= 0) { Theme.use(Theme.presets[thi].id); invalidate(); return }
+                val vti = segVoice.indexOfFirst { it.contains(x, y) }
+                if (vti >= 0) {
+                    Settings.voiceTyping = Voice.Mode.values()[vti]
+                    DiagLog.event("voice", "Voice typing set ${Settings.voiceTyping.key}")
+                    invalidate(); return
+                }
                 val lgi = segLang.indexOfFirst { it.contains(x, y) }
                 if (lgi >= 0) { Tr.setChoice(context, Tr.LANGS[lgi].code); invalidate(); return }
                 if (fi >= 0) { Settings.worldMapFog = if (fi == 0) "all" else "explored"; invalidate(); return }
@@ -575,6 +595,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             }
             y = when (b) {
                 SettingsTabs.Block.LANGUAGE -> drawLanguage(c, y)
+                SettingsTabs.Block.VOICE -> drawVoice(c, y)
                 SettingsTabs.Block.SCREENS -> drawScreens(c, y)
                 SettingsTabs.Block.THEME -> drawTheme(c, y)
                 SettingsTabs.Block.LIGHTER -> drawLighter(c, y)
@@ -583,11 +604,12 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 SettingsTabs.Block.WINDOWS_ID -> drawWindowsId(c, y)
                 SettingsTabs.Block.HELP -> drawHelp(c, y)
                 SettingsTabs.Block.STREAMING -> drawStreaming(c, y)
+                SettingsTabs.Block.LAYOUT -> drawLayout(c, y)
                 SettingsTabs.Block.MAP -> drawMap(c, y)
                 SettingsTabs.Block.QUEST_TRACKING -> { drawQuestTrackingRow(c, y); y + ROW_H }
-                SettingsTabs.Block.POLESTAR_TOP -> drawPsTop(c, y)
                 SettingsTabs.Block.INDOOR -> drawIndoor(c, y)
                 SettingsTabs.Block.CONTROLLER -> drawController(c, y)
+                SettingsTabs.Block.PET_B -> drawPetB(c, y)
                 SettingsTabs.Block.PAUSE_WHEEL -> drawWheel(c, y, "Pause menu", "Press Start to open; it stays until B.",
                     "Hold Start; letting go closes it.", HomeSettings.pauseTap, HomeSettings.pausePickA, segPauseOpen, segPausePick)
                     .let { bottom -> drawPauseOver(c, bottom + 10f) }
@@ -602,6 +624,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
                 SettingsTabs.Block.CHAT -> drawChat(c, y)
                 SettingsTabs.Block.FRAMES -> drawFrames(c, y)
                 SettingsTabs.Block.SMART_Y -> drawSmartY(c, y)
+                SettingsTabs.Block.ADDON_VOICE -> drawVoiceModels(c, y)
+                SettingsTabs.Block.IMPORT -> drawImport(c, y)
+                SettingsTabs.Block.IMPORTED -> drawImported(c, y)
                 else -> SettingsTabs.addonOf(b)?.let { drawAddon(c, y, it) } ?: y
             }
         }
@@ -705,6 +730,36 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         }
         return top + ROW_H
     }
+
+    /**
+     * VOICE TYPING (the user's pick 2026-11-16: "On the Thor only by default. Online is used only after you pick it once"): This device
+     * (the default), Online, Off. App-wide, like Language
+     */
+    private fun drawVoice(c: Canvas, top: Float): Float {
+        val segW = segW()
+        // offline voice in this build but nothing can listen until a voice is downloaded: the row says where (Settings > Add-ons)
+        val sub = if (Settings.voiceTyping != Voice.Mode.OFF && voiceNeedsModel()) "Download a voice in Add-ons" else "X in a text box listens"
+        row(c, top, Tr.t("Voice typing"), Tr.t(sub), enabled = true) { box ->
+            val n = Voice.Mode.values().size
+            val b = RectF(box.right - 16f - segW * n, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, Voice.Mode.values().map { Tr.t(it.label) }, Settings.voiceTyping.ordinal, segVoice)
+            b
+        }
+        return top + ROW_H
+    }
+
+    /** the voice sheet would offer a model's download now ([Voice.Avail.NEED_MODEL]), asked at most every 2 s (it lists the services) */
+    private fun voiceNeedsModel(): Boolean {
+        if (!VoiceModels.offered()) return false
+        val now = SystemClock.elapsedRealtime()
+        if (now - voiceAvailAt > 2000L) {
+            voiceAvailAt = now
+            voiceNeeds = runCatching { VoiceEngine.avail(context, Settings.voiceTyping) == Voice.Avail.NEED_MODEL }.getOrDefault(false)
+        }
+        return voiceNeeds
+    }
+    private var voiceAvailAt = -10_000L
+    private var voiceNeeds = false
 
     /** #232: the Restart row's state now (ScreenSwap.pending: the saved choice against the one this run uses) */
     private fun swapPending(): ScreenSwap.Pending =
@@ -861,6 +916,16 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
             b
         }
         return y + ROW_H
+    }
+
+    /** Top screen > Layout: the one row that opens the layout editor's page (LayoutView) */
+    private fun drawLayout(c: Canvas, top: Float): Float {
+        btnLayout = row(c, top, "Edit layout", "Move and size the top screen's pieces.", enabled = true) { b ->
+            val r = RectF(b.right - 260f, b.centerY() - 34f, b.right - 16f, b.centerY() + 34f)
+            UiKit.button(c, r, "Open", UiKit.Button.UP)
+            r
+        }
+        return top + ROW_H
     }
 
     // ---- MAP (Rooms): the small map's two widths
@@ -1033,6 +1098,19 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         return y + ROW_H
     }
 
+    /** the user, 2026-11-16 ("a pet class specific option where pressing B in the out of combat home menu basically stops the pet
+     *  attacking"): this character's B on Home's rest, Off / On (PetFollowB; drawn only for a pet class: [blockHeight]) */
+    private fun drawPetB(c: Canvas, top: Float): Float {
+        val on = HomeSettings.petFollowB(GameUi.character)
+        val segW = segW()
+        row(c, top, PetFollowB.ROW_ID, PetFollowB.line(on), enabled = true) { box ->
+            val b = RectF(box.right - 16f - segW * 2, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+            segmented(c, b, PetFollowB.SEGMENTS, if (on) 1 else 0, segPetB)
+            b
+        }
+        return top + ROW_H
+    }
+
     /** the user's pick 2026-11-13 ("Make it a setting toggle defaulted to our wheel"): Start with a game window open */
     private fun drawPauseOver(c: Canvas, top: Float): Float {
         val game = HomeSettings.pauseOverGame
@@ -1057,6 +1135,9 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     /** the padmap's Smart buffs (the host's: the latest padmap); null = no game yet, or an add-on before m62 */
     var smartDoc: () -> SmartYModel.Doc? = { null }
         get() = hub?.smartDoc ?: field
+    /** m165: the last current padmap's B pet follow (`pf`: a pet class shows the row); null = no game yet, or an add-on before m165 */
+    var petB: () -> PadMapModel.PetB? = { null }
+        get() = hub?.petB ?: field
     /** m127: the kind of what Y would do now (the padmap's `smarty` k: food / drink / buff / or / manners); null = nothing */
     var smartNow: () -> String? = { null }
         get() = hub?.smartNow ?: field
@@ -1550,20 +1631,6 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         return y + ROW_H
     }
 
-    /** Top screen > Navigation (hub31): Polestar's own frame on the top screen, Show / Hide (it stood under Add-ons > Polestar) */
-    private fun drawPsTop(c: Canvas, top: Float): Float {
-        if (!psTopShown()) return top
-        val hide = GameUi.swWant(GameUi.SW_PS)
-        val sent = GameUi.swNow(GameUi.SW_PS) != hide
-        row(c, top, "Polestar on the top screen", if (sent) "Sent" else if (hide) "Hidden" else "Shown", enabled = true) { box ->
-            val bw = minOf(segW() * 2.6f, box.width() * 0.5f)
-            val b = RectF(box.right - 16f - bw, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
-            segmented(c, b, listOf("Show", "Hide"), if (hide) 1 else 0, segPsTop)
-            b
-        }
-        return top + ROW_H
-    }
-
     private fun drawPolestarRows(c: Canvas, top: Float): Float {
         var y = top
         val who = GameUi.character
@@ -1672,6 +1739,223 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     }
     private val addonDrawnRows = HashMap<String, Int>()
 
+    // ---- ADD-ONS > VOICE (the user, 2026-11-16: "we could make the per languege downloads part of the addons folder"): offline voice's
+    // model files (small and full of each kind: the user's pick "Offer both"), in the add-on rows' look - each its size, its state (Not downloaded / Downloading n% / Ready) and Download / Delete
+    // (twice, as Uninstall). App files ([VoiceModels]), never the game's AddOns folder; a download only on this press.
+    private val voiceModelBtn = HashMap<VoiceModels.Model, RectF>()
+
+    private fun drawVoiceModels(c: Canvas, top: Float): Float {
+        var y = top
+        for ((i, m) in VoiceModels.Model.values().withIndex()) {
+            if (i > 0) y += ROW_H + 10f
+            val st = VoiceModels.state(m)
+            if (st is VoiceModels.State.Downloading || st == VoiceModels.State.Checking) postInvalidateDelayed(1000)
+            val sub = "${Tr.t(VoiceModels.line(m, st))}. ${Tr.t(m.what)}"
+            voiceModelBtn[m] = row(c, y, m.label, sub, enabled = true) { box ->
+                val r = RectF(box.right - 16f - 260f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+                val armed = addonArmed == "voice.${m.id}" && SystemClock.elapsedRealtime() - addonArmedAt < ARM_MS
+                when (st) {
+                    is VoiceModels.State.Downloading -> {
+                        progressBar(c, RectF(r.left - 240f, r.top + 6f, r.left - 20f, r.bottom - 6f), st.pct)
+                        UiKit.button(c, r, "Cancel", UiKit.Button.UP); r
+                    }
+                    VoiceModels.State.Checking -> { UiKit.button(c, r, "Checking", UiKit.Button.DOWN); RectF(r.left, r.top, r.left, r.top) }
+                    VoiceModels.State.Ready -> { UiKit.button(c, r, if (armed) "Tap again" else "Delete", if (armed) UiKit.Button.DOWN else UiKit.Button.UP); r }
+                    else -> { UiKit.button(c, r, "Download", UiKit.Button.UP); r }
+                }
+            }
+        }
+        return y + ROW_H
+    }
+
+    // ---------------------------------------------------------------- Add-ons > Imported (ImportedAddons; the user, 2026-11-16)
+    /** Import opens Android's picker on this (bottom) screen (the host's openOnBottom, as Choose for the DLL) */
+    var onImportAddons: () -> Unit = {}
+        get() = hub?.onImportAddons ?: field
+    private var btnImport = RectF()
+    private var btnImportInstall = RectF()
+    private var btnImportCancel = RectF()
+    private val importRemove = LinkedHashMap<String, RectF>()
+    /** each waiting replacement's Cancel (ImportedAddons.queued: "Replaces at next start") */
+    private val importUnqueue = LinkedHashMap<String, RectF>()
+    private fun importFocus(): List<RectF> = listOf(btnImport, btnImportInstall, btnImportCancel) + importUnqueue.values.toList() +
+        importRemove.values.toList()
+
+    /** the imported list's rows: each replacement waiting, each imported add-on (none = the Imported group is not shown) */
+    private fun importedRows(): Int {
+        val q = ImportedAddons.queued()
+        return q.size + importedList(q).size
+    }
+
+    /** the Import button's height (one full-width button, the user 2026-11-16: "Import addons should be a single button at the top of
+     *  the list"; not a heading's height, so the room's tests tell the two apart) */
+    private val IMPORT_BTN_H = 88f
+    /** its status line under it (a step, a result, a refusal; greyed: why) */
+    private val IMPORT_LINE_H = 44f
+
+    /** the line under the button now, or null (nothing to say) */
+    private fun importLine(): String? = ImportedAddons.status ?: if (ImportedAddons.flavorRoot() == null) "Pick the game folder first" else null
+
+    /** the confirm card's rows: each add-on found, each zip that brought none, its Install / Cancel; 0 = no card */
+    private fun importCardRows(): Int = ImportedAddons.pending?.let { p -> p.found.size + p.bad.size + 1 } ?: 0
+
+    private fun importHeight(): Float = IMPORT_BTN_H + (if (importLine() != null) IMPORT_LINE_H else 0f) +
+        importCardRows() * (ROW_H + 10f)
+
+    /** the imported list less the ones with a replacement waiting (that row stands for them) */
+    private fun importedList(q: List<ImportedAddons.Queued>): List<ImportedAddons.Imported> =
+        ImportedAddons.list().filter { a -> q.none { it.folder.equals(a.folder, true) } }
+
+    /** "340 KB" / "3 MB" */
+    private fun bytesWord(b: Long): String =
+        if (b < 1_000_000) "${((b + 999) / 1000).coerceAtLeast(1)} KB" else ThirdPartyAddons.size(((b + 999_999) / 1_000_000).toInt())
+
+    private fun armed(key: String) = addonArmed == key && SystemClock.elapsedRealtime() - addonArmedAt < ARM_MS
+
+    /** a control's place with nothing to press (a card row: the row is still a cursor stop) */
+    private fun none(box: RectF) = RectF(box.right - 16f, box.top, box.right - 16f, box.top)
+
+    private val pImportLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+
+    /** Add-ons' first block: ONE full-width Import button (the app's red button, no label or line beside it), the status line under it
+     *  when there is something to say, then the confirm card */
+    private fun drawImport(c: Canvas, top: Float): Float {
+        val root = ImportedAddons.flavorRoot()
+        val busy = ImportedAddons.busy
+        val p = ImportedAddons.pending
+        val key = importHeight()
+        if (key != importDrawnH) { importDrawnH = key; requestLayout() }
+        val r = RectF(16f, top, width - 16f, top + IMPORT_BTN_H)
+        rowHits.add(RectF(r) to "Import add-ons")
+        val on = root != null && !busy
+        UiKit.button(c, r, "Import add-ons", if (on) UiKit.Button.UP else UiKit.Button.DISABLED, waiting = busy)
+        // greyed: nothing to press, the button still a cursor stop (its row)
+        btnImport = if (on) RectF(r) else RectF(r.left, r.top, r.left, r.top)
+        var y = r.bottom
+        importLine()?.let { line ->
+            pImportLine.textSize = pSub.textSize; pImportLine.typeface = pSub.typeface; pImportLine.color = Theme.textDim
+            c.drawText(Tr.t(fit(pImportLine, line, r.width() - 40f)), r.centerX(), y + 31f, pImportLine)
+            y += IMPORT_LINE_H
+        }
+        // ---- the confirm card: each add-on found, each zip that brought none, then Install / Cancel
+        if (p != null) {
+            y -= ROW_H                                    // each row below steps ROW_H + 10 from the last one's top
+            val cardTop = y + ROW_H + 10f
+            for (f in p.found) {
+                y += ROW_H + 10f
+                val sub = if (f.refused != null) Tr.t(f.refused) else listOfNotNull(
+                    f.version?.let { Tr.t("Version $it") }, bytesWord(f.bytes),
+                    if (f.replaces) Tr.t("Replaces yours") else null,
+                    if (!f.ifaceOk) Tr.t("Made for another game version") else null).joinToString(" · ")
+                // a refused one by its folder name (the one kept), a taken one by its own title
+                row(c, y, if (f.refused != null) f.folder else f.title, sub, enabled = f.refused == null, translate = false) { box -> none(box) }
+            }
+            for (b in p.bad) {
+                y += ROW_H + 10f
+                row(c, y, b.name, Tr.t(b.why), enabled = false, translate = false) { box -> none(box) }
+            }
+            y += ROW_H + 10f
+            val n = p.taken.size
+            val can = n > 0 && !busy && root != null
+            val again = armed("import.install")
+            row(c, y, "Install these add-ons", if (n > 0) bytesWord(p.bytes) else "Nothing to install", enabled = n > 0) { box ->
+                val cancel = RectF(box.right - 16f - 200f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+                val inst = RectF(cancel.left - 16f - 220f, cancel.top, cancel.left - 16f, cancel.bottom)
+                UiKit.button(c, inst, if (again) "Tap again" else "Install",
+                    if (!can) UiKit.Button.DISABLED else if (again) UiKit.Button.DOWN else UiKit.Button.UP)
+                UiKit.button(c, cancel, "Cancel", if (busy) UiKit.Button.DISABLED else UiKit.Button.UP)
+                btnImportInstall = if (can) RectF(inst) else RectF()
+                btnImportCancel = if (busy) RectF() else RectF(cancel)
+                inst
+            }
+            // the card's edge: these rows are one question
+            pStroke.color = Theme.gold
+            c.drawRoundRect(RectF(10f, cardTop - 5f, width - 10f, y + ROW_H + 5f), 12f, 12f, pStroke)
+            y += ROW_H
+        }
+        return y
+    }
+
+    /** Add-ons' last block: the replacements waiting, then each imported add-on with its Remove */
+    private fun drawImported(c: Canvas, top: Float): Float {
+        val busy = ImportedAddons.busy
+        if (importedRows() != importDrawnRows) { importDrawnRows = importedRows(); requestLayout() }
+        if (importedRows() == 0) return top
+        var y = top - ROW_H - 10f                         // each row steps ROW_H + 10 from the last one's top
+        // ---- the replacements waiting for a start with the game closed (the user, 2026-11-16: "New now, replace next start")
+        val q = ImportedAddons.queued()
+        for (w in q) {
+            y += ROW_H + 10f
+            val sub = if (w.failed != null) Tr.t("Not replaced") else Tr.t("Replaces at next start")
+            importUnqueue[w.folder] = row(c, y, w.title, sub, enabled = w.failed == null, translate = false) { box ->
+                val r = RectF(box.right - 16f - 200f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+                UiKit.button(c, r, "Cancel", if (busy) UiKit.Button.DISABLED else UiKit.Button.UP)
+                if (busy) RectF(r.left, r.top, r.left, r.top) else r
+            }
+        }
+        // ---- the imported list: each with its Remove (twice, as Reload)
+        for (a in importedList(q)) {
+            y += ROW_H + 10f
+            val again = armed("import.remove.${a.folder}")
+            importRemove[a.folder] = row(c, y, a.title, a.version?.let { Tr.t("Version $it") } ?: a.folder, enabled = true, translate = false) { box ->
+                val r = RectF(box.right - 16f - 220f, box.centerY() - 34f, box.right - 16f, box.centerY() + 34f)
+                UiKit.button(c, r, if (again) "Tap again" else "Remove",
+                    if (busy) UiKit.Button.DISABLED else if (again) UiKit.Button.DOWN else UiKit.Button.UP)
+                if (busy) RectF(r.left, r.top, r.left, r.top) else r
+            }
+        }
+        return y + ROW_H
+    }
+
+    /** a press on Add-ons > Voice: Download (the player's own), Cancel, Delete (twice); true = it was one */
+    private fun voiceModelTap(x: Float, y: Float): Boolean {
+        for (m in VoiceModels.Model.values()) {
+            val r = voiceModelBtn[m] ?: continue
+            if (r.isEmpty || !r.contains(x, y)) continue
+            when (VoiceModels.state(m)) {
+                is VoiceModels.State.Downloading -> VoiceModels.cancel(m)
+                VoiceModels.State.Checking -> {}
+                VoiceModels.State.Ready -> {
+                    val now = SystemClock.elapsedRealtime()
+                    if (addonArmed == "voice.${m.id}" && now - addonArmedAt < ARM_MS) { addonArmed = null; VoiceModels.delete(m) }
+                    else { addonArmed = "voice.${m.id}"; addonArmedAt = now; postDelayed({ invalidate() }, ARM_MS + 50) }
+                }
+                else -> { DiagLog.event("voice", "model ${m.id} download asked in Add-ons"); VoiceModels.download(m) }
+            }
+            invalidate()
+            return true
+        }
+        return false
+    }
+
+    private var importDrawnRows = -1
+    private var importDrawnH = -1f
+
+    /** a press on Import, the card's Install / Cancel or a Remove; true = it was one */
+    private fun importTap(x: Float, y: Float): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        fun hit(r: RectF) = !r.isEmpty && r.contains(x, y)
+        when {
+            hit(btnImport) -> { onImportAddons(); return true }
+            hit(btnImportCancel) -> { addonArmed = null; ImportedAddons.cancel(); return true }
+            hit(btnImportInstall) -> {
+                // replacing a folder that is there: twice (the confirm the card asks for); only new folders: once
+                val p = ImportedAddons.pending ?: return true
+                if (p.replacesAny && !armed("import.install")) {
+                    addonArmed = "import.install"; addonArmedAt = now; postDelayed({ invalidate() }, ARM_MS + 50); return true
+                }
+                addonArmed = null; ImportedAddons.install(); return true
+            }
+        }
+        for ((folder, r) in importUnqueue) if (hit(r)) { addonArmed = null; ImportedAddons.cancelQueued(folder); return true }
+        for ((folder, r) in importRemove) if (hit(r)) {
+            if (armed("import.remove.$folder")) { addonArmed = null; ImportedAddons.remove(folder) }
+            else { addonArmed = "import.remove.$folder"; addonArmedAt = now; postDelayed({ invalidate() }, ARM_MS + 50) }
+            return true
+        }
+        return false
+    }
+
     /** a download's progress, in the game's own bar art when the kit has it: [pct] 0..100 (< 0 = waiting) */
     private fun progressBar(c: Canvas, r: RectF, pct: Int) {
         pFill.color = Theme.ink; c.drawRoundRect(r, 6f, 6f, pFill)
@@ -1691,6 +1975,8 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
 
     /** a press on an Add-ons control; true = it was one */
     private fun addonTap(x: Float, y: Float): Boolean {
+        if (voiceModelTap(x, y)) return true
+        if (importTap(x, y)) return true
         if (!addonRestart.isEmpty && addonRestart.contains(x, y)) { addonRestartAt = SystemClock.elapsedRealtime(); onRestart(); return true }
         // 2026-11-12: the Polestar quest guide's On / Off, and its Restart game / Try again
         segGuide.indexOfFirst { !it.isEmpty && it.contains(x, y) }.takeIf { it >= 0 }?.let { PolestarGuide.set(it == 0); invalidate(); return true }
@@ -1732,7 +2018,7 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
     private val PB_HEAD = 88f
 
     /** a labelled row; [control] draws the right-hand control and returns its hit box */
-    private fun row(c: Canvas, top: Float, label: String, sub: String, enabled: Boolean,
+    private fun row(c: Canvas, top: Float, label: String, sub: String, enabled: Boolean, translate: Boolean = true,
                     control: (RectF) -> RectF): RectF {
         val box = RectF(16f, top, width - 16f, top + ROW_H)
         rowHits.add(RectF(box) to label)
@@ -1741,9 +2027,11 @@ class SettingsView(context: Context, private val onReload: () -> Unit) : View(co
         val hit = control(box)
         pLabel.color = if (enabled) Theme.text else Theme.dim
         pSub.color = if (enabled) Theme.textDim else Theme.dim
-        c.drawText(Tr.t(label), box.left + 22f, box.top + 41f, pLabel)
+        // [translate] false: words that are not ours (an imported add-on's own title; its line put together from translated parts)
+        val lw = hit.left - 20f - (box.left + 22f)
+        c.drawText(if (translate) Tr.t(label) else fit(pLabel, label, lw), box.left + 22f, box.top + 41f, pLabel)
         // the subtitle never runs under the control, whatever the device font measures
-        c.drawText(Tr.t(fit(pSub, sub, hit.left - 20f - (box.left + 22f))), box.left + 22f, box.top + 75f, pSub)
+        c.drawText(if (translate) Tr.t(fit(pSub, sub, lw)) else fit(pSub, sub, lw), box.left + 22f, box.top + 75f, pSub)
         return hit
     }
 

@@ -159,6 +159,7 @@ object ThirdPartyAddons {
     private var prefs: Store? = null
     @Volatile private var app: Context? = null
     fun init(c: Context) {
+        ImportedAddons.init(c)                                  // its queued replacements go in at this object's start step
         if (prefs != null) return
         Settings.init(c)                                        // the base add-ons' choice (PolestarGuide) lives in Settings
         app = c.applicationContext
@@ -462,7 +463,8 @@ object ThirdPartyAddons {
             return applyLocked(flavorRoot, fetchSmall, by) { msg -> currentStep = msg; onStep(msg) }
         } finally { currentStep = null; applyLock.unlock() }
     }
-    private val applyLock = java.util.concurrent.locks.ReentrantLock()
+    /** one add-on move at a time: the start step, and Settings > Add-ons > Import ([ImportedAddons]) */
+    internal val applyLock = java.util.concurrent.locks.ReentrantLock()
     /** the running step's status text ("Installing add-ons: Spoken Quests..."), null between runs: a waiting caller shows it */
     @Volatile internal var currentStep: String? = null
 
@@ -517,7 +519,9 @@ object ThirdPartyAddons {
                     lines.add("$name goes in at the next start with the game closed"); log("add-ons: $name not applied: the game is running"); continue
                 }
                 onStep("Installing add-ons: $name...")
-                moveIn(a, key, p, flavorRoot)
+                // #412: a big pack (Spoken Quests: 1.5 GB, ~7 min on a Thor) says how far its unpack is (a line only when it changes)
+                var line = "Installing add-ons: $name..."
+                moveIn(a, key, p, flavorRoot) { pct -> installLine(name, pct).let { if (it != line) { line = it; onStep(it) } } }
                 val ver = a.version.takeIf { key == "core" } ?: p.tag.substringAfterLast('v')
                 lines.add("$name $ver installed")
                 log("add-ons: applied $name $ver")
@@ -529,6 +533,11 @@ object ThirdPartyAddons {
                 if (t !is Later && wanted(a, key) && !installed(a, key)) putState(a, key, state(a, key).put("failed", sig(p)).put("why", why))
             }
         }
+        // Settings > Add-ons > Import's replacements made while the game ran (the user's pick, 2026-11-16: "New now, replace next
+        // start"): this same safe point, the game closed, under this same lock
+        runCatching { ImportedAddons.applyQueued(flavorRoot, onStep) }
+            .onSuccess { it?.let { l -> lines.add(l) } }
+            .onFailure { lines.add("imported add-ons skipped (${DependencyAddons.reasonOf(it)})"); log("add-ons: imported: ${it.message}") }
         log("add-ons ($by): " + lines.joinToString("; ").ifEmpty { "nothing to do" })
         changed()
         return lines.joinToString("; ")
@@ -559,7 +568,11 @@ object ThirdPartyAddons {
     /** one WCSETUP line (the off-device tests have no android.util.Log: ignored there) */
     private fun log(line: String) { runCatching { android.util.Log.i("WCSETUP", line) } }
 
-    private fun moveIn(a: Addon, key: String, p: Pkg, flavorRoot: File) {
+    /** #412: the install step's line while a package unpacks ("Installing add-ons: Spoken Quests 42%..."); 0 and 100 say no number */
+    internal fun installLine(name: String, pct: Int): String =
+        if (pct in 1..99) "Installing add-ons: $name $pct%..." else "Installing add-ons: $name..."
+
+    private fun moveIn(a: Addon, key: String, p: Pkg, flavorRoot: File, progress: ((Int) -> Unit)? = null) {
         val iface = File(flavorRoot, "Interface")
         val addons = File(iface, "AddOns").apply { mkdirs() }
         val staging = stagingOf(flavorRoot, a, key)
@@ -575,7 +588,8 @@ object ThirdPartyAddons {
         try {
             if (!staged) {
                 if (staging.exists()) staging.deleteRecursively()             // our own leftover only
-                DependencyAddons.unpack(zipOf(p), staging, "", maxFiles = 40_000, maxBytes = p.bytes * 3 / 2 + 50_000_000)
+                DependencyAddons.unpack(zipOf(p), staging, "", maxFiles = 40_000, maxBytes = p.bytes * 3 / 2 + 50_000_000,
+                    progress = progress)
                 keepNotices(staging)
                 mark.writeText(sig(p))
             } else log("add-ons: ${a.id}-$key: the staged copy is complete, not unpacked again")
@@ -639,23 +653,42 @@ object ThirdPartyAddons {
      * from the backup, so AddOns ends as it was (the old copy whole, or nothing where there was nothing), never half new. The new
      * copy is still in its download (kept on a failure).
      */
-    private fun putBack(done: List<Pair<File, File?>>) {
+    internal fun putBack(done: List<Pair<File, File?>>) {
         for ((target, old) in done.asReversed()) {
-            target.deleteRecursively()
+            deleteTree(target)
             if (old != null) runCatching { moveDir(old, target, "the old ${target.name} could not be put back") }
                 .onFailure { log("add-ons: ${target.name}: ${it.message}: the old copy stays in the backup (${old.name})") }
         }
         if (done.isNotEmpty()) log("add-ons: the move in failed: ${done.joinToString { it.first.name }} put back as before")
     }
 
-    private fun backup(iface: File, target: File, stamp: String): File {
-        val base = "${target.name}-${DependencyAddons.installedVersion(target) ?: "unknown"}-$stamp"
-        var b = File(iface, "${DependencyAddons.BACKUP}/$base")
+    internal fun backup(iface: File, target: File, stamp: String): File {
+        // (review of the import, 2026-11-16) the .toc's Version is the add-on author's text (an imported zip's): only a plain word
+        // goes in the name, so "x/../../AddOns/WowCompanion/z" can never send the old copy anywhere but straight into the backup
+        val base = "${target.name}-${backupWord(DependencyAddons.installedVersion(target))}-$stamp"
+        val home = File(iface, DependencyAddons.BACKUP)
+        var b = File(home, base)
         var n = 2
-        while (b.exists()) b = File(b.parentFile, "$base~${n++}")         // #135: never into an older backup of the same second
-        b.parentFile?.mkdirs()
+        while (b.exists()) b = File(home, "$base~${n++}")                  // #135: never into an older backup of the same second
+        if (b.canonicalFile.parentFile != home.canonicalFile) throw IOException("the old ${target.name} could not be moved to the backup")
+        home.mkdirs()
         moveDir(target, b, "the old ${target.name} could not be moved to the backup")
         return b
+    }
+
+    /** a version as a backup-name word: letters, digits, '.', '_', '-' only, no "..", at most 40; "unknown" when nothing is left */
+    internal fun backupWord(v: String?): String {
+        val w = (v ?: "").map { if (it.isLetterOrDigit() && it.code < 128 || it == '.' || it == '_' || it == '-') it else '_' }
+            .joinToString("").replace(Regex("""\.{2,}"""), "_").trim('.').take(40)
+        return w.ifEmpty { "unknown" }
+    }
+
+    /** [f] and everything under it gone; a link is removed itself, never followed (Kotlin's deleteRecursively follows them) */
+    internal fun deleteTree(f: File): Boolean {
+        val p = f.toPath()
+        if (java.nio.file.Files.isSymbolicLink(p)) return f.delete()
+        if (f.isDirectory) f.listFiles()?.forEach { deleteTree(it) }
+        return f.delete() || !f.exists()
     }
 
     /**

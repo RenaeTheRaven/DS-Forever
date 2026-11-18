@@ -140,6 +140,9 @@ class MainActivity : ComponentActivity() {
         // emit before super so Compose DisposableEffects (which unregister
         // listeners during super.onDestroy's lifecycle transition) still fire
         if (!isChangingConfigurations) {
+            // issue #355: the window closed for good ends the game from here (XServerScreen's exit): ours, not Android's, in the
+            // game's end line ("was closed by DS Forever (...)"), and no "The game closed" note for it
+            if (isFinishing && com.jrees.wowcompanion.GameLife.closer == null) com.jrees.wowcompanion.GameLife.closer = "the app closing"
             PluviaApp.events.emit(AndroidEvent.ActivityDestroyed)
 
             // if exit() didn't run (listener already unregistered, race, etc.)
@@ -161,7 +164,11 @@ class MainActivity : ComponentActivity() {
             val app = applicationContext
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 val am = app.getSystemService(android.app.ActivityManager::class.java)
-                if (am?.appTasks.isNullOrEmpty() && !PluviaApp.keepAlive) android.os.Process.killProcess(android.os.Process.myPid())
+                if (am?.appTasks.isNullOrEmpty() && !PluviaApp.keepAlive) {
+                    // issue #355: Android records this kill as "stopped by a signal" (9); the mark says it was ours (LastRun.ownKill)
+                    com.jrees.wowcompanion.LastRun.ownExit(app)
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
             }, 1_500L)
         }
 
@@ -223,18 +230,19 @@ class MainActivity : ComponentActivity() {
     // DS Forever (the user 2026-10-09: "When I press the Home button on my controller, sometimes the top window minimizes but the
     // bottom window stays"): the bottom screen goes with the top on EVERY way out, not only onPause. With two screens Android can keep
     // this activity resumed while another display has the focus, and a Home press then reaches us as onUserLeaveHint / onStop only
+    // #384 review: hideFor = this activity's own DS Forever only (after a Restart the new activity's is up before this one stops)
     override fun onUserLeaveHint() {
-        com.jrees.wowcompanion.fork.DsForeverScreen.current?.hide()
+        com.jrees.wowcompanion.fork.DsForeverScreen.hideFor(this)
         super.onUserLeaveHint()
     }
 
     override fun onStop() {
-        com.jrees.wowcompanion.fork.DsForeverScreen.current?.hide()
+        com.jrees.wowcompanion.fork.DsForeverScreen.hideFor(this)
         super.onStop()
     }
 
     override fun onPause() {
-        com.jrees.wowcompanion.fork.DsForeverScreen.current?.hide()
+        com.jrees.wowcompanion.fork.DsForeverScreen.hideFor(this)
         PluviaApp.isActivityInForeground = false
         if (hasReadyGameLifecycleState("pause")) {
             when {

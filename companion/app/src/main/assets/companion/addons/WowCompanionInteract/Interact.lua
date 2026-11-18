@@ -97,7 +97,7 @@ local S, CALL = WC.S, WC.CALL
 
 -- i150 (int/1429): combat-nav i144-i148 (combat-proof input, the leave cells, pop-ups with the pad) + accept-space i144-i145
 -- (Make Space only when the quest gives an item, QuestieDB first)
-local IV = "i160"     -- bump on every change; i160 (issue #233, a player at a vendor: "I cannot compare whether an item is stronger or weaker than the one I have equipped, or see its sell value"; the user, 2026-11-13: "yes on the triage things"): THE SELL PRICE. The game draws an item's "Sell Price:" as coins from its own tooltip line (C_TooltipInfo line type SellPrice: the copper in `price`, no text of its own - TooltipDataRules.SellPrice -> GameTooltip_OnTooltipAddMoney), and linesOf kept only lines with a left text, so every tooltip we sent (vendors, the Bags room, loot, chat links) lost it. Now that line is kept as { t = the game's SELL_PRICE word + ":", m = the copper } and the app draws the coins (TipStack -> UiKit.TipLine.money); read-only, nothing else changed. Review of i160: a WORN piece's tooltip (the compare entries' lines) leaves it out, as the game's own shopping tooltip does (TooltipDataRules.SellPrice: only when not tooltip.isShopping); i159 (bags-nocmp1, the user 2026-11-13: "the bag items are still showing currently equipped, I dont want to see that, but I do want to see the stat changes at the bottom of that weapon if I equip it"): N.tipOf(key, opt) - opt.nw (the Bags room only, through WC.tipOf) leaves the WORN pieces' tooltips unread: each compare entry carries only the game's stat-change lines (the blank, the header, the changes; dn as before) and nw = true, and the app takes a worn piece's own text from the bags document's equipped rows (read once per gear change) for the Compare sheet; every other caller (vendors, loot rolls, chat links) is unchanged; i158 (bags-act2, review of i157; the user's pick 2026-11-13: "a two-hander compares vs main hand + off hand together"): a build that ignores the paired GetItemComparisonDelta's extra arguments answers the main hand's changes alone - the same lines as the plain form are taken as "not given", so the app counts against both hands instead of labelling the main hand's as the pair's; nothing else changed; i157 (bags-act1, the user's pick 2026-11-13: "a two-hander compares vs main hand + off hand together; empty slot shows all gains"): N.tipOf's compare - a two-hander shows BOTH worn hands, its stat changes against the pair (the game's paired GetItemComparisonDelta; the off hand's entry pair = 16, the main hand's with = 17), an off-hand piece while a two-hander is worn compares with that two-hander, and each compare entry says how many of its last lines are the game's changes (dn) so the app counts its own only where the game gave none; nothing else changed; i156 (bags-tip1, the user 2026-11-13: "the tool tip shows one thing for a half second and has to load the rest"): N.tipOf reads an item's tooltip ONCE - the compare's item (its guid / link) comes from that same read, it was read a second time for it (bags_design_1113.md fix 3); nothing else changed; i155 (issue #88, 1.0.21: "Unable to post items on auctionhouse. button is gray on ever item i try to post"): DIAGNOSTICS ONLY - the cause is not in the report (its summary keeps numbers one level deep, so the Sell form was invisible); the auction document now carries the Sell form in numbers (tn the tab, sb sellable stacks, sw what stops Post: AH.sellWhy's code, sst the post status, sp / sq / sbo / sauto), no behaviour change; i154 (issue #50, 1.0.16: "the ingame mailbox interface itemselection has a problem whn you try to put multiple items into a single mail its very dificult to select the items"): SEND MAIL'S BAG LIST STAYS UP for the next attachment, as the game's own bags do (each right-click attaches one more): after an item goes onto the letter the list closes only when the letter is full; the cursor moves on to the next item that can still go (the one just attached is locked in its slot); when the list closes (B, Close, full) the cursor is on the letter's attachments ("+" or the last one), not back on the tab row; i153 (#183, 1.0.25: "Not able to send messages in chat/guild/whisper/party/etc"; its log had no Interact document and every hold "no controller capture"): WC.interactStage marks how far this file ran (top / guard / cap / end) and WC.interactIV its version, so Chat.lua's login probe can tell "never ran" from "stopped halfway" (nothing else changed); i152 (router-heal): THE ROUTER NEVER STAYS IN ROOM MODE OUT OF A FIGHT (the user, 2026-11-12: "I died and then my jump input just stopped working", "its not just a, inputs work like I can see the button pushing but its not actually doing anything in game"): the player died in a fight, the app's ENTER for the DEATH pop-up landed just AFTER PLAYER_REGEN_ENABLED, its FLIP set wc-mode "room" on all 8 router buttons and N.fightEntered (out of combat) left it - every routed press went to our empty sink until the next fight's end. Now an ENTER out of a fight (N.fight nil: the pull's pre-lockdown window keeps its room mode) clears it at once, and N.modeHeal clears any out-of-fight room mode at every document, PLAYER_REGEN_ENABLED, PLAYER_DEAD / ALIVE / UNGHOST / ENTERING_WORLD and a 1 s watchdog (doc.modeFix counts them); the document always reports doc.routerMode, doc.routerLeave (no fight, no holder) and doc.dead, so the app's reconciler taps LEAVE itself and never ENTERs for a dead player's DEATH pop-up alone; i151 (b-home): B GOES HOME FROM EVERY ROOM IN A FIGHT (the user, 2026-11-12: "ALL ROOMS SHOULD ALWAYS GO HOME WITH B EVEN IN COMBAT"; on 1429 B in the Bags room did nothing after the pull): a room whose own B at its top level lets go through capture.release(id, "B") (Bags, Character, the Spellbook / Talents / Controller book, Calendar, Group Finder, Social, Quests) was answered "tap leave" in a fight and nobody told the app, so Bags stayed on screen holding the pad; now that release asks the app to go Home (doc.fightHome = { n, who }; nothing written, the room still holds until the app's LEAVE tap, which closes its window as before); i150: int/1429, both above; i145 (accept-space): (the user, 2026-11-11, i144 follow-up) QuestieDB is asked BEFORE the starter shortcut: the server checks room for the item a quest hands out before it uses up the starter, so an item-begun quest that hands out ANOTHER item still opens Make Space first with full bags (LOOT.acceptNeedsRoom); i144 (accept-space): ACCEPT WITH FULL BAGS ASKS FOR SPACE ONLY WHEN THE QUEST GIVES AN ITEM (the user, 2026-11-11: "Accepting that quest with a full bag asked me to delete an Item but I didn't actually need more space"; [Ripped Missive] started it): a quest begun from a bag item frees that item's slot, so it is accepted at once; otherwise QuestieDB (when installed) says whether the quest hands out an item (its sourceItemId); unknown = Make Space first as before (LOOT.acceptNeedsRoom); i148 (combat-nav): COMBAT NAV REVIEW FIXES (the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): a stray ENTER's "app" holder ends with the fight (released at PLAYER_REGEN_ENABLED, never re-bound); Step 5a's "left behind" looks only at the held window's own frames, counts a fading loot window as closed and looks again every half second of the fight (N.behindCheck), the shields of what closed go at once; a fight that began in the game menu stays the game's to its end (no ENTER, doc.gmFight); while the app shows a pop-up as its box in a fight, A and B are the app's alone (Dialogs d28 WC.dialogs.mirrored); i147: COMBAT NAV STEP 5 (combat_nav_design.md; the user, 2026-11-11: "If I am looting ... my dpad should not stop working"): 5a the fight's leave never unhides a window it could not close (hidden by alpha, the shields kept, N.release waits) until PLAYER_REGEN_ENABLED, when the out-of-combat path takes it back (an NPC window held again, anything else released); 5c a pre-aimed leave per game window (WowCompanionRoomLeave1..7 on Dialogs d27's cells: loot, map, gossip, quest, merchant, trainer, bank; aimed out of combat at each window's own close) and doc.fightLeave names the held window's own one (an npc hold, a room taken mid-fight) - the pull's generic leave stays with the holder it was aimed for (N.fcFor); i146: COMBAT NAV STEP 4 (combat_nav_design.md; the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): B in room mode goes to our sink as PAD2 like every other key (wc-room-dest), so the app's own B chain decides; LT + RT + B is the secure escape (wc-esc = the leave button, PadMap m135); B at a held window's top level in a fight never runs the game's close from our code - it steps doc.fightBack and the app taps the LEAVE; doc.npcLeft says a window left with B wants the pad no more; i145: COMBAT NAV STEP 3 (combat_nav_design.md; the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): the document reports who has the pad in a fight (fightMode "room" / "game", read back from the router's wc-mode) and the ENTER cell always (fightEnter) for the app's reconciler (PadOwnerSync); room to room in a fight is an IN-PLACE SWAP for every guest holder (the old one lost "taken", nothing written, its window kept hidden by alpha); a stray ENTER holds as the guest "app" (keys swallowed, never the orphan-NPC leave); i144: COMBAT NAV STEP 2 (combat_nav_design.md; the user, 2026-11-11: "everything on the bottom screen breaks in combat"): every pull keeps what holds - a room whatever the Hub's NPC-windows bit, an "npc" hold with it - and ONLY the game menu open at the pull lets go (its lock: doc.gmLock while it shows); the fight hold is built (F.make) and armed (N.armIdle) out of combat at every document, so a /reload in a fight blocks nothing and arms at its end; loot in a fight is the bottom screen's whatever the loot-on-top switch (LOOT.top reads off in the lockdown) and the NPC-windows bit (N.fightLoot); the fight's end gives an "npc" holder its bindings and the grab back (N.check); i143: A QUEST WINDOW ANOTHER ADD-ON CLOSED NEVER STICKS (the user, 2026-11-11: "polestar forced me into accepting a quest ... now my bottom screen is stuck with a blank quest page that wont close"; the log: quest stage "detail", id 0, title "" every 15 s): Polestar accepts INSIDE the game's QUEST_DETAIL, its nested QUEST_FINISHED reached us before our own QUEST_DETAIL, so the window read open forever with nothing in it, and B (Decline: "no quest id") could not close it. Now the game's own quest state decides: no quest (id 0, no title; a greeting with nothing offered) = closed, whatever the order of the events (LOOT.questGone), the open events skip a window already gone, and B on such a window just closes it; i142: PET TRAINING SELECTS THROUGH THE GAME'S OWN ROW (the user, 2026-11-10: "its not doing anything when I train my pet"; the log 17:40: five selects counted, five itrain taps sent, nothing learned - the game's window never took the selection, so its Train button stayed off): the skill's row in the game's trainer list is clicked by a secure "click" cell (itrain col 1) before the Train button (col 0), and a pet skill's cost is checked against the pet's TRAINING POINTS; i141: PET TRAINING by the game's own Train button (issue 90: "Pet training causes an addon error and requires a restart": BuyTrainerService from our code is FORBIDDEN at a pet trainer) - "train <i>" only selects there, the secure row "itrain" clicks ClassTrainerTrainButton; i140: B on an NPC window is a SECURE click of the window's own close button (N.closeAim; ACT.close's CloseMail / CloseLoot ... from our code tainted the controller: the loot-close SetPreferredGamepadInteractTarget error); i139: the trade's bags without soulbound items; the seventh slot opens your soulbound items (equipped first) to be enchanted; the app shows it, so a stale addon is visible. i138: the trade window's controller (the user on test15): X = Trade, Y = the gold, B = Cancel, the left stick moves the cursor, the right stick scrolls the bags; no Trade / Cancel stops; i137: THE TRADE WINDOW (N.trd)
+local IV = "i165"     -- bump on every change; i165 THE 11-16 TEST BUILD MERGE, part 3: feat/big-voice tagged i161 as well (= i161v here, voice on the mail and auction boxes), kept on top of i164; i161v (voice1, the user 2026-11-16: voice to text in the message box and ALL search boxes, "A opens the keyboard, X opens our own voice prompt"; the pick: "Every box that takes words ... auction search, mail subject and letter ... Not numbers, mail 'To' names"): X on Send Mail's Subject and letter and on the auction house's search box opens the SAME field as A (ACT.mailedit / ACT.ahedit, the keyboard's field from Chat.lua) with a voice flag, and doc.kbd says v = 1 so the app's keyboard opens on its voice page; the words are copied into the field by the app as typed ones are. Mail's To, the money and the level boxes keep X as before; no game call is added; i164 THE 11-16 TEST BUILD MERGE, part 2: feat/big-disenchant tagged i161 as well (= i161d here, the Disenchant grid's capture spec.lootPass), kept with i161c's spec.lootUnder / resumed: capture v21 carries both; i161d (review of i161d, before release: the auto-loot flag is LOOT.autoOn - as LOOT.auto it overwrote Make Space's auto-loot function of that name at the first LOOT_OPENED, so its delete-then-loot threw; a take made in a fight keeps spec.lootPass too); i161d (bags-de1, the Disenchant grid; the user's list 2026-11-16: "It stays open after each one; B closes it", and their pick 3a: "With your Auto Loot on, the mats go straight to your bags and a small strip shows what you got. With it off, our loot pop-up comes up ... then the grid comes back"): capture v21 spec.lootPass - a holder that asks (the Bags room's Disenchant grid) KEEPS the pad through an AUTO loot window (LOOT_OPENED's autoLoot): no guestLost, no pop-up in the document (the game's window stays dimmed while Auto Loot takes the mats); a loot window still open LOOT.PASS_S after it opened (full bags) takes the ordinary path (the pop-up, Make Space). A loot that is not auto, or any holder that did not ask, is unchanged; nothing written, no Blizzard call; i163 THE 11-16 TEST BUILD MERGE: the 1.0.33 merge (i162m) and feat/loot-popups (i162p) both tagged i162, both kept; i162p (loot-pop, the user 2026-11-16: "I have also noticed that the loot roll window is delayed and buggy, sometimes making me press the button twice to move on or even just taking like 2 second after accepting an input to move on"): a NEW roll's cells are in its very FIRST dialogs document (WC.rollCells gives a roll without cells its cells at once, LOOT.rollCellsFor: START_LOOT_ROLL looked at the dialogs a frame before this file's own document gave the roll its cells, so a touch in that gap found "no tap cell" and had to be made again); the cells skip a roll the player answered (Dialogs d34's WC.dialogs.rolled) as Dialogs' list does, so the two count the same four; ACT.roll refuses a roll already answered ("already rolled": a second press never calls RollOnLoot again); i162m THE 1.0.33 TEST BUILD MERGE (code 1475): feat/wk-containers and fix/wk-bufftips both tagged i161, both kept (capture v21, a loot window over its own room = i161c; the tooltip-hold counts for Trail tt4 = i161t); i161c (wk-containers; the user, 2026-11-16: "opening containers from my bags is a little cluncky, there is not a button although weirdly x does work to open them, it opens the loot menu back in the home room, it should just open the loot menu inside of the bags and then keep the player inside of the bag room."): CAPTURE v21, A LOOT WINDOW OVER ITS OWN ROOM. A room whose spec says the loot is its own (spec.lootUnder(), Bags: a bag item of its own opened a moment ago) is SUSPENDED under the loot window instead of lost: its windows stay hidden, its keys are the loot window's (our sink, its extra keys back to the game), the document says under = the room, and when the loot window closes (looted, B, walked away) the room RESUMES exactly as it was (rel by "resume", spec.resumed("loot"); never "B", so the app stays in the room). Out of a fight only: a fight that starts while it is suspended lets the room go as before (lost "npc"), and a loot window opening in a fight is today's; a waiting take waits on behind the resumed room (an overlay goes over it); the room letting go meanwhile keeps the loot window hidden. Nothing new is called in the game. Review of i161 (the user's words above: "keep the player inside of the bag room"): (1) a take waiting at the resume no longer WINS it (the room told lost "taken", the app sent Home): N.wait does not say when it queued, so a pop-up already waiting behind Bags before the box was opened sent the player Home after every loot - it now waits on behind the resumed room, as v20's resume leaves it; (2) THE DOUBLE B: the loot window's B is our secure close acting on the PRESS (ActionButtonUseKeyDown), so a resume before that B's release handed the release to the room as its own B (Bags left, Home): N.release marks it (N.resumeEat) and the frame / the binding route hand that one release on as its press went (N.resumeEaten), never to the room; nothing else changed; i161t (Trail tt4; the user, 2026-11-16: "tooltips for buffs are still popping up on the top screen even though they are off"): proof.tipc.st = WC.tips.stats(), the counts of what each tooltip hold caught (adopted frames, type hooks on, catches at show / every frame / layout / fillers / type hooks, hover shields up, the last frame a per-frame hold caught) - read only, nothing else changed; i160 (issue #233, a player at a vendor: "I cannot compare whether an item is stronger or weaker than the one I have equipped, or see its sell value"; the user, 2026-11-13: "yes on the triage things"): THE SELL PRICE. The game draws an item's "Sell Price:" as coins from its own tooltip line (C_TooltipInfo line type SellPrice: the copper in `price`, no text of its own - TooltipDataRules.SellPrice -> GameTooltip_OnTooltipAddMoney), and linesOf kept only lines with a left text, so every tooltip we sent (vendors, the Bags room, loot, chat links) lost it. Now that line is kept as { t = the game's SELL_PRICE word + ":", m = the copper } and the app draws the coins (TipStack -> UiKit.TipLine.money); read-only, nothing else changed. Review of i160: a WORN piece's tooltip (the compare entries' lines) leaves it out, as the game's own shopping tooltip does (TooltipDataRules.SellPrice: only when not tooltip.isShopping); i159 (bags-nocmp1, the user 2026-11-13: "the bag items are still showing currently equipped, I dont want to see that, but I do want to see the stat changes at the bottom of that weapon if I equip it"): N.tipOf(key, opt) - opt.nw (the Bags room only, through WC.tipOf) leaves the WORN pieces' tooltips unread: each compare entry carries only the game's stat-change lines (the blank, the header, the changes; dn as before) and nw = true, and the app takes a worn piece's own text from the bags document's equipped rows (read once per gear change) for the Compare sheet; every other caller (vendors, loot rolls, chat links) is unchanged; i158 (bags-act2, review of i157; the user's pick 2026-11-13: "a two-hander compares vs main hand + off hand together"): a build that ignores the paired GetItemComparisonDelta's extra arguments answers the main hand's changes alone - the same lines as the plain form are taken as "not given", so the app counts against both hands instead of labelling the main hand's as the pair's; nothing else changed; i157 (bags-act1, the user's pick 2026-11-13: "a two-hander compares vs main hand + off hand together; empty slot shows all gains"): N.tipOf's compare - a two-hander shows BOTH worn hands, its stat changes against the pair (the game's paired GetItemComparisonDelta; the off hand's entry pair = 16, the main hand's with = 17), an off-hand piece while a two-hander is worn compares with that two-hander, and each compare entry says how many of its last lines are the game's changes (dn) so the app counts its own only where the game gave none; nothing else changed; i156 (bags-tip1, the user 2026-11-13: "the tool tip shows one thing for a half second and has to load the rest"): N.tipOf reads an item's tooltip ONCE - the compare's item (its guid / link) comes from that same read, it was read a second time for it (bags_design_1113.md fix 3); nothing else changed; i155 (issue #88, 1.0.21: "Unable to post items on auctionhouse. button is gray on ever item i try to post"): DIAGNOSTICS ONLY - the cause is not in the report (its summary keeps numbers one level deep, so the Sell form was invisible); the auction document now carries the Sell form in numbers (tn the tab, sb sellable stacks, sw what stops Post: AH.sellWhy's code, sst the post status, sp / sq / sbo / sauto), no behaviour change; i154 (issue #50, 1.0.16: "the ingame mailbox interface itemselection has a problem whn you try to put multiple items into a single mail its very dificult to select the items"): SEND MAIL'S BAG LIST STAYS UP for the next attachment, as the game's own bags do (each right-click attaches one more): after an item goes onto the letter the list closes only when the letter is full; the cursor moves on to the next item that can still go (the one just attached is locked in its slot); when the list closes (B, Close, full) the cursor is on the letter's attachments ("+" or the last one), not back on the tab row; i153 (#183, 1.0.25: "Not able to send messages in chat/guild/whisper/party/etc"; its log had no Interact document and every hold "no controller capture"): WC.interactStage marks how far this file ran (top / guard / cap / end) and WC.interactIV its version, so Chat.lua's login probe can tell "never ran" from "stopped halfway" (nothing else changed); i152 (router-heal): THE ROUTER NEVER STAYS IN ROOM MODE OUT OF A FIGHT (the user, 2026-11-12: "I died and then my jump input just stopped working", "its not just a, inputs work like I can see the button pushing but its not actually doing anything in game"): the player died in a fight, the app's ENTER for the DEATH pop-up landed just AFTER PLAYER_REGEN_ENABLED, its FLIP set wc-mode "room" on all 8 router buttons and N.fightEntered (out of combat) left it - every routed press went to our empty sink until the next fight's end. Now an ENTER out of a fight (N.fight nil: the pull's pre-lockdown window keeps its room mode) clears it at once, and N.modeHeal clears any out-of-fight room mode at every document, PLAYER_REGEN_ENABLED, PLAYER_DEAD / ALIVE / UNGHOST / ENTERING_WORLD and a 1 s watchdog (doc.modeFix counts them); the document always reports doc.routerMode, doc.routerLeave (no fight, no holder) and doc.dead, so the app's reconciler taps LEAVE itself and never ENTERs for a dead player's DEATH pop-up alone; i151 (b-home): B GOES HOME FROM EVERY ROOM IN A FIGHT (the user, 2026-11-12: "ALL ROOMS SHOULD ALWAYS GO HOME WITH B EVEN IN COMBAT"; on 1429 B in the Bags room did nothing after the pull): a room whose own B at its top level lets go through capture.release(id, "B") (Bags, Character, the Spellbook / Talents / Controller book, Calendar, Group Finder, Social, Quests) was answered "tap leave" in a fight and nobody told the app, so Bags stayed on screen holding the pad; now that release asks the app to go Home (doc.fightHome = { n, who }; nothing written, the room still holds until the app's LEAVE tap, which closes its window as before); i150: int/1429, both above; i145 (accept-space): (the user, 2026-11-11, i144 follow-up) QuestieDB is asked BEFORE the starter shortcut: the server checks room for the item a quest hands out before it uses up the starter, so an item-begun quest that hands out ANOTHER item still opens Make Space first with full bags (LOOT.acceptNeedsRoom); i144 (accept-space): ACCEPT WITH FULL BAGS ASKS FOR SPACE ONLY WHEN THE QUEST GIVES AN ITEM (the user, 2026-11-11: "Accepting that quest with a full bag asked me to delete an Item but I didn't actually need more space"; [Ripped Missive] started it): a quest begun from a bag item frees that item's slot, so it is accepted at once; otherwise QuestieDB (when installed) says whether the quest hands out an item (its sourceItemId); unknown = Make Space first as before (LOOT.acceptNeedsRoom); i148 (combat-nav): COMBAT NAV REVIEW FIXES (the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): a stray ENTER's "app" holder ends with the fight (released at PLAYER_REGEN_ENABLED, never re-bound); Step 5a's "left behind" looks only at the held window's own frames, counts a fading loot window as closed and looks again every half second of the fight (N.behindCheck), the shields of what closed go at once; a fight that began in the game menu stays the game's to its end (no ENTER, doc.gmFight); while the app shows a pop-up as its box in a fight, A and B are the app's alone (Dialogs d28 WC.dialogs.mirrored); i147: COMBAT NAV STEP 5 (combat_nav_design.md; the user, 2026-11-11: "If I am looting ... my dpad should not stop working"): 5a the fight's leave never unhides a window it could not close (hidden by alpha, the shields kept, N.release waits) until PLAYER_REGEN_ENABLED, when the out-of-combat path takes it back (an NPC window held again, anything else released); 5c a pre-aimed leave per game window (WowCompanionRoomLeave1..7 on Dialogs d27's cells: loot, map, gossip, quest, merchant, trainer, bank; aimed out of combat at each window's own close) and doc.fightLeave names the held window's own one (an npc hold, a room taken mid-fight) - the pull's generic leave stays with the holder it was aimed for (N.fcFor); i146: COMBAT NAV STEP 4 (combat_nav_design.md; the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): B in room mode goes to our sink as PAD2 like every other key (wc-room-dest), so the app's own B chain decides; LT + RT + B is the secure escape (wc-esc = the leave button, PadMap m135); B at a held window's top level in a fight never runs the game's close from our code - it steps doc.fightBack and the app taps the LEAVE; doc.npcLeft says a window left with B wants the pad no more; i145: COMBAT NAV STEP 3 (combat_nav_design.md; the user, 2026-11-11: "If I am in combat and press B I should be able to fully navigate everything like normal"): the document reports who has the pad in a fight (fightMode "room" / "game", read back from the router's wc-mode) and the ENTER cell always (fightEnter) for the app's reconciler (PadOwnerSync); room to room in a fight is an IN-PLACE SWAP for every guest holder (the old one lost "taken", nothing written, its window kept hidden by alpha); a stray ENTER holds as the guest "app" (keys swallowed, never the orphan-NPC leave); i144: COMBAT NAV STEP 2 (combat_nav_design.md; the user, 2026-11-11: "everything on the bottom screen breaks in combat"): every pull keeps what holds - a room whatever the Hub's NPC-windows bit, an "npc" hold with it - and ONLY the game menu open at the pull lets go (its lock: doc.gmLock while it shows); the fight hold is built (F.make) and armed (N.armIdle) out of combat at every document, so a /reload in a fight blocks nothing and arms at its end; loot in a fight is the bottom screen's whatever the loot-on-top switch (LOOT.top reads off in the lockdown) and the NPC-windows bit (N.fightLoot); the fight's end gives an "npc" holder its bindings and the grab back (N.check); i143: A QUEST WINDOW ANOTHER ADD-ON CLOSED NEVER STICKS (the user, 2026-11-11: "polestar forced me into accepting a quest ... now my bottom screen is stuck with a blank quest page that wont close"; the log: quest stage "detail", id 0, title "" every 15 s): Polestar accepts INSIDE the game's QUEST_DETAIL, its nested QUEST_FINISHED reached us before our own QUEST_DETAIL, so the window read open forever with nothing in it, and B (Decline: "no quest id") could not close it. Now the game's own quest state decides: no quest (id 0, no title; a greeting with nothing offered) = closed, whatever the order of the events (LOOT.questGone), the open events skip a window already gone, and B on such a window just closes it; i142: PET TRAINING SELECTS THROUGH THE GAME'S OWN ROW (the user, 2026-11-10: "its not doing anything when I train my pet"; the log 17:40: five selects counted, five itrain taps sent, nothing learned - the game's window never took the selection, so its Train button stayed off): the skill's row in the game's trainer list is clicked by a secure "click" cell (itrain col 1) before the Train button (col 0), and a pet skill's cost is checked against the pet's TRAINING POINTS; i141: PET TRAINING by the game's own Train button (issue 90: "Pet training causes an addon error and requires a restart": BuyTrainerService from our code is FORBIDDEN at a pet trainer) - "train <i>" only selects there, the secure row "itrain" clicks ClassTrainerTrainButton; i140: B on an NPC window is a SECURE click of the window's own close button (N.closeAim; ACT.close's CloseMail / CloseLoot ... from our code tainted the controller: the loot-close SetPreferredGamepadInteractTarget error); i139: the trade's bags without soulbound items; the seventh slot opens your soulbound items (equipped first) to be enchanted; the app shows it, so a stale addon is visible. i138: the trade window's controller (the user on test15): X = Trade, Y = the gold, B = Cancel, the left stick moves the cursor, the right stick scrolls the bags; no Trade / Cancel stops; i137: THE TRADE WINDOW (N.trd)
 
 local function say(s)
     if DEFAULT_CHAT_FRAME then DEFAULT_CHAT_FRAME:AddMessage("|cffffd100WowCompanion|r " .. s) end
@@ -1284,6 +1284,38 @@ local GUARD = 0.5           -- seconds: no vendor action this soon after the win
 local ROLL_MAX = 4
 local HEAL = {}                 -- the self-heal cell's column (assignSlots sits above `local N`)
 local ROLLCELLS = {}            -- rollID -> { need, greed, pass, de, transmog } cells (Dialogs.lua: WC.rollCells)
+-- i162 (loot-pop): one roll's cells ([slot] = assignSlots' own, which marks them present; none = the pad's own slotFor, for a roll the
+-- dialogs read before this file's next document); nil when the game no longer offers the roll
+function LOOT.rollCellsFor(id, slot)
+    slot = slot or function(ns, key)
+        local ok, col = pcall(WC.pad.slotFor, ns, key)
+        if ok then return col end
+    end
+    local r = R(function() return GetLootRollItemInfo(id) end)
+    if not (r and real(r[2])) then return nil end
+    local c = { pass = slot("isell", "roll " .. id .. " pass") }
+    if PB(r[6]) then c.need = slot("isell", "roll " .. id .. " need") end
+    if PB(r[7]) then c.greed = slot("isell", "roll " .. id .. " greed") end
+    if PB(r[8]) then c.de = slot("isell", "roll " .. id .. " de") end
+    if PB(r[13]) then c.transmog = slot("isell", "roll " .. id .. " transmog") end
+    ROLLCELLS[id] = c
+    return c
+end
+-- i162: the rolls that carry cells: the first ROLL_MAX the player has not answered (Dialogs d34 lists the same ones)
+function LOOT.openRolls()
+    local out = {}
+    local okIds, ids = CALL(function() return GetActiveLootRollIDs() end)
+    if not (okIds and type(ids) == "table") then return out end
+    local rolled = type(WC.dialogs) == "table" and type(WC.dialogs.rolled) == "function" and WC.dialogs.rolled or nil
+    for _, id in ipairs(ids) do
+        id = TN(function() return id end)
+        if id and not (rolled and rolled(id)) then
+            out[#out + 1] = id
+            if #out >= ROLL_MAX then break end
+        end
+    end
+    return out
+end
 -- THE GUILD CHARTER (the user, 2026-10-09: "Yes, next"): the game's PetitionFrame, on PETITION_SHOW. What its own window shows
 -- (read from the client's petitionframe.lua): the charter's title, the guild master, the instructions, the signatures up to the
 -- minimum ("Not yet signed" after them); Sign (not the originator), Request Signature + Rename (the originator). Its buttons are
@@ -1359,23 +1391,7 @@ local function assignSlots(doc)
     HEAL.col = slot("iact", "release npc")
     -- LOOT ROLLS: one cell per roll the game allows, on isell (the vendor's sell list and a roll seldom meet)
     ROLLCELLS = {}
-    local okIds, ids = CALL(function() return GetActiveLootRollIDs() end)
-    if okIds and type(ids) == "table" then
-        for k, id in ipairs(ids) do
-            id = TN(function() return id end)
-            if id and k <= ROLL_MAX then
-                local r = R(function() return GetLootRollItemInfo(id) end)
-                if r and real(r[2]) then
-                    local c = { pass = slot("isell", "roll " .. id .. " pass") }
-                    if PB(r[6]) then c.need = slot("isell", "roll " .. id .. " need") end
-                    if PB(r[7]) then c.greed = slot("isell", "roll " .. id .. " greed") end
-                    if PB(r[8]) then c.de = slot("isell", "roll " .. id .. " de") end
-                    if PB(r[13]) then c.transmog = slot("isell", "roll " .. id .. " transmog") end
-                    ROLLCELLS[id] = c
-                end
-            end
-        end
-    end
+    for _, id in ipairs(LOOT.openRolls()) do LOOT.rollCellsFor(id, slot) end     -- i162: the rolls not answered yet
     -- capture v5: the bar's Select listener, switched on / off by the app (Home's bar selector)
     local selOn, selOff = slot("iact", "sel on"), slot("iact", "sel off")
     -- r-loot-on-top: Home > Settings' switch (HomeLootSwitch); `top` is the add-on's word, the row shows it
@@ -1392,7 +1408,14 @@ local function assignSlots(doc)
         if selOn and selOff then doc.proof.selc = { on = selOn, off = selOff } end
         if ltOn and ltOff then doc.proof.lootc = { on = ltOn, off = ltOff, top = LOOT.top() } end
         if arOn and arOff and type(WC.rings) == "table" then doc.proof.ringc = { on = arOn, off = arOff, show = WC.rings.wanted() and true or false } end
-        if tpOn and tpOff and type(WC.tips) == "table" then doc.proof.tipc = { on = tpOn, off = tpOff, hide = WC.tips.on and true or false } end
+        if tpOn and tpOff and type(WC.tips) == "table" then
+            doc.proof.tipc = { on = tpOn, off = tpOff, hide = WC.tips.on and true or false }
+            -- i161 (Trail tt4): what each tooltip hold caught, so a device run says which path a tooltip came back on
+            if type(WC.tips.stats) == "function" then
+                local okS, st = pcall(WC.tips.stats)
+                if okS and type(st) == "table" then doc.proof.tipc.st = st end
+            end
+        end
         if cpOn and cpOff and type(WC.compass) == "table" then
             doc.proof.compc = { on = cpOn, off = cpOff, show = WC.compass.wanted() and true or false, why = WC.compass.why, v = WC.compass.V }
             if ccOn and ccOff and WC.compass.camWanted then
@@ -2393,7 +2416,7 @@ local function buildDoc()
     -- 1.0.8: a field is being typed with the app's Chat keyboard (N.kbdOpen): which one, and its value when it opened
     if N.kbd then
         if (TN(function() return GetTime() end) or 0) - (N.kbdAt or 0) > N.KBD_TTL then N.kbdClose()
-        else doc.kbd = { name = N.kbd, text = N.kbdText, max = N.kbdMax } end
+        else doc.kbd = { name = N.kbd, text = N.kbdText, max = N.kbdMax, v = N.kbdV and 1 or nil } end      -- i161: v = voice
     end
     if isOpen("gossip") then doc.gossip = collectGossip() end
     if isOpen("quest") and questStage then doc.quest = collectQuest() end
@@ -2414,7 +2437,8 @@ local function buildDoc()
     if N.spk.on() then doc.spoken = { close = N.spk.close, accept = N.spk.accept } end     -- 1.0.9: Spoken is loaded
     if WINDOWS.taxi and isOpen("taxi") then doc.taxi = collectTaxi() end
     if WINDOWS.bank and isOpen("bank") then doc.bank = collectBank() end
-    if WINDOWS.loot and isOpen("loot") then
+    -- i161: an auto loot the holder keeps the pad through (spec.lootPass) is no pop-up of ours
+    if WINDOWS.loot and isOpen("loot") and not N.lootPassAt then
         doc.loot = collectLoot()
         -- b-loot-flash: which path hid the game's window first (show / play / early / doc), why not (no), how many shows were heard
         local d = N.lootDiag
@@ -2436,11 +2460,14 @@ local function buildDoc()
     if N.sync then N.sync(open, doc) end
     if N.grantWait then N.grantWait() end       -- v11: the queued take, once nobody holds
     doc.rel = N.rel
+    if N.lootPassN then doc.lootPass = { n = N.lootPassN, late = N.lootPassLateN } end      -- i161: auto loots a holder kept the pad through
     -- (G is declared further down: the holder is read through the capture's own state())
     if N.lend and WC.capture and WC.capture.state and WC.capture.state().holder == N.lend then doc.lend = N.lend end
     -- who holds the controller (Home, 2026-09-30: to free a generic "pad:<room>" guest left holding for a room no
     -- longer on screen): "npc", a guest's id, or absent
     if WC.capture and WC.capture.state then doc.holder = WC.capture.state().holder end
+    -- v21 (i161): the room suspended under the window that holds (v20's overlay, or its own loot window): the app keeps that room
+    if WC.capture and WC.capture.state then doc.under = WC.capture.state().under end
     if N.capDoc then N.capDoc(doc) end      -- v18: b2 = what B is bound to (declared further down)
     -- v8: a room holds through this fight (Home: the room flashes red; `n` counts its "in combat" refusals: a pulse each)
     -- (G is declared further down: through state())
@@ -2695,8 +2722,12 @@ local ON = {
     TAXIMAP_CLOSED = function() mark("taxi", false) end,
     BANKFRAME_OPENED = function() BANK.page, BANK.hand, BANK.box, BANK.acct = 1, nil, false, false; mark("bank", true) end,
     BANKFRAME_CLOSED = function() BANK.hand, BANK.box = nil, false; mark("bank", false) end,
-    LOOT_OPENED = function()
+    LOOT_OPENED = function(autoLoot)
         if N.lootHook then N.lootHook() end     -- a LootFrame the client made after this file loaded (the hook is once)
+        -- i161: the game's own word that Auto Loot takes this window (lootdocumentation.lua; lootframe.lua reads it the same way)
+        -- (review of i161: LOOT.auto is Make Space's auto-loot FUNCTION; the flag is LOOT.autoOn, never that name)
+        LOOT.autoOn = TB(function() return autoLoot end) == true
+        N.lootPassAt = nil
         LOOT.full, LOOT.bind, LOOT.running, LOOT.hold, LOOT.rare = false, false, false, nil, nil
         LOOT.try, LOOT.want = nil, nil
         mark("loot", true)
@@ -2705,6 +2736,7 @@ local ON = {
         pcall(C_Timer.After, 0.8, emitSoon)
     end,
     LOOT_CLOSED = function()
+        LOOT.autoOn, N.lootPassAt = nil, nil    -- i161
         LOOT.full, LOOT.bind, LOOT.running, LOOT.hold, LOOT.rare = false, false, false, nil, nil
         LOOT.try, LOOT.want = nil, nil
         if N.lootDiag then N.lootDiag.by, N.lootDiag.no = nil, nil end
@@ -3183,6 +3215,8 @@ function ACT.roll(a, b)
     if not (id and ty) then return false, "no such roll" end
     local r = R(function() return GetLootRollItemInfo(id) end)
     if not (r and real(r[2])) then return false, "the roll is over" end
+    -- i162: answered already (Dialogs d34 saw the game's RollOnLoot): a second press never rolls again
+    if type(WC.dialogs) == "table" and type(WC.dialogs.rolled) == "function" and WC.dialogs.rolled(id) then return false, "already rolled" end
     local can = { [1] = PB(r[6]), [2] = PB(r[7]), [3] = PB(r[8]), [4] = PB(r[13]) }
     if ty ~= 0 and not can[ty] then return false, "you cannot roll that on this item" end
     return run(function() RollOnLoot(id, ty) end)
@@ -4304,7 +4338,12 @@ function N.tipOf(key, opt)
 end
 -- /wci look <key...>   the item a finger selected; nothing happens in the game
 -- Dialogs.lua's loot rolls: their cells and the selected roll's tooltip (with the compare)
-WC.rollCells = function(id) return ROLLCELLS[id] end
+-- i162: a roll the dialogs read before this file's next document gets its cells now (its first document carries them); only the rolls
+-- that carry cells (LOOT.openRolls), so assignSlots keeps exactly these
+WC.rollCells = function(id)
+    if ROLLCELLS[id] then return ROLLCELLS[id] end
+    for _, o in ipairs(LOOT.openRolls()) do if o == id then return LOOT.rollCellsFor(id) end end
+end
 WC.rollTip = function(id) return N.tipOf("roll " .. tostring(id)) end
 -- the tooltip of a key, with the compare and its stat changes, for other rooms (Bags: "bag <bag> <slot> <itemID>")
 -- i159: opt = { nw = true } (Bags): the compare without the worn pieces' tooltips, only the game's stat changes
@@ -4394,7 +4433,7 @@ function ACT.ahsearch()
 end
 -- /wci ahedit text|min|max   the search box, or the Filter list's level range: the keyboard opens on it. Done on the word searches
 -- (the game's Enter in its search box); the range waits for Search.
-function ACT.ahedit(a)
+function ACT.ahedit(a, v)
     if not ahIsOpen() then return false, "no auction house open" end
     local max = AH.FIELD[a]
     if not max then return false, "no such field" end
@@ -4409,7 +4448,7 @@ function ACT.ahedit(a)
         AH.search[a] = t
         if a == "text" then AH.tab, AH.filtersOpen = "browse", false; AH.browse() end
         return true
-    end)
+    end, v == "v" and N.VOICE_FIELD["ahedit " .. a])
 end
 -- /wci ahfilters on|off   the game's Filter list
 function ACT.ahfilters(a)
@@ -4841,13 +4880,15 @@ end
 -- its Send hands the text to [done]. Meanwhile every press is the keyboard's (padPress stands still) and doc.kbd tells the app to
 -- show it. It goes on done, on the app's "kbd off" (B / its close), when the window closes, or after KBD_TTL unused.
 N.KBD_TTL = 300
+-- i161: the fields X opens on the app's voice page (the words fields; never To, money or the level range)
+N.VOICE_FIELD = { ["mailedit subject"] = true, ["mailedit body"] = true, ["ahedit text"] = true }
 function N.kbdClose()
     if not N.kbd then return end
-    N.kbd, N.kbdText = nil, nil
+    N.kbd, N.kbdText, N.kbdV = nil, nil, nil
     if type(WC.chatField) == "table" then pcall(WC.chatField.close) end
     emitSoon()
 end
-function N.kbdOpen(name, text, max, done)
+function N.kbdOpen(name, text, max, done, voice)
     local f = WC.chatField
     if type(f) ~= "table" or type(f.open) ~= "function" then return false, "the Chat add-on is too old" end
     local ok = f.open({ name = name, text = text or "", max = max,
@@ -4860,6 +4901,7 @@ function N.kbdOpen(name, text, max, done)
         end })
     if not ok then return false, "the keyboard did not open" end
     N.kbd, N.kbdText, N.kbdAt, N.kbdMax = name, text or "", TN(function() return GetTime() end) or 0, max
+    N.kbdV = voice and true or nil                   -- i161: the app opens its voice page on it
     emitSoon()
     return true
 end
@@ -4905,7 +4947,7 @@ function ACT.mailtab(a)
     return true
 end
 -- /wci mailedit <field>   To, Subject, the letter, or the money's gold / silver / copper: the keyboard opens on it
-function ACT.mailedit(a)
+function ACT.mailedit(a, v)
     if not MAIL.isOpen() or MAIL.tab ~= "send" then return false, "no Send Mail open" end
     local max = MAIL.FIELD[a]
     if not max then return false, "no such field" end
@@ -4922,7 +4964,7 @@ function ACT.mailedit(a)
         MAIL.form[a] = t
         MAIL.status, MAIL.err = nil, nil
         return true
-    end)
+    end, v == "v" and N.VOICE_FIELD["mailedit " .. a])
 end
 -- /wci mailcod on|off   the game's two radio buttons: Send Money, or C.O.D. (only with an attachment)
 function ACT.mailcod(a)
@@ -6355,6 +6397,91 @@ local function guestLost(why)
     end
 end
 
+-- i161 CAPTURE v21: A LOOT WINDOW OVER ITS OWN ROOM (the user, 2026-11-16: "it should just open the loot menu inside of the bags and
+-- then keep the player inside of the bag room"). From N.early("loot"), while a room holds: when the room says the loot is its own
+-- (spec.lootUnder() true: Bags opened one of its bag items a moment ago) the room is SUSPENDED, not lost - the same G.under as v20's
+-- overlay, marked loot: nothing of the room's is called, its hidden windows stay hidden (no N.unhide), the eight go to our sink for the
+-- loot window (the room's pass / back / a gone), the room's extra keys go back to the game. Out of a fight only, with the companion in
+-- charge of the loot window (the NPC-windows bit, the proof), one level (never under an overlay or another suspension). True = done.
+function N.lootUnder()
+    if not (G.holder and G.spec and type(G.spec.lootUnder) == "function") then return false end
+    if G.under or G.spec.overlay or N.fight or inCombat() or not N.holding then return false end
+    if not (N.mode and (N.frameSeen or N.trusted)) then return false end
+    local ok, mine = pcall(G.spec.lootUnder)
+    if not (ok and mine == true) then return false end
+    local spec = G.spec
+    G.under = { holder = G.holder, spec = spec, bnext = G.bnext, takeAt = N.takeAt, loot = true }
+    G.holder, G.spec, G.chord, G.eat = nil, nil, nil, nil
+    if N.lend == G.under.holder then N.lend = nil end
+    for _, k in ipairs(PAD_KEYS) do padBind(k) end
+    if spec.extra then
+        for k in pairs(spec.extra) do pcall(function() SetOverrideBinding(padOwner, true, k, nil) end) end
+    end
+    N.selSync()
+    N.lootUnderN = (N.lootUnderN or 0) + 1
+    emitSoon()
+    return true
+end
+-- the loot window over a suspended room closed (N.release, out of a fight): the room RESUMES as it was. The loot window's alpha comes
+-- back (N.unhide) and the room's windows are dimmed again in the same call (nothing is drawn between), its keys and extra keys bound
+-- again; rel by "resume" (never "B": the app stays in the room). A take waiting meanwhile goes on waiting BEHIND the resumed room, as
+-- v20's resume leaves it (granted when the room lets go), except an overlay (v20: it goes over the resumed room). True = resumed.
+-- Review of i161: a waiting take used to WIN here (the room told lost("taken"), the app sent Home) - but N.wait does not say when it
+-- queued, so a pop-up already waiting behind Bags BEFORE the box was opened (Dialogs' take queues behind any room) sent the player Home
+-- at the end of every loot, which is what the user asked to stop ("keep the player inside of the bag room").
+function N.lootResume()
+    local u = G.under
+    if not (u and u.loot) or N.fight then return false end
+    if inCombat() or not N.holding then N.lootUnderDrop("npc"); return false end      -- (never left suspended with nothing to resume)
+    G.under = nil
+    -- a take that waited meanwhile: an overlay (the pause wheel) goes over the resumed room as v20 has it; anything else waits on
+    local w = N.wait
+    local over = w and w.id ~= u.holder and type(w.spec) == "table" and w.spec.overlay == true
+    N.unhide()
+    for k in pairs(N.npcExtra) do pcall(function() SetOverrideBinding(padOwner, true, k, nil) end) end
+    N.npcExtra = {}
+    G.holder, G.spec, G.chord, G.eat, G.bnext = u.holder, u.spec, nil, nil, u.bnext
+    if N.wait and N.wait.id == u.holder then N.wait = nil end
+    for _, k in ipairs(PAD_KEYS) do padBind(k) end
+    for _, k in ipairs(extraKeys()) do padBind(k) end
+    N.stickSync(false)
+    N.selSync()
+    N.stale = false
+    guestHide()
+    N.backAt = nil
+    N.relN = N.relN + 1
+    N.rel = { n = N.relN, by = "resume", who = "npc", to = u.holder }
+    if type(u.spec.resumed) == "function" then pcall(u.spec.resumed, "loot") end
+    emitSoon()
+    if u.retake then pcall(WC.capture.take, u.holder, u.retake) end      -- a take again while suspended (v20's rule)
+    if over then N.wait = nil; pcall(WC.capture.take, w.id, w.spec) end   -- the waiting overlay over the room, at once
+    return true
+end
+-- a fight starts with a room suspended under its loot window: the room goes as before i161 (lost "npc"), the loot window holds on
+-- under the fight's own rules
+function N.lootUnderDrop(why)
+    local u = G.under
+    if not (u and u.loot) then return false end
+    G.under = nil
+    if u.spec and type(u.spec.lost) == "function" then pcall(u.spec.lost, why or "npc") end
+    emitSoon()
+    return true
+end
+-- Review of i161 (THE DOUBLE B): the loot window's B is a binding click of our secure close (N.closeAim), and a secure button acts on the
+-- PRESS (SecureActionButton_OnClick with the game's ActionButtonUseKeyDown, its default). When LOOT_CLOSED and the resume come before
+-- that B's RELEASE, the release reached the resumed room as ITS B (a room's face buttons act on the release): Bags left too, and the app
+-- went Home - one B two steps, never loot -> Bags -> Home. N.release marks that release (resumeEat) when the loot window closed by B;
+-- N.resumeEaten(key, down) is asked by the frame (direct) and the binding route (padPress): a down of that key clears the mark (a new press
+-- is the room's as ever), its up within RESUME_EAT_S is handed on the way its press went (to the game), never to the room.
+N.RESUME_EAT_S = 3
+function N.resumeEaten(key, down)
+    local re = N.resumeEat
+    if not (re and re.k == key) then return false end
+    N.resumeEat = nil
+    if down then return false end
+    return (TN(function() return GetTime() end) or 0) - re.at <= N.RESUME_EAT_S
+end
+
 -- WHY the controller goes back, for the app (user, 2026-09-28: "Pressing b to leave the cursor
 -- should take me back to the home by default for everything"): "B" = the player left with B;
 -- "closed" = the window went by itself or by an answer; "combat"; "mode" = the companion is no
@@ -6365,6 +6492,16 @@ function N.release(why, who)
     if N.fight then return end
     -- i147 (Step 5a): a window the fight's leave left behind stays hidden until PLAYER_REGEN_ENABLED
     if N.fightBehind and inCombat() then return end
+    -- i161 (capture v21): the loot window over a suspended room closed: the room holds again, as it was
+    if G.under and G.under.loot then
+        -- review of i161: closed by B (its secure close ran on the press): that B's release is not the resumed room's (N.resumeEaten)
+        local t = TN(function() return GetTime() end) or 0
+        local byB = N.backAt ~= nil and t - N.backAt <= B_WINDOW
+        if N.lootResume() then
+            N.resumeEat = byB and { k = "PAD2", at = t } or nil
+            return
+        end
+    end
     -- the game's window comes back first: it must never stay invisible with nobody driving it
     N.unhide()
     pcall(function() padGrab:EnableGamePadButton(false) end)
@@ -6488,8 +6625,10 @@ end
 function N.early(slot)
     if WINDOWS[slot] == false then N.hideNote(slot, "early") return end      -- not switched on yet: the game keeps its window
     if slot == "loot" and LOOT.top() then return end   -- r-loot-on-top: the game keeps its loot window
+    if slot == "loot" and N.lootPass() then return end -- i161: an auto loot the holder keeps the pad through
     -- an NPC window opens: it comes first, whoever is in charge of it. The guest lets go.
-    if G.holder then
+    -- i161 (capture v21): ... unless it is a loot window the room opened itself (Bags' Open): the room is suspended under it
+    if G.holder and not (slot == "loot" and N.lootUnder()) then
         guestLost("npc")
         if not N.mode then N.release("npc", "npc") end
     end
@@ -6510,6 +6649,34 @@ function N.early(slot)
         N.unhide()          -- the OnShow hook dimmed it, but the controller is not ours: the game's window must stay usable
     end
     N.hideNote(slot, "early")
+end
+
+-- i161 (bags-de1): AN AUTO LOOT A HOLDER KEEPS THE PAD THROUGH. The holder asked (spec.lootPass() true: the Bags room's Disenchant grid), the
+-- game says Auto Loot takes this window (LOOT.autoOn), out of a fight: the holder keeps the pad (no guestLost), the document carries no loot
+-- pop-up (N.lootPassAt) and the game's window stays as the OnShow hook left it (dimmed) while the mats go to the bags. Still open LOOT.PASS_S
+-- later (the bags full: the mats stay): the ordinary path (the pop-up with Make Space). N.lootPassN counts them (doc.lootPass).
+LOOT.PASS_S = 0.5
+function N.lootPass()
+    if not LOOT.autoOn or inCombat() then return false end
+    local sp = G.holder and G.spec
+    if not (sp and type(sp.lootPass) == "function") then return false end
+    local ok, keep = pcall(sp.lootPass)
+    if not (ok and keep == true) then return false end
+    N.lootPassAt = TN(function() return GetTime() end) or 0
+    N.lootPassN = (N.lootPassN or 0) + 1
+    local at = N.lootPassAt
+    pcall(C_Timer.After, LOOT.PASS_S, function() N.lootPassLate(at) end)
+    return true
+end
+-- the auto loot's window is still open: the ordinary path now (the holder lets go to the pop-up)
+function N.lootPassLate(at)
+    if N.lootPassAt ~= at then return end
+    N.lootPassAt = nil
+    if not isOpen("loot") then return end
+    LOOT.autoOn = false
+    N.lootPassLateN = (N.lootPassLateN or 0) + 1
+    N.early("loot")
+    emitSoon()
 end
 
 -- THE WATCHDOG. Whatever says that the game may be hearing the controller while its window is
@@ -7389,6 +7556,8 @@ local lastDirect = {}       -- key .. phase -> when the frame delivered it
 
 local function padPress(key, down, via)
     if not N.holding then return end
+    -- review of i161: the binding route's copy of the release that closed a loot window over a room (the frame's is in direct)
+    if via ~= "frame" and N.resumeEaten(key, down) then return end
     local tag = key .. (down and "d" or "u")
     if via == "frame" then
         lastDirect[tag] = GetTime()
@@ -7449,7 +7618,12 @@ local function padPress(key, down, via)
             N.tabLand(N.cur)                    -- a tab the cursor lands on opens (no A)
         end
     else
-        if key == "PAD3" and (N.xHold or (down and N.tipCmp)) then
+        if key == "PAD3" and N.VOICE_FIELD[tostring(N.cur or "")] and not G.holder then
+            -- i161 VOICE (the user's pick 2026-11-16: X opens our own voice prompt): X on a words field opens it as A does, flagged
+            -- for the app's voice page; before hold-X compare and the windows' own X (a words field is never an item)
+            if down then return end
+            navRun(N.cur .. " v")
+        elseif key == "PAD3" and (N.xHold or (down and N.tipCmp)) then
             -- HOLD X TO COMPARE (user, 2026-09-30: "if the Item is comparable, it should show a button under the
             -- tooltip saying X to compare and then expand the tooltip when held, and then scroll up and down
             -- with the dpad or control stick and then it goes back to normal when not holding X")
@@ -7597,6 +7771,12 @@ local function direct(down)
                 N.passDown[button] = nil
                 mine = false
             end
+            -- review of i161: the release of the B whose press closed the loot window over the room now resumed goes on as its press
+            -- went (the game's, our secure close's), never to the room; a binding copy of it is the same press (lastDirect)
+            if N.resumeEaten(button, down) then
+                mine, skipPassed = false, true
+                lastDirect[button .. "u"] = GetTime()
+            end
         end
         local eaten = false
         if not mine and N.holding and type(button) == "string" then
@@ -7719,6 +7899,8 @@ do
     cf:SetScript("OnEvent", function(_, event)
         if event == "PLAYER_REGEN_DISABLED" then
             if N.bar.bound and pcall(function() ClearOverrideBindings(selOwner) end) then N.bar.bound = false end
+            -- i161 (capture v21): a room suspended under its own loot window goes as before (lost "npc"); the loot window holds on
+            N.lootUnderDrop("npc")
             local who = G.holder
             -- i144 (combat_nav Step 2; the user's decision 1, 2026-11-11): every pull keeps what holds - a room whatever the Hub's
             -- NPC-windows bit (N.mode only says the companion is in charge of the GAME's windows: an "npc" hold needs it, a room does
@@ -7922,7 +8104,10 @@ end
 
 WC.interactStage = "cap"
 WC.capture = {
-    version = 20,                    -- v20: spec.overlay: one level over a holding room; the room is suspended and resumed, not lost
+    version = 21,                    -- v21 (i161): spec.lootUnder() true = a loot window the room opened itself is shown OVER the room:
+                                     --      the room is suspended under it and resumes when it closes (spec.resumed("loot")), not lost
+                                     --      and spec.lootPass() true = the holder keeps the pad through an AUTO loot window (i161d)
+                                     -- v20: spec.overlay: one level over a holding room; the room is suspended and resumed, not lost
                                      -- v19: spec.a (A = a click on that button, as back for B); spec.noFight (let go at a fight's start)
                                      -- v18: a back button counts while a guest window holding it shows; doc.b2 says B's binding
                                      -- v17: a back button the game hides (controller mode) counts while its window is visible
@@ -7981,7 +8166,10 @@ WC.capture = {
             -- capture v10: in a fight a take is PENDING until the app taps the ENTER cell (doc.enter)
             local cspec = { press = spec.press, lost = spec.lost, hide = spec.hide, back = back and F.closes(back, 0, spec.hide) and back or nil,
                             backWant = back, leave = spec.leave, pass = pass, a = aBtn, noFight = spec.noFight == true or nil,
-                            extra = extra, both = both, passed = type(spec.passed) == "function" and spec.passed or nil }
+                            extra = extra, both = both, passed = type(spec.passed) == "function" and spec.passed or nil,
+                            lootUnder = type(spec.lootUnder) == "function" and spec.lootUnder or nil,            -- v21
+                            resumed = type(spec.resumed) == "function" and spec.resumed or nil,
+                            lootPass = type(spec.lootPass) == "function" and spec.lootPass or nil }     -- v21 (review of i161): kept past the fight
             -- capture v12 (Home, 2026-10-06, the rooms consistency pass): HOME'S BAR CURSOR is PRE-EMPTED in a fight too, while the
             -- router is in room mode. Both reach the pad through the same sink, so it is only the holder that changes: no binding,
             -- no attribute, nothing protected (guestLost re-binds keys only out of a fight; SetAlpha and our own shields are free).
@@ -8052,7 +8240,10 @@ WC.capture = {
         G.spec = { press = spec.press, lost = spec.lost, hide = spec.hide, back = back and F.closes(back, 0, spec.hide) and back or nil, backWant = back,
                    leave = leave, pass = pass, extra = extra, both = both, a = aBtn, noFight = spec.noFight == true or nil,
                    overlay = spec.overlay == true or nil,
-                   passed = type(spec.passed) == "function" and spec.passed or nil }
+                   lootUnder = type(spec.lootUnder) == "function" and spec.lootUnder or nil,            -- v21
+                   resumed = type(spec.resumed) == "function" and spec.resumed or nil,
+                   passed = type(spec.passed) == "function" and spec.passed or nil,
+                   lootPass = type(spec.lootPass) == "function" and spec.lootPass or nil }     -- v21 (i161)
         if back then F.hookShow(spec.hide) end
         G.holder, G.chord, G.eat = id, nil, nil
         if N.wait and N.wait.id == id then N.wait = nil end      -- v11: a waiter that got it another way waits no more
@@ -8088,9 +8279,13 @@ WC.capture = {
         if N.wait and N.wait.id == id and id ~= nil then N.wait = nil; emitSoon(); return true end     -- v11: a queued take given up
         if G.under and G.under.holder == id and id ~= nil then
             -- v20: the suspended room lets go: dropped, its windows come back; the overlay carries on
+            local wasLoot = G.under.loot
             G.under = nil
             N.unhide()
             guestHide()
+            -- v21 (i161): under the loot window nobody is a guest (guestHide does nothing): the loot window is dimmed again in this
+            -- same call, so it never shows on the top screen while ours holds
+            if wasLoot and not G.holder and N.holding and isOpen("loot") and (N.frameSeen or N.trusted) then N.hide({ loot = true }) end
             emitSoon()
             return true
         end

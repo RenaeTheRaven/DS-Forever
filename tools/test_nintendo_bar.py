@@ -402,12 +402,12 @@ def main():
     L = boot()
     G = L.globals()
     WC = G.WowCompanion
-    chk("nbar2: the version tag", WC.nbar is not None and WC.nbar.V == "nbar2")
+    chk("nbar2: the version tag", WC.nbar is not None and int(WC.nbar.V[4:]) >= 2)      # (the layout editor: nbar3 or later)
     abs_src = open(AB, encoding="utf-8").read()
     hub_src = open(HUB, encoding="utf-8").read()
     chk("nbar2 / hub46 / uf17: the header notes quote the issue", "issue #195" in abs_src.split("\n", 6)[1] + abs_src.split("\n", 6)[2]
-        and "nbar2 (review of nbar1, issue #195" in abs_src and 'local HV = "hub54"' in hub_src and "hub49:" in hub_src and "hub48:" in hub_src and "hub47b: SMART RES" in hub_src and "hub47:" in hub_src and "hub45: THE NINTENDO BAR" in hub_src
-        and "hub46: ONE GLYPH RULE (issue #195" in hub_src and 'V = "uf22"' in hub_src)
+        and "nbar2 (review of nbar1, issue #195" in abs_src and (int(__import__('re').search(r'local HV = "hub(\d+)"', hub_src).group(1)) >= 54) and "hub49:" in hub_src and "hub48:" in hub_src and "hub47b: SMART RES" in hub_src and "hub47:" in hub_src and "hub45: THE NINTENDO BAR" in hub_src
+        and "hub46: ONE GLYPH RULE (issue #195" in hub_src and (int(__import__('re').search(r'V = "uf(\d+)"', hub_src).group(1)) >= 22))
     # ------------------------------------------------------------ the switch round trip (Hub's "uisw")
     sw_row = G.ROWS["uisw"]
     chk("hub45: Hub registered its switch row", sw_row is not None)
@@ -508,7 +508,7 @@ def main():
     chk("fight: the charges secret -> no count drawn (never compared)", s[4]["count"] == "", s[4]["count"])
     caps = [c for c in sent(G, "cap") if c.probe == "nbarcd"]
     chk("probe nbarcd: once out of a fight and once in one, route dur, plain values", len(caps) == 2 and {c["fight"] for c in caps} == {True, False}
-        and all(c.route == "dur" and c.v == "nbar2" and c.have.acd and c.have.set for c in caps), caps)
+        and all(c.route == "dur" and int(c.v[4:]) >= 2 and c.have.acd and c.have.set for c in caps), caps)
     for _ in range(5):
         WC.nbar.refresh()
     chk("probe nbarcd: never again in the same state", len([c for c in sent(G, "cap") if c.probe == "nbarcd"]) == 2)
@@ -638,6 +638,29 @@ def review_checks(chk):
     s = shown(L)
     chk("nbar2 form: out of a fight no fight pictures (the toolbar, the fixed faces)", s[1]["icon"] == 134829 and s[4]["icon"] == 136243,
         [x["icon"] for x in s])
+    # nbar3 (PadMap m165; the user, 2026-11-16: "when using show tooltip on a macro it doesn't actually show the GCD when using it"): a
+    # macro on the In combat layer is the spell it casts now (`ms`; a form's raw entry asks WC.padMap.macLook): that spell's picture,
+    # its duration-object sweep (the GCD in it) and tints; an item's macro its picture only
+    L = boot(pre="FORMS = { { x = 1, id = 768, on = false } }")
+    L.execute("PADMAP[1][5] = { kind = 'fixed', cf = { n = 'Bolt', t = 'macro', key = 'mc:Bolt', i = 136048, ms = 403 } }; "
+              "PADMAP[1][6] = { kind = 'fixed', cf = { n = 'Pot', t = 'macro', key = 'mc:Pot', i = 134830, mt = 118 } }; "
+              "PADMAP[1][2] = { kind = 'combat', ov = true, c = { n = 'Shift', t = 'macro', key = 'mc:Shift', i = 136052, ms = 331 } }")
+    G, W = on(L)
+    G.COMBAT = True
+    W.nbar.refresh()
+    s = shown(L)
+    chk("nbar3 macro: X's #showtooltip macro = Lightning Bolt (its picture, kind spell, the duration route)",
+        s[4]["kind"] == "spell" and s[4]["id"] == 403 and s[4]["icon"] == 136048 and s[4]["route"] == "dur", s[4])
+    chk("nbar3 macro: D-pad up's macro = what it casts now (Healing Wave), on the duration route", s[1]["kind"] == "spell" and s[1]["id"] == 331
+        and s[1]["route"] == "dur", s[1])
+    chk("nbar3 macro: Y's item macro = its picture (no spell sweep)", s[5]["kind"] == "icon" and s[5]["icon"] == 134830, s[5])
+    L = boot(pre="FORMS = { { x = 1, id = 768, on = true } }; FORMFIGHT[768] = { [5] = { t = 'macro', n = 'Claws', i = 134400 } }")
+    L.execute("PADMAP_ON(); WowCompanion.padMap.macLook = function(n) if n == 'Claws' then return { i = 132140, ms = 1082 } end end")
+    G, W = on(L)
+    G.COMBAT = True
+    W.nbar.refresh()
+    s = shown(L)
+    chk("nbar3 macro: a form's own raw macro entry asks PadMap's look (Claw)", s[4]["kind"] == "spell" and s[4]["id"] == 1082 and s[4]["icon"] == 132140, s[4])
     # Combat controls off: the router arms no fight text, a press casts the slot
     L = boot(pre="CC_ON = false")
     G, W = on(L)
@@ -744,7 +767,7 @@ def aura_checks(chk):
     ids = sorted(o.cd.cdObj.aura for o in hb)
     chk("aura sweeps: the objects are the auras' own (ids 11 / 12 / 13)", ids == [11, 12, 13], ids)
     sw = [dict(x) for x in G.SWEEPS.values()]
-    chk("probe aurasweep: route dur, once (both units share the route), plain", len(sw) == 1 and sw[0]["route"] == "dur" and sw[0]["v"] == "prd17", sw)
+    chk("probe aurasweep: route dur, once (both units share the route), plain", len(sw) == 1 and sw[0]["route"] == "dur" and int(sw[0]["v"][3:]) >= 17, sw)
     # absent: the old route as before (the secrets straight to the old setter)
     rig2 = ta.make(mode="plain")
     rig2.L.execute("SWEEPS = {}; WowCompanion.send = function(j) if type(j) == 'table' and j.probe == 'aurasweep' then SWEEPS[#SWEEPS + 1] = j end end")
