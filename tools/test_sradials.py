@@ -125,7 +125,7 @@ check(ok is True, "the same spell on a second radial shares its cell", ok)
 # ---------------------------------------------------------------- 3. the document
 W.execute('runTimers(NOW + 5); %s.emit(true)' % SR)
 d = last(W, 'sradial')
-check(d is not None and d.get('v') == 'q5' and isinstance(d['r'].get('list'), list), "the sradial document has the list", d and d.get('v'))
+check(d is not None and d.get('v') == 'q7' and isinstance(d['r'].get('list'), list), "the sradial document has the list", d and d.get('v'))
 lst = d['r']['list']
 check([x['u'] for x in lst] == [1, 2, 3, 4, 5, 6] and [i['id'] for i in lst[0]['items']] == [403, 331],
       "each radial by slot, its items in order", [x['u'] for x in lst])
@@ -229,6 +229,37 @@ W6.execute('WowCompanion.pad.rows.padtab.handler(nil, 39); NOW = NOW + 3; WowCom
 check(lua_list(W6.eval(SR + '.slots()')) == n_slots, "a pick older than 2 s: the code is not a radial op", lua_list(W6.eval(SR + '.slots()')))
 W6.execute('WowCompanion.pad.rows.padtab.handler(nil, 39); WowCompanion.pad.rows.padtab.handler(nil, 11)')
 check(len(lua_list(W6.eval(SR + '.slots()'))) == len(n_slots) + 1, "39 then 11 (fresh): New", lua_list(W6.eval(SR + '.slots()')))
+
+# ---------------------------------------------------------------- q7 PET RECALL ONLY (PadMap m174, Radial r25; the user, 2026-11-18: "I like
+# the pet recall but I think we need to remove the pet smart attack, its obnoxious"): q6's Smart pet casts are gone - with pet recall on
+# (the word 37 / 0, a Hunter) a harmful spell's cell is still the plain spell, exactly as with it off
+W7 = world(pre='CLASS = "HUNTER"; C_Spell.IsSpellHarmful = function(s) return s == 403 or s == "Lightning Bolt" end')
+W7.execute(SR + '.put(1, 1, 403); ' + SR + '.put(1, 2, 331); runTimers(NOW + 5); ' + SR + '.emit(true)')
+
+
+def q7cell(L, sid):
+    d = last(L, 'sradial')
+    col = None
+    for it in d['r']['list'][0]['items']:
+        if it['id'] == sid:
+            col = it.get('col')
+    if col is None:
+        return None
+    a = L.eval('WowCompanion.pad.rows.sradial.cells[%d].a' % col)
+    return (a['type'], a['spell'], a['macrotext'])
+
+
+check(q7cell(W7, 403) == ("spell", 403, None) and q7cell(W7, 331) == ("spell", 331, None), "q7: pet recall off: the plain spell cells",
+      (q7cell(W7, 403), q7cell(W7, 331)))
+for on, bf in ((True, False), (True, True)):
+    W7.execute('WowCompanion.padMap.petRecall(%s, %s); runTimers(NOW + 1); %s.emit(true)' % (str(on).lower(), str(bf).lower(), SR))
+    check(q7cell(W7, 403) == ("spell", 403, None) and q7cell(W7, 331) == ("spell", 331, None),
+          "q7: pet recall on (bfree %s): still the plain spell cells (no /petattack cast)" % bf, (q7cell(W7, 403), q7cell(W7, 331)))
+check(W7.eval('WowCompanion.padMap.smartPetCast') is None and W7.eval('WowCompanion.padMap.smartPetOn') is None
+      and W7.eval('WowCompanion.padMap.smartPetCmd') is None and W7.eval('WowCompanion.spResync') is None,
+      "q7: no smartPetCast / smartPetOn / smartPetCmd hook, no WC.spResync")
+RADC = re.sub(r'--[^\n]*', '', open(os.path.join(ADDONS, "WowCompanionSpells", "Radial.lua"), encoding="utf-8").read())
+check("/petattack" not in RADC and "smartPet" not in RADC and "spResync" not in RADC, "q7: Radial.lua's code has no /petattack, no smartPet hook, no spResync")
 
 print("\n%d passed, %d failed" % (passes, fails))
 sys.exit(1 if fails else 0)

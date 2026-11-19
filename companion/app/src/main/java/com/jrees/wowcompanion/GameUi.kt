@@ -22,11 +22,14 @@ object GameUi {
     private var appCtx: Context? = null
     private val listeners = ArrayList<() -> Unit>()
 
-    private val policy = GameUiPolicy({ tracking }) { id -> mode(id) }
+    /** split-hud: the layout bit of the "hud" element carries the three parts' riding mode ([hudBitMode]) */
+    private val policy = GameUiPolicy({ tracking }) { id -> if (id == HudSplit.CONTROLLER_ID) hudBitMode() else mode(id) }
     /** hub11: the game's cast bar (its own Show / Hide, not a layout bit) */
     private val castBar = CastBarPolicy()
-    /** hub13 HUD MODE: the game's player / target frames hidden, per character; the hub document's hud.hidden (null = no row) */
-    private val hud = CastBarPolicy(CastBarPolicy.HUD_SHOW, CastBarPolicy.HUD_HIDE)
+    /** hub67 (PR #532 reworked): the ONE restore tap per load; the hub document's `rst` (null = an add-on set without it) */
+    private val restore = RestorePolicy()
+    @Volatile private var rst: HubRestore? = null
+    /** hub13 HUD MODE: the game's player / target frames hidden; the hub document's hud.hidden (hub67: its Show column is RESTORE now) */
     @Volatile private var hudHidden: Boolean? = null
     /** hub15: HUD mode's bar place now (the hub document's prd: y, its range and step, Interact's WC.prd); null = no bar */
     @Volatile private var prdY: Int? = null
@@ -43,8 +46,8 @@ object GameUi {
     /** hub55 (the layout editor; Trail prd18): the layout owns the HUD's height and scale - the tap loop leaves them alone (the width
      *  stays a row); false = an older add-on (the loop as before) */
     @Volatile var prdLay = false; private set
-    private var hudHTapAt = 0L
-    private var hudHTapN = -1
+    /** PR #533: the HUD height / width / scale step's own back-off (one key, [HUD_KEY]) */
+    private val hudBack = TapBackoff()
     /** the character now ("Name-Realm", the host's from the padmap); null = not known yet: no HUD row */
     @Volatile var character: String? = null
         set(v) { if (field != v) { field = v; playerClass = classFor(v); reconcile(); changed() } }    // Smart Res: the new character's class (its party document, before or after)
@@ -72,22 +75,84 @@ object GameUi {
 
     fun mode(id: String): UiMode {
         val def = UiElements.of(id)?.default ?: UiMode.ON
-        val s = prefs?.getString("mode.$id", null) ?: return def
-        return try { UiMode.valueOf(s) } catch (_: Throwable) { def }
+        val saved = prefs?.getString("mode.$id", null)?.let { s -> runCatching { UiMode.valueOf(s) }.getOrNull() }
+        // split-hud: the buffs and the XP bar rode the controller bars' mode until the split; until one is picked it still comes from there
+        if (id in HudSplit.EXTRA) return HudSplit.migrate(saved, mode(HudSplit.CONTROLLER_ID))
+        return saved ?: def
     }
 
     /** the user picked a mode: one touch, so at most one tap follows */
     fun setMode(id: String, m: UiMode) {
-        prefs?.edit()?.putString("mode.$id", m.name)?.apply()
+        val ed = prefs?.edit() ?: return
+        // split-hud: a part picked = the parts are separate from now on: the others keep the mode they show now (never follow this one)
+        if (id in HudSplit.PARTS) for (o in HudSplit.EXTRA) if (o != id && prefs?.contains("mode.$o") != true) ed.putString("mode.$o", mode(o).name)
+        ed.putString("mode.$id", m.name).apply()
         reconcile()
         changed()
+    }
+
+    // ------------------------------------------------------------------ split-hud: the controller UI, the buffs, the XP bar
+
+    /** the hub document's `hs` (Hub.lua hs2): each part's word ("on" / "off" / "ride"), each part hidden now, the bit, the columns;
+     *  null = an add-on set before the split (the controller tile alone, the bit as before) */
+    data class Hs(val words: Map<String, String>, val hidden: Map<String, Boolean>, val bit: Boolean, val n: Int, val cols: Map<String, Int>)
+    @Volatile private var hs: Hs? = null
+
+    fun hsFrom(o: JSONObject?): Hs? = o?.let { h ->
+        val cols = HashMap<String, Int>()
+        h.optJSONObject("cols")?.let { c -> for (k in c.keys()) cols[k] = c.optInt(k, -1) }
+        val words = HashMap<String, String>(); val hid = HashMap<String, Boolean>()
+        for ((id, l) in HudSplit.LETTER) {
+            words[id] = HudSplit.norm(if (h.has(l) && !h.isNull(l)) h.optString(l) else null)
+            hid[id] = h.optBoolean(l + "h", false)
+        }
+        Hs(words, hid, h.optBoolean("bit", false), h.optInt("n", 0), cols)
+    }
+
+    /** the three parts' modes now */
+    private fun partModes(): Map<String, UiMode> = HudSplit.PARTS.associateWith { mode(it) }
+    /** the mode the "hud" bit carries: the parts' riding one; an add-on before the split: the controller tile's, exactly as before */
+    fun hudBitMode(): UiMode = if (hs == null) mode(HudSplit.CONTROLLER_ID) else HudSplit.riding(partModes().values)
+    /** each part's word for the add-on */
+    fun hsWant(modes: Map<String, UiMode> = partModes()): Map<String, String> {
+        val r = HudSplit.riding(modes.values)
+        return modes.mapValues { (_, m) -> HudSplit.word(m, r) }
+    }
+    /** the split's tap on "lay" now, or null (the add-on's words already the chosen ones) */
+    fun hsCol(h: Hs, modes: Map<String, UiMode> = partModes()): Int? = HudSplit.col(h.cols, h.words, hsWant(modes))
+
+    private val PART_LABELS = mapOf(HudSplit.BUFFS_ID to "Buffs", HudSplit.XP_ID to "XP bar")
+
+    /** a part's tile row (the controller UI's too, once the add-on has the split); null = no such part / the controller with an older set */
+    fun partRow(id: String): Row? {
+        if (id !in HudSplit.PARTS) return null
+        val info = UiElements.of(HudSplit.CONTROLLER_ID) ?: return null
+        val el = state?.els?.firstOrNull { it.id == info.id }
+        val m = mode(id)
+        val label = PART_LABELS[id] ?: info.label
+        val home = roomOf(info.home)
+        val h = hs
+        if (h == null && id == HudSplit.CONTROLLER_ID) return null
+        if (h == null || el == null)
+            return Row(id, label, home, m, el != null, false, if (state == null) "Waiting for the game" else "The game does not offer this yet")
+        val now = h.hidden[id] == true
+        if (id == HudSplit.CONTROLLER_ID && m == UiMode.NINTENDO) return Row(id, label, home, m, true, now, nbarNote(sw?.nbar))
+        val want = HudSplit.wantsHidden(m, room.name, visible)
+        val steady = if (now) "Hidden now" else "On the top screen now"
+        val note = when {
+            now == want -> steady
+            HudSplit.norm(h.words[id]) != hsWant()[id] -> "Sent"
+            // the word stands: the bit's own state says (sent, held for combat, refused ...)
+            else -> note(el, hudBitMode()).let { n -> if (n == "Hidden now" || n == "On the top screen now") steady else n }
+        }
+        return Row(id, label, home, m, true, now, note)
     }
 
     // ------------------------------------------------------------------ from the hub
 
     /** when the last CURRENT hello came (a login or a reload): the first hide waits for the loading screen (GameUiPolicy.SETTLE_MS) */
     @Volatile private var helloAt = 0L
-    fun onHello() { helloAt = System.currentTimeMillis(); policy.freshLogin(); castBar.freshLogin(); hud.freshLogin() }
+    fun onHello() { helloAt = System.currentTimeMillis(); policy.freshLogin(); castBar.freshLogin(); restore.freshLogin(); swBack.clear(); hudBack.clear() }
 
     /**
      * HUB17 THE HUD-MODE SPLIT (the user: the player frame, the target frame and the enemy nameplates on Top screen, the resource bar on
@@ -129,7 +194,8 @@ object GameUi {
                   val npf: Boolean? = null)
     @Volatile private var sw: Sw? = null
     private var swTapAt = 0L
-    private var swTapN = -1
+    /** PR #533 (mummigast): a switch the game never answers backs off and is parked, so the ones after it still go ([TapBackoff]) */
+    private val swBack = TapBackoff()
     /** parts: "player" / "target" shown (true) or hidden; "np" nameplates on; "prd" the resource bar on */
     const val SW_PLAYER = "player"; const val SW_TARGET = "target"; const val SW_NP = "np"; const val SW_PRD = "prd"; const val SW_WM = "wm"
     const val SW_PARTY = "party"
@@ -258,10 +324,17 @@ object GameUi {
         else -> if (on) "PRD_ON" else "PRD_OFF"
     }]
     /** the switch to tap now: the first whose game word differs from the choice, or which the game has not had since its /reload */
-    fun swNext(s: Sw, want: (String) -> Boolean): Pair<String, Boolean>? =
-        listOf(SW_PLAYER, SW_TARGET, SW_NP, SW_PRD, SW_WM, SW_PARTY, SW_ATK, SW_SHOTF, SW_SHOT, SW_PMODE, SW_UFP, SW_UFT, SW_UFTOT, SW_UFHPP, SW_UFHPT, SW_PS, SW_PET, SW_NBAR, SW_SRES, SW_NPF).firstOrNull { p ->
-            val now = when (p) { SW_PLAYER -> s.player; SW_TARGET -> s.target; SW_NP -> s.np; SW_WM -> s.wm; SW_PARTY -> s.party
-                                 SW_ATK -> s.atk; SW_SHOT -> s.shot; SW_SHOTF -> s.shotf; SW_PMODE -> s.pmode; SW_UFP -> s.ufp; SW_UFT -> s.uft; SW_UFTOT -> s.uftot; SW_UFHPP -> s.ufhpp; SW_UFHPT -> s.ufhpt; SW_PS -> s.ps; SW_PET -> s.pet; SW_NBAR -> s.nbar; SW_SRES -> s.sres; SW_NPF -> s.npf; else -> s.prd }
+    fun swNext(s: Sw, want: (String) -> Boolean): Pair<String, Boolean>? = swNextSkip(s, emptySet(), want)
+    /** the game's word for [p] in [s] */
+    fun swWord(s: Sw, p: String): Boolean? = when (p) { SW_PLAYER -> s.player; SW_TARGET -> s.target; SW_NP -> s.np; SW_WM -> s.wm; SW_PARTY -> s.party
+        SW_ATK -> s.atk; SW_SHOT -> s.shot; SW_SHOTF -> s.shotf; SW_PMODE -> s.pmode; SW_UFP -> s.ufp; SW_UFT -> s.uft; SW_UFTOT -> s.uftot; SW_UFHPP -> s.ufhpp; SW_UFHPT -> s.ufhpt; SW_PS -> s.ps; SW_PET -> s.pet; SW_NBAR -> s.nbar; SW_SRES -> s.sres; SW_NPF -> s.npf; else -> s.prd }
+    /** PR #533: the game's answer to a tap of [p] - its word and its `set` flag (an answered tap moves one of them) */
+    fun swSig(s: Sw?, p: String): Any? = s?.let { swWord(it, p) to it.set[p] }
+    /** [swNext] without the parts in [skip] (PR #533: switches the game never answers, parked by [TapBackoff]). With every waiting
+     *  part parked this is null, and the HUD steps / meters may go meanwhile; a parked part comes back by itself for its one probe */
+    fun swNextSkip(s: Sw, skip: Set<String>, want: (String) -> Boolean): Pair<String, Boolean>? =
+        listOf(SW_PLAYER, SW_TARGET, SW_NP, SW_PRD, SW_WM, SW_PARTY, SW_ATK, SW_SHOTF, SW_SHOT, SW_PMODE, SW_UFP, SW_UFT, SW_UFTOT, SW_UFHPP, SW_UFHPT, SW_PS, SW_PET, SW_NBAR, SW_SRES, SW_NPF).filter { it !in skip }.firstOrNull { p ->
+            val now = swWord(s, p)
             // hub22: Auto Shot is the game's own saved option: only a CHOICE made here is sent (never the default over the game's)
             val chosen = p != SW_SHOT || character?.let { prefs?.contains("sw.$p.$it") } == true
             // hub28: while "In combat" is wanted (and the add-on knows it), the game's option follows the fight: not tapped
@@ -403,6 +476,9 @@ object GameUi {
     }
     /** hub16: the width / scale for this character (the player's choice; the bar's own until one is made) */
     fun hudWidth(): Int? = character?.let { who -> prefs?.getInt("prdw.$who", Int.MIN_VALUE)?.takeIf { it != Int.MIN_VALUE } } ?: prdW
+    /** the HUD's width as the game reports it, against the bar's default (1 = the default): the Top screen tile's picture follows it,
+     *  as the Width line does (hudValue); a choice the game has not taken yet is the badge's word, never the picture's (review 11-17) */
+    fun hudWidthFactor(): Float = prdW?.let { it.toFloat() / wDef.coerceAtLeast(1) } ?: 1f
     fun hudScale(): Int? = character?.let { who -> prefs?.getInt("prds.$who", Int.MIN_VALUE)?.takeIf { it != Int.MIN_VALUE } } ?: prdS
     /** one step narrower / smaller ([d] -1), wider / larger (+1), or back to the default (0); the taps follow (the bar redraws live) */
     fun stepHudWidth(d: Int) {
@@ -455,6 +531,147 @@ object GameUi {
     }
     const val HUD_H_ID = "hudheight"
 
+    // ------------------------------------------------------------------ hub61: the damage meter and the Cooldown Manager
+    /*
+     * The user, 2026-11-17: "DPS meters and also the cooldown manager ... we need to make sure that its consistent with the other picture
+     * options". Settings > Top screen > Game windows' two tiles (the design's recommended picks: the game's option off = the choice waits,
+     * never the CVar; Damage meter On / Off / Dynamic = a fight and 15 s after it; ONE Cooldown Manager tile with a line per part; per
+     * character). Hub.lua hub61's WC.meters hides the game's frames by alpha + mouse only and keeps the choice per character itself; the
+     * player's press reaches it on the layout editor's row "lay" while that editor is closed (the row is on the pad only while the
+     * Settings room holds the controller). The app keeps each choice per character too and sends one where the add-on's word differs
+     * (only a choice MADE here: never the default over the game's own, the Auto Shot rule).
+     */
+    /** the hub document's `mt` (null = an add-on set without the meters: the tiles wait) */
+    data class Mt(val d: String, val dset: Boolean, val c: Boolean, val cset: Boolean, val p: Int, val pset: Boolean,
+                  /** the game's own options (damageMeterEnabled / cooldownViewerEnabled), its Is*Available, the frames there; null = not read */
+                  val dok: Boolean?, val dav: Boolean?, val df: Boolean, val cok: Boolean?, val cav: Boolean?, val cf: Boolean,
+                  /** a press waits for the fight's end; a fight / its 15 s now; the presses the add-on has taken */
+                  val q: Boolean, val fight: Boolean, val linger: Boolean, val n: Int, val cols: Map<String, Int>)
+    @Volatile private var mt: Mt? = null
+    const val DMG_ID = "dmg"
+    const val CDM_ID = "cdm"
+    /** the Cooldown Manager's parts, bit 0..3 of the add-on's mask (Essential, Utility, Buff icons, Buff bars) */
+    const val CDM_ESS_ID = "cdm_ess"; const val CDM_UTIL_ID = "cdm_util"; const val CDM_BICON_ID = "cdm_bicon"; const val CDM_BBAR_ID = "cdm_bbar"
+    val CDM_PARTS = listOf(CDM_ESS_ID, CDM_UTIL_ID, CDM_BICON_ID, CDM_BBAR_ID)
+    const val SW_DMG = "dmg"; const val SW_CDM = "cdm"; const val SW_CDM_PARTS = "cdmp"
+    /** the status line (and the tile's alert_gear badge) while the game's own option is off: the choice waits */
+    const val GAME_OFF_NOTE = "Off in the game's Options"
+    /** the row "lay" (LayoutModel.ROW) */
+    const val MT_ROW = "lay"
+    /** the "lay" document is OPEN, or the layout editor wants it open / did within LayoutModel.EDITOR_HOLD_MS (the add-on takes the
+     *  meters' and the parts' columns only while closed; a word retried after an open would be an editor command) */
+    @Volatile var layOpen: () -> Boolean = { LayoutModel.Live.editorBusy(LayoutModel.Live.clock()) }
+
+    fun mtFrom(o: JSONObject?): Mt? = o?.let { m ->
+        fun ob(k: String) = if (m.has(k) && !m.isNull(k)) m.optBoolean(k) else null
+        val cols = HashMap<String, Int>()
+        m.optJSONObject("cols")?.let { c -> for (k in c.keys()) cols[k] = c.optInt(k, -1) }
+        Mt(m.optString("d", "on"), m.optBoolean("dset", false), m.optBoolean("c", true), m.optBoolean("cset", false),
+            m.optInt("p", 15) and 15, m.optBoolean("pset", false), ob("dok"), ob("dav"), m.optBoolean("df", false), ob("cok"), ob("cav"),
+            m.optBoolean("cf", false), m.optBoolean("q", false), m.optBoolean("fight", false), m.optBoolean("linger", false),
+            m.optInt("n", 0), cols)
+    }
+    private fun dmgWord(m: UiMode) = when (m) { UiMode.OFF -> "off"; UiMode.DYNAMIC -> "dyn"; else -> "on" }
+    private fun dmgOf(w: String) = when (w) { "off" -> UiMode.OFF; "dyn" -> UiMode.DYNAMIC; else -> UiMode.ON }
+
+    /** this character's choice (null = none made here: the add-on's word stands) */
+    private fun dmgChosen(): UiMode? = character?.let { who -> prefs?.getString("mt.$SW_DMG.$who", null)?.let { s -> runCatching { UiMode.valueOf(s) }.getOrNull() } }
+    private fun cdmChosen(): Boolean? = character?.let { who -> prefs?.takeIf { it.contains("mt.$SW_CDM.$who") }?.getBoolean("mt.$SW_CDM.$who", true) }
+    private fun partsChosen(): Int? = character?.let { who -> prefs?.takeIf { it.contains("mt.$SW_CDM_PARTS.$who") }?.getInt("mt.$SW_CDM_PARTS.$who", 15) }
+    /** the damage meter's mode as chosen (the add-on's word until a choice is made; On = the game's own) */
+    fun dmgMode(): UiMode = dmgChosen() ?: mt?.let { dmgOf(it.d) } ?: UiMode.ON
+    fun cdmOn(): Boolean = cdmChosen() ?: mt?.c ?: true
+    /** the parts' mask as chosen (bit 0 Essential .. 3 Buff bars) */
+    fun cdmParts(): Int = (partsChosen() ?: mt?.p ?: 15) and 15
+    fun setDmg(m: UiMode) {
+        val who = character ?: return
+        prefs?.edit()?.putString("mt.$SW_DMG.$who", (if (m == UiMode.OFF || m == UiMode.DYNAMIC) m else UiMode.ON).name)?.apply()
+        reconcile(); changed()
+    }
+    fun setCdm(on: Boolean) {
+        val who = character ?: return
+        prefs?.edit()?.putBoolean("mt.$SW_CDM.$who", on)?.apply()
+        reconcile(); changed()
+    }
+    /** part [bit] (0..3) on or off */
+    fun setCdmPart(bit: Int, on: Boolean) {
+        val who = character ?: return
+        if (bit !in 0..3) return
+        val p = cdmParts()
+        prefs?.edit()?.putInt("mt.$SW_CDM_PARTS.$who", if (on) p or (1 shl bit) else p and (1 shl bit).inv() and 15)?.apply()
+        reconcile(); changed()
+    }
+
+    /**
+     * the column to tap on "lay" now, or null: the first CHOSEN value the add-on's word differs from (the damage meter, the tile's On /
+     * Off, the parts' mask); [dmg] / [cdm] / [parts] = this character's choices (null = none made here)
+     */
+    fun mtCol(m: Mt, dmg: UiMode?, cdm: Boolean?, parts: Int?): Int? {
+        fun col(k: String) = m.cols[k]?.takeIf { it >= 0 }
+        if (dmg != null && dmgWord(dmg) != m.d) return col(when (dmg) { UiMode.OFF -> "DMG_OFF"; UiMode.DYNAMIC -> "DMG_DYN"; else -> "DMG_ON" })
+        if (cdm != null && cdm != m.c) return col(if (cdm) "CDM_ON" else "CDM_OFF")
+        if (parts != null && (parts and 15) != m.p) return col("PARTS")?.let { it + (parts and 15) }
+        return null
+    }
+    private var mtTapAt = 0L
+    private var mtTapN = -1
+    /** the meters' one tap: the Settings room holding (the row "lay" on the pad), the editor closed, after the add-on's answer or 1.5 s */
+    private fun mtStep(ctx: Context, s: HubState?, live: Boolean, now: Long) {
+        val m = mt
+        val h = hs
+        if (m == null && h == null) return
+        if (character == null || s == null || !live || !s.current || now < helloAt + GameUiPolicy.SETTLE_MS) return
+        if (pad?.optJSONObject("rows")?.has(MT_ROW) != true || layOpen()) return
+        // split-hud: the parts' words first (the same row, one tap at a time), then the meters'
+        val col = h?.let { hsCol(it) } ?: m?.let { mtCol(it, dmgChosen(), cdmChosen(), partsChosen()) } ?: return
+        val n = (m?.n ?: 0) + (h?.n ?: 0)
+        if (n == mtTapN && now - mtTapAt <= 1500L) return
+        if (now - swTapAt < 300L) return                                  // one tap at a time: a switch's tap just went
+        mtTapN = n; mtTapAt = now
+        GameInput.tap(ctx, pad, MT_ROW, col)
+    }
+    /** the game's own option for the damage meter (or the Cooldown Manager) is off: the choice waits ("Off in the game's Options") */
+    private fun gameOff(ok: Boolean?, av: Boolean?) = ok == false || av == false
+
+    /** Top screen > Game windows' Damage meter; null = no add-on word / no character yet (a "..." tile) */
+    fun dmgRow(): Row? {
+        val m = mt ?: return null
+        if (character == null) return null
+        if (!m.df) return Row(DMG_ID, "Damage meter", null, dmgMode(), true, true, "The game does not offer this yet")
+        val want = dmgMode()
+        val shown = when (want) { UiMode.OFF -> false; UiMode.DYNAMIC -> m.fight || m.linger; else -> true }
+        val note = when {
+            gameOff(m.dok, m.dav) -> GAME_OFF_NOTE
+            dmgWord(want) != m.d -> if (m.q) "Changes when combat ends" else "Sent"
+            m.q -> "Changes when combat ends"
+            shown -> "On the top screen now"
+            else -> "Hidden now"
+        }
+        return Row(DMG_ID, "Damage meter", null, want, true, !shown, note)
+    }
+    /** Top screen > Game windows' Cooldown Manager (its parts are the band's lines: [cdmPartRow]) */
+    fun cdmRow(): Row? {
+        val m = mt ?: return null
+        if (character == null) return null
+        if (!m.cf) return Row(CDM_ID, "Cooldown Manager", null, if (cdmOn()) UiMode.ON else UiMode.OFF, true, true, "The game does not offer this yet")
+        val on = cdmOn()
+        val note = when {
+            gameOff(m.cok, m.cav) -> GAME_OFF_NOTE
+            on != m.c || cdmParts() != m.p -> if (m.q) "Changes when combat ends" else "Sent"
+            m.q -> "Changes when combat ends"
+            on -> "On the top screen now"
+            else -> "Hidden now"
+        }
+        return Row(CDM_ID, "Cooldown Manager", null, if (on) UiMode.ON else UiMode.OFF, true, !on, note)
+    }
+    /** a part's line in the Cooldown Manager's band: only while the tile is On (a line that cannot act is not drawn) */
+    fun cdmPartRow(id: String): Row? {
+        val bit = CDM_PARTS.indexOf(id)
+        if (bit < 0 || cdmRow() == null || !cdmOn()) return null
+        val on = (cdmParts() shr bit) and 1 == 1
+        return Row(id, listOf("Essential", "Utility", "Buff icons", "Buff bars")[bit], null, if (on) UiMode.ON else UiMode.OFF, true, !on, "")
+    }
+
     /** f-top-castbar-toggle: the user's Hide for the game's cast bar. Default HIDE (1.0.10-test3, the user: "The cast bar needs to be
      *  hidden": Home's bottom bar shows every cast); a player who picked Show keeps it */
     fun castBarHide(): Boolean = prefs?.getBoolean("castbar.hide", true) ?: true
@@ -493,6 +710,8 @@ object GameUi {
         pad = h.optJSONObject("pad")
         castBarHidden = h.optJSONObject("cb")?.let { if (it.has("hidden")) it.optBoolean("hidden") else null }
         hudHidden = h.optJSONObject("hud")?.let { if (it.has("hidden")) it.optBoolean("hidden") else null }
+        // hub67: the one-tap memory (absent from an older add-on set: no restore tap, nothing held)
+        rst = h.optJSONObject("rst")?.let { o -> if (o.has("col")) HubRestore(o.optInt("col", -1), o.optInt("n", 0), o.optBoolean("q", false)) else null }
         // hub17: the split switches (absent from an older add-on: no rows, no taps)
         sw = h.optJSONObject("sw")?.let { o ->
             val cols = HashMap<String, Int>()
@@ -504,6 +723,10 @@ object GameUi {
             Sw(o.optString("row", "uisw"), cols, shown("player"), shown("target"), flag("np"), flag("prd"), set, flag("wm"), shown("party"), flag("atk"), flag("shot"), flag("pmode"),
                flag("ufp"), flag("uft"), flag("uftot"), flag("ufhpp"), flag("ufhpt"), flag("shotf"), flag("shotfk"), flag("ps"), flag("pet"), flag("nbar"), flag("sres"), flag("npf"))
         }
+        // hub61: the damage meter and the Cooldown Manager (absent from an older add-on set: "..." tiles, no taps)
+        mt = mtFrom(h.optJSONObject("mt"))
+        // split-hud: the controller UI, the buffs and the XP bar (absent from an older add-on set: the controller tile alone)
+        hs = hsFrom(h.optJSONObject("hs"))
         val prd = h.optJSONObject("prd")
         prdY = prd?.let { if (it.has("y")) it.optInt("y") else null }
         if (prd != null) {
@@ -555,6 +778,15 @@ object GameUi {
         val live = GameInput.live(now)
         // a state the game wrote before it went quiet says nothing about now
         val s = state?.let { if (live) it else it.copy(current = false) }
+        // hub67: this load's ONE restore tap goes before any other top-screen tap; the others wait for its answer (at most 3 s), then
+        // tap only what still differs from this character's choices
+        val r = rst
+        val rcol = restore.step(r, s, live, now, helloAt + GameUiPolicy.SETTLE_MS)
+        if (rcol != null) {
+            last = if (GameInput.tap(ctx, pad, ROW, rcol)) UiStep.Wait("Restoring this character's top screen") else UiStep.Wait("The game has not published its tap pad")
+            return
+        }
+        if (restore.holding(r, s, now)) { last = UiStep.Wait("Restoring this character's top screen"); return }
         val step = policy.step(s, room.name, visible, live, now, helloAt + GameUiPolicy.SETTLE_MS)
         if (step is UiStep.Tap && !GameInput.tap(ctx, pad, ROW, step.mask)) {
             last = UiStep.Wait("The game has not published its tap pad")
@@ -569,16 +801,21 @@ object GameUi {
             else if (character != null) {
                 // hub17: the split switches first, one absolute tap at a time on their own row, the next after the game's answer (or 1.5 s)
                 val sws = sw
-                val next = sws?.let { swNext(it) { p -> swWant(p) } }
+                // PR #533: a part the game answered since its last tap is forgotten; a parked one sits out its slow wait
+                swBack.answered { p -> swSig(sws, p) }
+                val next = sws?.let { swNextSkip(it, swBack.parked(now)) { p -> swWant(p) } }
                 val swCol = if (sws != null && next != null) swCol(sws, next.first, next.second) else null
                 if (sws != null && swCol != null && swCol >= 0 && s != null && live && s.current &&
                     now >= helloAt + GameUiPolicy.SETTLE_MS) {
-                    if (s.n != swTapN || now - swTapAt > 1500L) {
-                        swTapN = s.n; swTapAt = now
+                    // one tap, the next only after this part's own answer (its word / set) or 1.5 s; after 3 unanswered taps one
+                    // probe every 30 s (TapBackoff). s.n (every tap on the row) no longer stands in for this part's answer
+                    val part = next!!.first
+                    if (swBack.due(part, now)) {
+                        swBack.tapped(part, swSig(sws, part), now); swTapAt = now
                         GameInput.tap(ctx, pad, sws.row, swCol)
                     }
                 }
-                else if (hudOn()) {
+                else if (hudOn() && hudStepWanted()) {
                     // hub15 / hub16: HUD height, then width, then scale - one step a tap toward the choice; the next only after the
                     // game's answer (or 1.5 s). The step columns move the setting the add-on has SELECTED (its doc's sel): when it is
                     // not the one to move, the tap is column 39 (the next setting) first
@@ -587,9 +824,12 @@ object GameUi {
                         "y" -> Want("y", prdY, hudHeight(), prdDef, prdStep); "w" -> Want("w", prdW, hudWidth(), wDef, wStep)
                         else -> Want("s", prdS, hudScale(), sDef, sStep) } }
                         .firstOrNull { it.cur != null && it.want != null && it.cur != it.want }
+                    // PR #533: answered = the selected setting or a value moved; 3 unanswered taps, then one every 30 s
+                    val hudSig = listOf(prdSel, prdY, prdW, prdS)
+                    hudBack.answered { hudSig }
                     if (todo != null && s != null && live && s.current && s.hasRow &&
-                        (s.n != hudHTapN || now - hudHTapAt > 1500L) && now >= helloAt + GameUiPolicy.SETTLE_MS) {
-                        hudHTapN = s.n; hudHTapAt = now
+                        hudBack.due(HUD_KEY, now) && now >= helloAt + GameUiPolicy.SETTLE_MS) {
+                        hudBack.tapped(HUD_KEY, hudSig, now)
                         val cur = todo.cur!!; val want = todo.want!!
                         val selNow = prdSel ?: "y"
                         // the default is one tap (col 38); otherwise one step toward the choice
@@ -599,10 +839,17 @@ object GameUi {
                         GameInput.tap(ctx, pad, ROW, col)
                     }
                 }
+                // hub61: the meters' choice on "lay" (only while no switch / HUD step is under way)
+                else mtStep(ctx, s, live, now)
             }
         }
     }
 
+    /** hub15 / hub16: a HUD height / width / scale step waits (the meters' tap goes only when none does) */
+    private fun hudStepWanted(): Boolean = hudWants(prdLay).any { k -> when (k) {
+        "y" -> prdY != null && hudHeight() != null && prdY != hudHeight()
+        "w" -> prdW != null && hudWidth() != null && prdW != hudWidth()
+        else -> prdS != null && hudScale() != null && prdS != hudScale() } }
     /** the HUD settings the tap loop steps toward the player's choice: height, width and scale; with the layout owning the height and the
      *  scale (hub55 prd.lay) the width alone (the layout editor moves and sizes the HUD itself) */
     fun hudWants(layOwns: Boolean): List<String> = if (layOwns) listOf("w") else listOf("y", "w", "s")
@@ -613,11 +860,14 @@ object GameUi {
               val known: Boolean, val hidden: Boolean, val note: String)
 
     /** the elements to list: what the game reports, and always the minimap */
-    fun rows(): List<Row> = UiElements.KNOWN.mapNotNull { info -> elementRow(info.id)?.takeIf { it.known || info.id == "minimap" } }
+    fun rows(): List<Row> = UiElements.KNOWN.mapNotNull { info -> elementRow(info.id)?.takeIf { it.known || info.id == "minimap" } } +
+        HudSplit.EXTRA.mapNotNull { id -> partRow(id)?.takeIf { it.known } }       // split-hud: the buffs and the XP bar
 
     /** one element's row whether the game reports it or not (known = false until it does): Top screen's tiles keep a fixed place for
      *  every element (the user's 2026-11-16 tile grid: a dim "..." tile until the game reports, no reflow); null = no such element */
     fun elementRow(id: String): Row? {
+        if (id in HudSplit.EXTRA) return partRow(id)
+        if (id == HudSplit.CONTROLLER_ID) partRow(id)?.let { return it }           // split-hud: the add-on has the split
         val info = UiElements.of(id) ?: return null
         val el = state?.els?.firstOrNull { it.id == info.id }
         val m = mode(info.id)
@@ -656,4 +906,5 @@ object GameUi {
     private fun changed() { for (l in listeners) l() }
 
     private const val ROW = "ui"      // Hub.lua ROW
+    private const val HUD_KEY = "hud" // PR #533: hudBack's one key
 }

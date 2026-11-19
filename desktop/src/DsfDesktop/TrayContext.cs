@@ -62,6 +62,9 @@ namespace DsfDesktop.Ui
             }));
         }
 
+        // 0.2.37 (the user's ruling 2026-11-18 "Yes, quiet by default"): no virtual-screen question box any more; the setup is a
+        // section of the window (MainForm's Virtual screen), shown only with "Stream on its own screen" on or no screen on
+
         void ShowForm()
         {
             form.Show();

@@ -26,6 +26,40 @@ namespace DsfDesktop.App
         public bool MatchStreamResolution { get; set; } = true;
         /// <summary>the display device id Sunshine captures (the monitor WoW was last seen on); null = the primary display</summary>
         public string CaptureDevice { get; set; }
+        /// <summary>our own virtual screen's id in SudoVDA (made once; displays are keyed by it, so ours never touches Apollo's)</summary>
+        public string VirtualScreenId { get; set; }
+        /// <summary>0.2.31-0.2.36: the virtual-screen install question was asked (once). Unused since 0.2.37 (no question: the
+        /// window's setup offers the install); kept so an older settings file reads the same</summary>
+        public bool VirtualScreenOffered { get; set; }
+        /// <summary>"Stream on its own screen" (Part 2, the user's pick 2026-11-17): a Thor's stream gets our own virtual screen at its
+        /// mode on every PC, WoW moved onto it; off = only a PC with no screen on gets one (0.2.31). OFF BY DEFAULT since 0.2.37 (the
+        /// user's ruling 2026-11-18 "Yes, quiet by default"): see <see cref="OwnScreenChosen"/></summary>
+        public bool OwnScreen { get; set; }
+        /// <summary>
+        /// The player set "Stream on its own screen" themselves (0.2.37 on). 0.2.32-0.2.36 had it on by default and wrote that default
+        /// into every settings file, so a saved "on" from then can't be told from an explicit one: it reads as off (<see cref="Migrate"/>),
+        /// and anything the player sets from 0.2.37 on is kept. A headless PC still gets its virtual screen with it off.
+        /// </summary>
+        public bool OwnScreenChosen { get; set; }
+
+        /// <summary>a loaded file's values made current: an "on" the player never chose (the 0.2.32-0.2.36 default) goes off</summary>
+        public static AppSettings Migrate(AppSettings s)
+        {
+            if (s != null && !s.OwnScreenChosen && s.OwnScreen) { s.OwnScreen = false; Log.I("own screen: off (quiet by default from 0.2.37; the player can turn it on)"); }
+            return s;
+        }
+        /// <summary>we attached the Virtual Display Driver's monitor and haven't detached it yet (detached when Desktop next can)</summary>
+        public bool VddAttached { get; set; }
+        /// <summary>the player said yes to our Virtual Display Driver install: its monitor is ours</summary>
+        public bool VddInstalledByUs { get; set; }
+        /// <summary>the Virtual Display Driver monitor we attached (its display name): the only VDD monitor we adopt or detach</summary>
+        public string VddDevice { get; set; }
+        /// <summary>the Sunshine device id our own screen had last time, and the driver that made it: written as output_name before
+        /// the restart, so one restart does instead of two</summary>
+        public string OwnScreenDriver { get; set; }
+        public string OwnScreenDevice { get; set; }
+        /// <summary>the monitor WoW was on before it moved to our screen (kept across a crash: WoW goes back there at the next start)</summary>
+        public string WowHome { get; set; }
         /// <summary>the folder question is asked once; after that the user uses "Choose folder" themselves</summary>
         public bool AskedForFolder { get; set; }
 
@@ -34,7 +68,7 @@ namespace DsfDesktop.App
             try
             {
                 if (File.Exists(file))
-                    return new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<AppSettings>(File.ReadAllText(file)) ?? new AppSettings();
+                    return Migrate(new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<AppSettings>(File.ReadAllText(file)) ?? new AppSettings());
             }
             catch (Exception e) { Log.I("settings unreadable, defaults used: " + e.Message); }
             return new AppSettings();

@@ -60,7 +60,7 @@ end
 '''
 Q = boot(["safety", "tappad", "quests"], pre=PRE)
 
-check('local QV = "q62"' in SRC["quests"], "Quests says q62")
+check('local QV = "q67"' in SRC["quests"], "Quests says q67 (q65 kept below it)")
 check('the user, 2026-11-16: "hunters need to be able to visually see when their pets abilities are active like growl' in SRC["quests"],
       "the q62 header quotes the user")
 
@@ -105,7 +105,7 @@ check(last.get('pet') == 1 and [(x['s'], x['n'], x['on']) for x in last.get('s',
       "petauto: Growl (slot 4, on) and Bite (slot 5, off) only", last)
 check([(x.get('sc'), x.get('ac')) for x in last.get('s', [])] == [(13, 23), (14, 24)],
       "petauto: their cells once built (cast pfocus 13 / 14, toggle 23 / 24)", [(x.get('sc'), x.get('ac')) for x in last.get('s', [])])
-check(Q.eval('WowCompanion.pad.rows.pfocus.n') == 30, "the pfocus row has 30 cells (no new pad row)", Q.eval('WowCompanion.pad.rows.pfocus.n'))
+check(Q.eval('WowCompanion.pad.rows.pfocus.n') == 31, "the pfocus row has 31 cells (q65: col 30 the quest item; no new pad row)", Q.eval('WowCompanion.pad.rows.pfocus.n'))
 
 # 2. the cells: the game's pet action for the slot (CastPetAction), the game's own /petautocasttoggle by the ability's name
 check(cell(13) == {'type': 'pet', 'action': 4, 'macrotext': None}, "pfocus 13 = the pet bar's slot 4 (type pet, action 4)", cell(13))
@@ -184,14 +184,15 @@ check(pa and [(x['n'], x.get('sc'), x.get('ac')) for x in pa[-1]['s']] == [("Fir
 check(cell(23).get('macrotext') == '/petautocasttoggle Firebolt' and cell(24).get('type') is None,
       "pfocus 23 = /petautocasttoggle Firebolt, 24 empty again", (cell(23), cell(24)))
 
-# 11. a warlock's imp, four abilities and no hunter spells: the wheel is the abilities alone
+# 11. a warlock's imp, four abilities and no hunter spells: q66's Dismiss Pet (any live pet, the game's own /petdismiss), then the abilities
 Q.execute('KNOWN = {}; PETBAR = { [1] = { "PET_ACTION_ATTACK", "PET_ATTACK_TEXTURE", false, false, false, false, nil }, '
           '[4] = { "Firebolt", 135809, false, false, true, true, 3110 }, [5] = { "Blood Pact", 136168, false, false, true, true, 6307 }, '
           '[6] = { "Fire Shield", 135806, false, false, true, false, 2947 }, [7] = { "Phase Shift", 136164, false, false, true, false, 4511 } }')
 pump('fire("PET_BAR_UPDATE")')
 d = read("pet", "party")
 check([(x['t'], x.get('au'), x.get('as'), x.get('sc'), x.get('ac')) for x in d.get('items', [])] ==
-      [("Firebolt", 1, 4, 13, 23), ("Blood Pact", 1, 5, 14, 24), ("Fire Shield", 0, 6, 15, 25), ("Phase Shift", 0, 7, 16, 26)],
+      [("Dismiss Pet", None, None, 6, None), ("Firebolt", 1, 4, 13, 23), ("Blood Pact", 1, 5, 14, 24), ("Fire Shield", 0, 6, 15, 25),
+       ("Phase Shift", 0, 7, 16, 26)],
       "a warlock's imp: Firebolt / Blood Pact on, Fire Shield / Phase Shift off, each with its cells", d.get('items'))
 
 # 12. a secret value keeps the slot's last known state (never read through)

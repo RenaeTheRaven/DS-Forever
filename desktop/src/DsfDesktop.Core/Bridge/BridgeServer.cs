@@ -29,10 +29,30 @@ namespace DsfDesktop.Bridge
         Dictionary<string, object> Focus();
         /// <summary>Battle.net's sign-in window in front and its form found, or why not (BnetForm); keys are never read or logged here</summary>
         Dictionary<string, object> BnetReady();
-        /// <summary>the Thor's saved login for WoW's login.txt; never logged</summary>
-        void LoginFile(string email, string password);
+        /// <summary>the Thor's saved login for WoW's login.txt; never logged. [accountList] = the Thor's remembered game account
+        /// (Config.wtf's accountList, "Game account: Remembered"; null = none, or "Ask each time"): never logged either</summary>
+        void LoginFile(string email, string password, string accountList);
         Dictionary<string, object> AddonsStatus();
         Dictionary<string, object> AddonsInstall();
+        /// <summary>the Thor's stream mode ("stream_mode": w, h, fps): a virtual screen Desktop makes for a headless PC takes it</summary>
+        void StreamMode(int w, int h, int fps);
+        /// <summary>the Thor's "host_check" (its RTSP timed out while HTTP answered): check our streaming host's whole port set and
+        /// heal it when no stream is live; {"state": ok | restarting | failed | streaming, "sunshine": {...}}</summary>
+        Dictionary<string, object> HostCheck();
+        /// <summary>the Thor's "pc_test" (its Test connection): the PC's checks, answered as {"t":"pc_test_result", ...}</summary>
+        Dictionary<string, object> PcTest();
+        /// <summary>the Thor's Retry by hand ("screen_retry"): our virtual screen's tries start over after it gave up</summary>
+        void ScreenRetry();
+        /// <summary>the Thor's Retry after Desktop stopped ("wow_retry"; the wow message's "stopped": a server error or an outdated
+        /// PC game): WoW is started, or restarted at its login screen, once per press (the user's ruling 2026-11-18)</summary>
+        void WowRetry();
+        /// <summary>the Thor's Cancel (B) on the game update's bar ("pc_patch_cancel", Desktop 0.2.36's self-patcher)</summary>
+        void PatchCancel();
+        /// <summary>settings follow (0.2.37): "sv_read" -> "sv_files": OUR two SavedVariables files of the account signing in (WowSvSync;
+        /// [acctHash] = the Thor's account folder's hash, never a name)</summary>
+        Dictionary<string, object> SvRead(string acctHash);
+        /// <summary>"sv_write" -> "sv_written": the Thor's merged tables written (WowSvSync.Write's rules), one result per table</summary>
+        Dictionary<string, object> SvWrite(string acctHash, List<Dictionary<string, object>> docs);
     }
 
     /// <summary>the documents since the current log began (what a fresh LogTail would read from the file), capped</summary>
@@ -65,6 +85,9 @@ namespace DsfDesktop.Bridge
         public readonly WsConn Ws;
         public readonly string DeviceId, Name, Peer;
         public readonly long SinceMs = DeviceStore.NowMs();
+        /// <summary>the Thor shows Desktop's stop with its own Retry (its hello / pair_hello says "wow_stop": true, Thor apps from
+        /// Desktop 0.2.35's branch on). false = an older Thor (1487): it never sends "wow_retry", so its reconnect counts as one</summary>
+        public bool KnowsStop;
         readonly BlockingCollection<string> queue = new BlockingCollection<string>(8192);
 
         public BridgeSession(WsConn ws, string id, string name, string peer) { Ws = ws; DeviceId = id; Name = name; Peer = peer; }
@@ -128,6 +151,8 @@ namespace DsfDesktop.Bridge
         public event Action<int> ThorAddonSet;
         /// <summary>a Thor signed in (a new session)</summary>
         public event Action ThorConnected;
+        /// <summary>a Thor signed in with its hello (not a new pairing): the session, with what it says it can do</summary>
+        public event Action<BridgeSession> ThorHello;
 
         void SawAddonSet(Dictionary<string, object> m)
         {
@@ -292,7 +317,7 @@ namespace DsfDesktop.Bridge
             return m;
         }
 
-        sealed class PairAttempt { public string Id, Name, Nonce; public bool Stream = true; }
+        sealed class PairAttempt { public string Id, Name, Nonce; public bool Stream = true, KnowsStop; }
 
         static Dictionary<string, object> Err(string error, string detail = null)
         {
@@ -334,15 +359,16 @@ namespace DsfDesktop.Bridge
                                 break;
                             }
                             var dev = host.Devices.All().FirstOrDefault(d => d.Id == id);
-                            s = Authenticate(ws, st, id, dev?.Name ?? id, peer);
+                            s = Authenticate(ws, st, id, dev?.Name ?? id, peer, m.Bool("wow_stop"));
                             try { ThorConnected?.Invoke(); } catch (Exception) { }
+                            try { ThorHello?.Invoke(s); } catch (Exception) { }
                             SawAddonSet(m);
                         }
                         else if (t == "pair_hello")
                         {
                             var id = DeviceStore.Clean(m.Str("device_id"), 128);
                             if (id.Length == 0) { SendNow(ws, Err("bad_message", "device_id required")); continue; }
-                            pair = new PairAttempt { Id = id, Name = DeviceStore.Clean(m.Str("name"), 64), Nonce = Crypto.Hex(Crypto.RandomBytes(16)), Stream = !m.ContainsKey("stream") || m.Bool("stream") };
+                            pair = new PairAttempt { Id = id, Name = DeviceStore.Clean(m.Str("name"), 64), Nonce = Crypto.Hex(Crypto.RandomBytes(16)), Stream = !m.ContainsKey("stream") || m.Bool("stream"), KnowsStop = m.Bool("wow_stop") };
                             SendNow(ws, new Dictionary<string, object>
                             {
                                 ["t"] = "pair_challenge", ["nonce"] = pair.Nonce,
@@ -382,7 +408,7 @@ namespace DsfDesktop.Bridge
                             if (pin != null) ok["moonlight_pin"] = pin;
                             SendNow(ws, ok);
                             Log.I("bridge: paired " + pair.Name + " (" + pair.Id + ") from " + peer.Address);
-                            s = Authenticate(ws, st, pair.Id, pair.Name, peer);
+                            s = Authenticate(ws, st, pair.Id, pair.Name, peer, pair.KnowsStop);
                             if (pin != null)
                             {
                                 var sess = s;
@@ -414,13 +440,39 @@ namespace DsfDesktop.Bridge
                         case "login_file":
                             var em = m.Str("email");
                             var pw = m.Str("password");
-                            Task.Run(() => host.LoginFile(em, pw));
+                            // "Ask each time" on the Thor: its game account is never written on the PC (the user's pick 2026-11-17)
+                            var al = m.Str("game_account") == "remember" ? m.Str("account_list") : null;
+                            Task.Run(() => host.LoginFile(em, pw, string.IsNullOrEmpty(al) ? null : al));
                             break;
                         case "addons_status": SawAddonSet(m); s.Enqueue(With("addons", host.AddonsStatus())); break;
                         case "addons_install":
                             SawAddonSet(m);
                             var sa = s;
                             Task.Run(() => sa.Enqueue(With("addons", host.AddonsInstall())));
+                            break;
+                        case "stream_mode": host.StreamMode(Num(m, "w"), Num(m, "h"), Num(m, "fps")); break;
+                        case "host_check":
+                            var sh = s;
+                            Task.Run(() => { var r = With("host_check_result", host.HostCheck()); r["t"] = "host_check_result"; sh.Enqueue(r); });
+                            break;
+                        case "screen_retry": host.ScreenRetry(); break;
+                        case "wow_retry": Task.Run(() => host.WowRetry()); break;
+                        case "pc_patch_cancel": Task.Run(() => host.PatchCancel()); break;
+                        case "sv_read":
+                            var sr = s;
+                            var srAcct = m.Str("acct");
+                            Task.Run(() => sr.Enqueue(With("sv_files", host.SvRead(srAcct))));
+                            break;
+                        case "sv_write":
+                            var sw = s;
+                            var swAcct = m.Str("acct");
+                            var swDocs = (m.TryGetValue("docs", out var dv) && dv is object[] arr ? arr : new object[0])
+                                .OfType<Dictionary<string, object>>().ToList();
+                            Task.Run(() => sw.Enqueue(With("sv_written", host.SvWrite(swAcct, swDocs))));
+                            break;
+                        case "pc_test":
+                            var sp = s;
+                            Task.Run(() => { var r = host.PcTest(); r["t"] = "pc_test_result"; sp.Enqueue(r); });
                             break;
                         case "unpair":
                             host.Devices.Remove(s.DeviceId);
@@ -447,6 +499,12 @@ namespace DsfDesktop.Bridge
             }
         }
 
+        static int Num(Dictionary<string, object> m, string k)
+        {
+            if (!m.TryGetValue(k, out var v) || v == null) return 0;
+            try { return System.Convert.ToInt32(v, System.Globalization.CultureInfo.InvariantCulture); } catch (System.Exception) { return 0; }
+        }
+
         static Dictionary<string, object> With(string t, Dictionary<string, object> body)
         {
             var d = new Dictionary<string, object> { ["t"] = t };
@@ -454,11 +512,11 @@ namespace DsfDesktop.Bridge
             return d;
         }
 
-        BridgeSession Authenticate(WsConn ws, Stream st, string id, string name, IPEndPoint peer)
+        BridgeSession Authenticate(WsConn ws, Stream st, string id, string name, IPEndPoint peer, bool knowsStop = false)
         {
             host.Devices.Touch(id);
             SetTimeout(st, IdleMs);   // from here on any frame (the Thor's pings and pongs included) keeps it open
-            var s = new BridgeSession(ws, id, name, peer.Address.ToString());
+            var s = new BridgeSession(ws, id, name, peer.Address.ToString()) { KnowsStop = knowsStop };
             List<BridgeSession> replaced;
             lock (gate)
             {

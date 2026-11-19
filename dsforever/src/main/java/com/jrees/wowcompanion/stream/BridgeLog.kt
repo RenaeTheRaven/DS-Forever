@@ -39,6 +39,16 @@ class BridgeLog(
     private val onBnetReady: (BnetFormAt?) -> Unit = {},
     /** the saved login (email, password), for WoW's login.txt on the PC */
     private val savedLogin: () -> Pair<String, String>? = { null },
+    /** the game account the PC's WoW remembers, sent with the saved login (null = not said) */
+    private val gameAccount: () -> BridgeProtocol.GameAccount? = { null },
+    /** the stream's mode (width, height, fps) for Desktop's virtual screen on a headless PC; null = not said */
+    private val streamMode: () -> Triple<Int, Int, Int>? = { null },
+    /** Desktop 0.2.32: its Sunshine's ports again (it moved) or its answer to [askHostCheck] */
+    private val onSunshine: (BridgeMsg.Sunshine) -> Unit = {},
+    /** Desktop 0.2.32: its answer to [askPcTest] (Test connection) */
+    private val onPcTest: (BridgeMsg.PcTest) -> Unit = {},
+    /** settings follow (2026-11-18): the Thor's kept settings folder (SvKeep / SvSync); null = no sync */
+    private val svDir: () -> java.io.File? = { null },
     /** the waits between tries (the tests pass a fake that also ends the loop) */
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
     /** the Thor's clock on the documents' `_gt` scale ([PcClock]; the tests pass a fixed one) */
@@ -77,6 +87,24 @@ class BridgeLog(
 
     /** "is Battle.net's sign-in in front, and where is its form?" (StreamSignIn); false = no connection right now */
     fun askBnetReady(): Boolean = try { conn?.send(BridgeProtocol.bnetReady()); conn != null } catch (_: Throwable) { false }
+
+    /** "check your streaming host" (RTSP timed out twice: [HostHeal]); false = no connection right now */
+    fun askHostCheck(): Boolean = try { conn?.send(BridgeProtocol.hostCheck()); conn != null } catch (_: Throwable) { false }
+
+    /** Test connection's PC half ([ConnTest]); false = no connection right now */
+    fun askPcTest(): Boolean = try { conn?.send(BridgeProtocol.pcTest()); conn != null } catch (_: Throwable) { false }
+
+    /** the player's Retry: Desktop's own virtual screen tries again (it stops after 3 failures); false = no connection right now */
+    fun screenRetry(): Boolean = try { conn?.send(BridgeProtocol.screenRetry()); conn != null } catch (_: Throwable) { false }
+
+    /** the player's Retry after Desktop stopped (a server error, an outdated PC game): WoW once more; false = no connection now */
+    fun wowRetry(): Boolean = try { conn?.send(BridgeProtocol.wowRetry()); conn != null } catch (_: Throwable) { false }
+    /** the player's Cancel (B) on Desktop's update of the PC game */
+    fun patchCancel(): Boolean = try { conn?.send(BridgeProtocol.patchCancel()); conn != null } catch (_: Throwable) { false }
+
+    /** the "sv_write" this connection sent (its tables' text: the base once Desktop answers written / same) */
+    @Volatile private var svSent: JSONObject? = null
+    private fun svLog(line: String) { try { Log.i("WCSETUP", line) } catch (_: Throwable) {} }
 
     /** how a session ended */
     enum class End { DROPPED, AUTH_LOST, STOPPED }
@@ -120,12 +148,17 @@ class BridgeLog(
                     onWow(m.wowState.ifEmpty { if (m.wowRunning) "running" else "stopped" }, m.wowWhy)
                     onPc(m.pc?.let { if (it.state.isEmpty()) it.copy(state = if (m.wowRunning) "running" else "stopped") else it }
                         ?: PcWow(state = m.wowState.ifEmpty { if (m.wowRunning) "running" else "stopped" }, why = m.wowWhy))
-                    if (tls && fingerprint.isNotEmpty()) savedLogin()?.let { c.send(BridgeProtocol.loginFile(it.first, it.second)) }
+                    sendLogin(c)
                     // the PC game gets Desktop's add-on set BEFORE it is started (never while it runs: its files are read at the start)
                     if (!m.wowRunning) c.send(BridgeProtocol.addonsInstall())
+                    // settings follow (2026-11-18): our tables to the PC BEFORE its WoW starts (never while it runs: it reads them at login)
+                    if (!m.wowRunning) svDir()?.let { d -> runCatching { svSent = null; c.send(com.jrees.wowcompanion.SvSync.readRequest(d).toString()) } }
                     c.send(BridgeProtocol.focus())
+                    streamMode()?.let { (w, h, fps) -> c.send(BridgeProtocol.streamMode(w, h, fps)) }
                 }
                 is BridgeMsg.Doc -> emit(m)
+                is BridgeMsg.Sunshine -> onSunshine(m)
+                is BridgeMsg.PcTest -> onPcTest(m)
                 is BridgeMsg.BacklogEnd -> clock.backlogEnd()
                 is BridgeMsg.Lines -> for (l in m.lines) docs.line(l)
                 is BridgeMsg.Gap -> { bridgeGaps++; onStatus("gap at seq ${m.seq} (expected ${m.expected})") }
@@ -143,9 +176,27 @@ class BridgeLog(
                 is BridgeMsg.Wow -> {
                     onWow(m.state, m.why)
                     onPc(m.pc ?: PcWow(m.state, m.why))
-                    BridgeProtocol.wowText(m.state, m.why).takeIf { it.isNotEmpty() }?.let { onStatus("PC: $it") }
+                    // Desktop's stop and its game update say themselves on the curtain (a red row with Retry, the bar): no status line
+                    // over them (it read "WoW didn't start: Updating the game ...", rewritten every 500 ms)
+                    if (m.pc?.patch == null && m.pc?.stopped != true)
+                        BridgeProtocol.wowText(m.state, m.why).takeIf { it.isNotEmpty() }?.let { onStatus("PC: $it") }
+                }
+                is BridgeMsg.SvFiles -> svDir()?.let { d ->
+                    val w = runCatching { com.jrees.wowcompanion.SvSync.onFiles(d, m.o) { svLog(it) } }.onFailure { svLog("settings sync: NOT merged (${it.javaClass.simpleName})") }.getOrNull()
+                    svSent = w
+                    if (w != null) c.send(w.toString())
+                }
+                is BridgeMsg.SvWritten -> svDir()?.let { d ->
+                    runCatching { com.jrees.wowcompanion.SvSync.onWritten(d, m.o, svSent) { svLog(it) } }
+                    svSent = null
                 }
                 is BridgeMsg.Unpaired -> { onAuthLost("revoked"); return End.AUTH_LOST }
+                // the user's pick 2026-11-17 ("Ask the Thor again"): WoW closed itself on the PC and starts again; the saved login once
+                // more, only down this connection and only while the auto sign-in is on (savedLogin is null otherwise)
+                is BridgeMsg.LoginAgain -> {
+                    val sent = sendLogin(c)
+                    try { Log.i(TAG, "PC asked for the login again: " + if (sent) "sent" else "not sent (auto sign-in off, or no pinned connection)") } catch (_: Throwable) {}
+                }
                 is BridgeMsg.Error -> {
                     try { Log.w(TAG, "bridge error ${m.code}") } catch (_: Throwable) {}
                     if (m.code == "unauthorized" || m.code == "revoked") { onStatus("PC: pair again"); onAuthLost(m.code); return End.AUTH_LOST }
@@ -157,6 +208,16 @@ class BridgeLog(
         if (!running) return End.STOPPED
         return if (c.closeCode == BridgeProtocol.CLOSE_UNAUTHORIZED) { onAuthLost("unauthorized"); End.AUTH_LOST }
         else { onStatus("PC: connection lost, reconnecting"); End.DROPPED }
+    }
+
+    /** the saved login (and the game account to remember) for the PC's login.txt: only down a pinned wss connection; true = sent.
+     *  Nothing of it is logged */
+    private fun sendLogin(c: BridgeConn): Boolean {
+        if (!tls || fingerprint.isEmpty()) return false
+        val login = savedLogin() ?: return false
+        val account = try { gameAccount() } catch (_: Throwable) { null }
+        c.send(BridgeProtocol.loginFile(login.first, login.second, account))
+        return true
     }
 
     private fun emit(m: BridgeMsg.Doc) {

@@ -7,6 +7,9 @@
 -- each from its own PLAYER_SWING (type 0 / 1); one hand = one swing as before; Auto Shot unchanged. A haste change (UNIT_ATTACK_SPEED)
 -- rescales a running swing; a hand swapped mid-fight (WEAPON_SLOT_CHANGED / PLAYER_EQUIPMENT_CHANGED 16 / 17) restarts its swing at
 -- the weapon now held, an off hand left with no weapon drops its swing. Plain reads only. At "SWING-BEGIN".
+-- cb12 PET RECALL ONLY (the user, 2026-11-18: "I like the pet recall but I think we need to remove the pet smart attack, its obnoxious"): cb11's Smart pet
+-- casts are gone - the tap-to-cast bar, the class wheels and the touch-cast cells cast a harmful spell as the plain spell again (no
+-- /petattack text, no WC.padMap.smartPetCast / smartPetCmd, no WC.spResync); exactly cb10's cells. Nothing was ever saved.
 -- nbar4 THE 11-16 TEST BUILD MERGE: the macro-GCD nbar3 (PadMap m165) and feat/big-layout's nbar3 (the bar in the layout editor) both kept.
 -- nbar3 (PadMap m165; the user, 2026-11-16: "when using show tooltip on a macro it doesn't actually show the GCD when using it"): a
 -- player's macro on the In combat layer is drawn as the spell it would cast now (its picture, its cooldown / GCD sweep by that spell's
@@ -920,7 +923,7 @@ end
 -- queue as the Spellbook's toggles always did. The document says each slot's kind (`k`, none = a spell, as before), its name (`n`, not
 -- for a spell: the app has the book), an item's count (`ct`, `cons` = 1 for a consumable) and `any` = 1 (this bar takes every kind).
 do
-local CBV = "cb10"     -- cb10 PET SPELLS (#234, the user: "build it"): a pet's spell on the bar (the Bind box's Cast bar tab, the Controller room's chooser) is cast by its NAME (CastSpellByName, the game's own /cast; WC.spellsPetName from Spells s10), never CastSpellByID
+local CBV = "cb12"     -- cb12 PET RECALL ONLY (header: cb11's Smart pet casts removed, cb10's cells again); cb10 PET SPELLS (#234, the user: "build it"): a pet's spell on the bar (the Bind box's Cast bar tab, the Controller room's chooser) is cast by its NAME (CastSpellByName, the game's own /cast; WC.spellsPetName from Spells s10), never CastSpellByID
 local CB_PADTAB_PICK = { 39, 19 }        -- cb2: padtab 39 (the one-shot pick) then 19 (its cast bar code): Book b55 -> WC.castBarPick
 local CB_N, CB_PICK_COL, CB_PICK_S = 8, 8, 2   -- cb6: 8 slots (cells 0-7), the pick cell 8
 local CB_OLD_N = 12                      -- cb3: the slots a cb1 / cb2 store may hold (cb6: migrated to the first 8)

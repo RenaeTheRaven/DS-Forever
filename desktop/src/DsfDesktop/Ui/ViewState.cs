@@ -36,8 +36,20 @@ namespace DsfDesktop.Ui
         public string ThorProgress = "";
         public bool ThorBusy;
 
-        public bool StartWithWindows, StartWow, MatchStream;
+        public bool StartWithWindows, StartWow, MatchStream, OwnScreen;
         public int BridgePort;
+
+        /// <summary>the virtual screen's setup (quiet by default: Hidden unless "Stream on its own screen" is on or no screen is on)</summary>
+        public VScreenView VScreen = new VScreenView();
+    }
+
+    /// <summary>the window's Virtual screen section (DsfDesktop.Sunshine.ScreenSetup)</summary>
+    public sealed class VScreenView
+    {
+        public DsfDesktop.Sunshine.ScreenSetup.Panel Panel = DsfDesktop.Sunshine.ScreenSetup.Panel.Hidden;
+        public bool Headless, Busy;
+        /// <summary>the last Turn on / test result ("" = none)</summary>
+        public string Result = "";
     }
 
     /// <summary>what the window's buttons do (the controller; the mockups pass none)</summary>
@@ -51,11 +63,20 @@ namespace DsfDesktop.Ui
         void SetStartWithWindows(bool on);
         void SetStartWow(bool on);
         void SetMatchStream(bool on);
+        /// <summary>"Stream on its own screen" On/Off</summary>
+        void SetOwnScreen(bool on);
+        /// <summary>the Virtual screen section's buttons (each only on the player's click): SudoVDA's Turn on (Windows' admin prompt),
+        /// the Virtual Display Driver's install, the one-time test of our screen; null = done, else why not</summary>
+        string TurnOnSudoVda();
+        string InstallVirtualScreen();
+        string TestOwnScreen();
         Task<string> ThorInstall();
         Task<string> ThorInstallFile(string apk);
         void ThorWatching(bool on);
         void OpenServices();
         bool AskForFolderOnce();
+        /// <summary>the PC's half of Test connection: its lines for the window</summary>
+        System.Collections.Generic.List<string> RunTest();
     }
 
     static class ViewBuilder
@@ -73,9 +94,11 @@ namespace DsfDesktop.Ui
             if (c.Codes.Locked) { v.CodeLocked = true; v.Code = "paused"; v.CodeHint = "Too many wrong codes. Press New code to start pairing again."; }
             else
             {
-                v.Code = c.Codes.Display;
+                // the secret, then " · " and the network code (PairAddress): the window draws both as boxes, the second under
+                // "Other network" (for a Thor that can't see the PC by mDNS)
+                v.Code = c.PairCodeDisplay;
                 var r = c.Codes.Remaining;
-                v.CodeHint = "On your Thor: DS Forever > Streaming > enter this code.  A new code in " + (int)r.TotalMinutes + ":" + r.Seconds.ToString("00");
+                v.CodeHint = "On your Thor: DS Forever > Streaming.  A new code in " + (int)r.TotalMinutes + ":" + r.Seconds.ToString("00");
             }
             var online = (c.Bridge?.Sessions() ?? new List<Bridge.BridgeSession>()).Select(s => s.DeviceId).ToList();
             v.Online = online.Distinct().Count();
@@ -97,12 +120,25 @@ namespace DsfDesktop.Ui
                 v.HostHint = "It restarts by itself. If it keeps stopping, restart DS Forever Desktop.";
                 v.HostDot = Theme.Bad;
             }
+            else if (c.HealProblem != null)
+            {
+                // the self-healing (HostHealer): restarting ours, or its tries spent
+                v.Host = c.HealLine;
+                v.HostHint = c.HealHint;
+                v.HostDot = c.HealProblem == AppController.ProblemNotResponding ? Theme.Bad : Theme.Warn;
+            }
             else if (pr != null && pr.Problem != null)
             {
                 v.Host = pr.Line;
                 v.HostHint = pr.Hint;
                 v.HostServices = pr.Services;
                 v.HostDot = Theme.Bad;
+            }
+            else if (pr != null && pr.Info.Length > 0 && sh != null && sh.Running) v.Host += "  ·  " + pr.Info;   // Apollo beside ours: fine, said quietly
+            if (c.ScreenProblem != null && pr?.Problem == null && c.HostProblem != "exited")
+            {
+                // the fix is the window's Virtual screen section (0.2.37), never a pop-up; the monitor line says why
+                v.HostDot = Theme.Warn;
             }
 
             v.Stream = c.Stream == StreamState.Streaming ? "streaming to your Thor" : c.Stream == StreamState.Idle ? "not streaming" : "-";
@@ -111,7 +147,8 @@ namespace DsfDesktop.Ui
             var st = c.WowUp() ? WowState.Running : c.Starter.State;
             v.Wow = st == WowState.Running ? "running" : st == WowState.Starting ? "starting (" + c.Starter.Why + ")" : st == WowState.StartFailed ? "didn't start: " + c.Starter.Why : "not running";
             v.WowDot = st == WowState.Running ? Theme.Ok : st == WowState.Starting ? Theme.Gold : st == WowState.StartFailed ? Theme.Warn : Theme.Dim;
-            v.Monitor = c.CaptureStatus.Length > 0 ? c.CaptureStatus : "the primary display";
+            v.Monitor = c.ScreenLine.Length > 0 && c.ScreenLine != DsfDesktop.Sunshine.ScreenPlan.Ready ? c.ScreenLine
+                : c.CaptureStatus.Length > 0 ? c.CaptureStatus : "the primary display";
             v.Link = c.BridgeStatus + (v.Online > 0 ? ", " + v.Online + " connected" : "");
             v.LinkDot = c.Bridge == null ? Theme.Bad : v.Online > 0 ? Theme.Ok : Theme.Dim;
 
@@ -136,6 +173,8 @@ namespace DsfDesktop.Ui
             try { v.StartWithWindows = AutoStart.IsOn(); } catch (Exception) { }
             v.StartWow = c.Settings.StartWowOnStream;
             v.MatchStream = c.Settings.MatchStreamResolution;
+            v.OwnScreen = c.Settings.OwnScreen;
+            v.VScreen = new VScreenView { Panel = c.SetupPanel, Headless = c.Headless, Busy = c.SetupBusy, Result = c.SetupResult };
             return v;
         }
     }
@@ -152,6 +191,11 @@ namespace DsfDesktop.Ui
         public void SetStartWithWindows(bool on) => AutoStart.Set(on, c.Paths.Exe);
         public void SetStartWow(bool on) { c.Settings.StartWowOnStream = on; c.SaveSettings(); }
         public void SetMatchStream(bool on) => c.SetMatchStream(on);
+        public void SetOwnScreen(bool on) => c.SetOwnScreen(on);
+        public string TurnOnSudoVda() => c.TurnOnSudoVda();
+        public string InstallVirtualScreen() => c.InstallVirtualScreen();
+        public string TestOwnScreen() => c.TestOwnScreen();
+        public System.Collections.Generic.List<string> RunTest() => c.RunPcTest("the window").Lines();
         public Task<string> ThorInstall() => c.Thor.InstallLatest();
         public Task<string> ThorInstallFile(string apk) => c.Thor.InstallLocal(apk);
         public void ThorWatching(bool on) => c.ThorWatching = on;

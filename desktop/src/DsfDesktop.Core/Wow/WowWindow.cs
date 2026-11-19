@@ -40,16 +40,37 @@ namespace DsfDesktop.Wow
         {
             var all = Names.SelectMany(n => { try { return Process.GetProcessesByName(n); } catch (Exception) { return new Process[0]; } }).ToList();
             if (all.Count == 0) return null;
+            Process pick = null;
             if (preferDir != null)
-            {
-                var hit = all.FirstOrDefault(p =>
+                pick = all.FirstOrDefault(p =>
                 {
                     try { return string.Equals(Path.GetDirectoryName(p.MainModule.FileName), preferDir.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase); }
                     catch (Exception) { return false; }
                 });
-                if (hit != null) return hit;
+            pick = pick ?? all[0];
+            // only the one returned is the caller's to dispose: the rest go now (called every tick)
+            foreach (var p in all) if (!ReferenceEquals(p, pick)) p.Dispose();
+            return pick;
+        }
+
+        /// <summary>a WoW client runs from [dir] (the self-patcher never replaces files under a running client). A process whose path
+        /// can't be read (elevated) counts as running there: the patch waits rather than guess</summary>
+        public static bool RunningIn(string dir)
+        {
+            var d = (dir ?? "").TrimEnd('\\');
+            bool hit = false;
+            foreach (var n in Names)
+            {
+                Process[] ps;
+                try { ps = Process.GetProcessesByName(n); } catch (Exception) { continue; }
+                foreach (var p in ps)
+                {
+                    try { if (string.Equals(Path.GetDirectoryName(p.MainModule.FileName), d, StringComparison.OrdinalIgnoreCase)) hit = true; }
+                    catch (Exception) { hit = true; }
+                    finally { p.Dispose(); }
+                }
             }
-            return all[0];
+            return hit;
         }
 
         /// <summary>a WoW process exists (it may not have a window yet while it loads)</summary>

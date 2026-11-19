@@ -110,7 +110,7 @@ nrows0 = int(L.eval('WowCompanion.pad.nrows'))
 check(L.eval('WowCompanion.pad.rows.castbar') is None, "cb2: an empty bar at the login registers NO castbar row")
 d = last(L, "castbar")
 check(d is not None and d.get("pick") is None and d.get("nopad") == 1 and d.get("pp") == [39, 19] and d.get("e") in ([], {})
-      and d.get("v") == "cb10" and d.get("n") == N, "the first document: an empty bar, no pick cell (nopad), the padtab pick 39 then 19", d)
+      and d.get("v") == "cb12" and d.get("n") == N, "the first document: an empty bar, no pick cell (nopad), the padtab pick 39 then 19", d)
 check(L.eval('WowCompanion.pad.describe().rows.castbar') is None, "describe() has no castbar row yet")
 L.execute('WowCompanion.castBar.sync(); fire("PLAYER_REGEN_ENABLED"); runTimers(NOW + 5)')
 check(L.eval('WowCompanion.pad.rows.castbar') is None, "a sync / fight's end with an empty bar: still no row")
@@ -378,6 +378,35 @@ check(not re.search(r'\b(SetBinding|SaveBindings|CreateMacro|EditMacro|SetCVar|P
       "the block calls none of them")
 check(AB.count('pad.secureRow, "castbar"') == 1 and AB.replace(BLOCK, '').count('secureRow, "castbar"') == 0,
       "the row is built in the block only")
+# ================================================================ cb12 PET RECALL ONLY (PadMap m174; the user, 2026-11-18: "I like the pet
+# recall but I think we need to remove the pet smart attack, its obnoxious"): cb11's Smart pet casts are gone. Even with a padMap that
+# still offered the old hooks (an add-on mix that cannot happen in one set, the worst case), a harmful spell's cell is the plain spell
+# and the Start Attack cell runs its own line - nothing reads smartPetCast / smartPetCmd, no "/petattack" anywhere in ActionBar.lua
+SPSTUB = r'''
+WowCompanion.padMap = {
+    smartPetCast = function(id) if id == 403 then return "/petattack [pet,harm,nodead]\n/cast Lightning Bolt" end end,
+    smartPetCmd = function(k, b) return "/petattack [pet,harm,nodead]\n" .. b end,
+    castBarCmd = function(k) if k == "STARTATTACK" then return { key = k, n = "Start Attack", i = 1, body = "/startattack" } end end,
+}
+'''
+P = boot(["safety", "tappad"], pre=PRE + SPSTUB)
+load_block(P)
+P.execute('fire("PLAYER_LOGIN"); fire("PLAYER_ENTERING_WORLD", true, false); WowCompanion.pad.layout(); runTimers(NOW + 5)')
+P.execute('WowCompanionSpellsDB.castBar = { ["Korvash-Realm"] = { [1] = { k = "spell", id = 403 }, [2] = { k = "spell", id = 331 }, '
+          '[3] = { k = "command", key = "STARTATTACK" } } }; WowCompanion.castBar.sync(); runTimers(NOW + 1)')
+
+
+def cell(i, k):
+    return P.eval('WowCompanion.pad.rows.castbar.cells[%d].a["%s"]' % (i, k))
+
+
+check(cell(0, "type") == "spell" and cell(0, "spell") == 403 and cell(0, "macrotext") is None,
+      "cb12: a harmful spell's cell is the plain spell (no Smart pet cast)", (cell(0, "type"), cell(0, "macrotext")))
+check(cell(1, "type") == "spell" and cell(1, "spell") == 331, "cb12: a helpful spell's cell: the plain spell", (cell(1, "type"), cell(1, "spell")))
+check(cell(2, "macrotext") == "/startattack", "cb12: the Start Attack cell runs its own line (never the pet's)", cell(2, "macrotext"))
+ABC = re.sub(r'--[^\n]*', '', AB)               # the code without its comments (the notes name what is gone)
+check("/petattack" not in ABC and "smartPet" not in ABC and "spResync" not in ABC,
+      "cb12: ActionBar.lua's code has no /petattack, no smartPet hook, no spResync")
 CL = boot([])
 check(CL.eval('function(s) local f, e = loadstring(s, "ActionBar.lua"); return e end')(AB) is None,
       "ActionBar.lua compiles as Lua 5.1 (200 locals, 60 upvalues)")

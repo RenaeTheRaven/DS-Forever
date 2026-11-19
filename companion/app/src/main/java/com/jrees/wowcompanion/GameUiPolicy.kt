@@ -56,7 +56,9 @@ object UiElements {
         UiElement("minimap", "Minimap", "MAP", UiMode.OFF, onHome = false),
         // Dynamic since Home (user, 2026-09-28 20:35: "Yes, hide them while Home shows")
         // hub2 (Hub.lua, LATER item 20): the game's buffs, debuffs and XP bar ride this element, so the row names them
-        UiElement("hud", "Controller bars, buffs and XP", "CAST", UiMode.OFF, onHome = true),
+        // split-hud (the user, 2026-11-17: "we need to split out the Buffs controller UI and XP bar" -> "Both"): the element is the
+        // controller UI alone now; its riders are two tiles of their own (HudSplit), on the same layout bit
+        UiElement("hud", "Controller UI", "CAST", UiMode.OFF, onHome = true),
         UiElement("tracker", "Quest tracker", "QUESTS", UiMode.OFF, onHome = true),
         UiElement("chat", "Chat window", "CHAT", UiMode.OFF, onHome = true),
         // the interaction overlay is no room: Off = the companion shows the NPC windows and the
@@ -69,6 +71,77 @@ object UiElements {
         "minimap" -> listOf(UiMode.ON, UiMode.OFF, UiMode.DYNAMIC, UiMode.TRACKING)
         "hud" -> listOf(UiMode.ON, UiMode.OFF, UiMode.DYNAMIC, UiMode.NINTENDO)
         else -> listOf(UiMode.ON, UiMode.OFF, UiMode.DYNAMIC)
+    }
+}
+
+/**
+ * SPLIT-HUD (the user, 2026-11-17: "we need to split out the Buffs controller UI and XP bar" -> "Both"): the "hud" element's three
+ * parts, each its own tile with its own mode - the controller UI (the element's own id, its saved mode and its Nintendo choice), the
+ * game's buffs (with the debuffs and the durability figure Home draws between them) and the XP bar. The five layout bits are all held
+ * and the pad has no free row, so the parts SHARE bit 1: the bit carries one mode's rule (the "riding" mode), and each part tells the
+ * add-on (Hub.lua hs2, a word per part on the layout editor's row "lay" while that editor is closed) whether it follows the bit ("ride")
+ * or stands on its own ("on" / "off"). Words change only when a choice does, which is only in the Settings room - where the row is.
+ *
+ *   riding     Dynamic if a part is Dynamic, else Off if a part is Off, else On (Nintendo counts as On: the stock bar's own switch)
+ *   a word     the part's mode IS the riding one: "ride"; else On: "on"; else (Off beside a Dynamic part): "off" - hidden while
+ *              the add-on holds it (this session only: a login without the app shows it, the old Off)
+ * An unset word is "ride" (the add-on's default), so three parts with one mode - every player before the split, and every player
+ * until a tile is tapped (each new part's mode comes from the old element's) - need no word at all, and the bit is exactly the old one.
+ */
+object HudSplit {
+    const val CONTROLLER_ID = "hud"
+    const val BUFFS_ID = "buffs"
+    const val XP_ID = "xp"
+    val PARTS = listOf(CONTROLLER_ID, BUFFS_ID, XP_ID)
+    /** the two tiles that are not a layout element of their own */
+    val EXTRA = setOf(BUFFS_ID, XP_ID)
+    /** the add-on's part letters (Hub.lua HS.PARTS) */
+    val LETTER = mapOf(CONTROLLER_ID to "c", BUFFS_ID to "b", XP_ID to "x")
+    const val RIDE = "ride"
+
+    /** the mode as far as hiding goes: Nintendo shows the part (the stock bar goes by its own switch) */
+    fun hideMode(m: UiMode): UiMode = when (m) { UiMode.NINTENDO, UiMode.TRACKING -> UiMode.ON; else -> m }
+
+    /** the mode the layout bit carries for [modes] (the three parts') */
+    fun riding(modes: Collection<UiMode>): UiMode {
+        val h = modes.map { hideMode(it) }
+        return when { UiMode.DYNAMIC in h -> UiMode.DYNAMIC; UiMode.OFF in h -> UiMode.OFF; else -> UiMode.ON }
+    }
+
+    /** the word for a part in [m] while the bit rides [riding] */
+    fun word(m: UiMode, riding: UiMode): String {
+        val h = hideMode(m)
+        return when { h == riding -> RIDE; h == UiMode.ON -> "on"; else -> "off" }
+    }
+
+    /** a new part's mode before the player picks one: the old element's (Nintendo was the bar's: the buffs and XP bar stayed on) */
+    fun migrate(saved: UiMode?, hud: UiMode): UiMode = saved?.let { hideMode(it) } ?: hideMode(hud)
+
+    /** the add-on's word for a part (absent / unknown = ride) */
+    fun norm(w: String?): String = if (w == "on" || w == "off") w else RIDE
+
+    /**
+     * the column to tap on "lay" now, or null: the first part whose add-on word differs from the one [want]s; [cols] = the add-on's
+     * columns ("C_ON", "C_OFF", "C_RIDE", "B_ON", ...); [now] = the add-on's words by part id
+     */
+    fun col(cols: Map<String, Int>, now: Map<String, String?>, want: Map<String, String>): Int? {
+        for (id in PARTS) {
+            val w = want[id] ?: continue
+            if (norm(now[id]) == w) continue
+            val k = LETTER.getValue(id).uppercase() + "_" + w.uppercase()
+            return cols[k]?.takeIf { it >= 0 } ?: continue
+        }
+        return null
+    }
+
+    /** should a part in mode [m] be hidden, with [room] on the bottom screen (the old element's rule, per part) */
+    fun wantsHidden(m: UiMode, room: String?, visible: Boolean): Boolean {
+        if (!visible) return false
+        return when (hideMode(m)) {
+            UiMode.OFF -> true
+            UiMode.DYNAMIC -> room == "CAST" || room == "HOME"
+            else -> false
+        }
     }
 }
 
@@ -93,7 +166,7 @@ data class HubState(
  * as the layout: after the loading screen settles, a reply waited for, the ask tried once more, then slowly while still silent.
  */
 class CastBarPolicy(
-    /** the row's Show / Hide columns: the cast bar's (hub11) by default; HUD mode's are [HUD_SHOW] / [HUD_HIDE] (hub13) */
+    /** the row's Show / Hide columns: the cast bar's (hub11) by default; HUD mode's were 34 / 35 (hub13; 34 is [RESTORE] since hub67) */
     private val colShow: Int = COL_SHOW, private val colHide: Int = COL_HIDE) {
     private var tapCol = -1
     private var tapBoot = -1L
@@ -124,12 +197,62 @@ class CastBarPolicy(
     companion object {
         const val COL_SHOW = 32            // Hub.lua CB_SHOW / CB_HIDE: past the 32 layouts, inside the row's 40 columns
         const val COL_HIDE = 33
-        const val HUD_SHOW = 34            // hub13: HUD mode, the player / target frames
-        const val HUD_HIDE = 35
+        /** hub67 (external PR #532 reworked; the user, 2026-11-18: "so we cant do this on a session basis, that way if it launches on
+         *  desktop not through the thor my DS forever shit doesnt take over?" -> "Yes, build it"): the app's ONE restore tap at connect /
+         *  login - the add-on puts this character's kept switches, layout and cast bar back ([RestorePolicy]). Was HUD_SHOW (hub13),
+         *  untapped since hub17's own switches */
+        const val RESTORE = 34
+        const val HUD_HIDE = 35            // hub13: HUD mode's bundle hide (untapped since hub17; Hub.lua keeps it)
         const val HUD_LOWER = 36           // hub15: HUD mode's Height, one step a tap
         const val HUD_HIGHER = 37
         const val HUD_HDEF = 38            // back to Interact's default place
         const val HUD_SEL = 39             // hub16: which setting 36 / 37 / 38 move (height -> width -> scale; height again 4 s after)
+    }
+}
+
+/** hub67: the hub document's `rst` - the restore column, restores done since the add-on's load ([n]: 0 = not yet this boot), one held
+ *  for a fight's end ([q]); null = an add-on set without the one-tap memory (no tap, nothing held) */
+data class HubRestore(val col: Int, val n: Int, val q: Boolean)
+
+/**
+ * hub67 ONE-TAP MEMORY (external PR #532 by mummigast, reworked; the user, 2026-11-18: "so we cant do this on a session basis, that way
+ * if it launches on desktop not through the thor my DS forever shit doesnt take over?" -> "Yes, build it"). Hub.lua keeps each
+ * character's top-screen switches, layout mask and cast bar (WowCompanionDB) but NEVER applies them by itself at login - WoW started on
+ * the PC without the app shows the normal UI. The app sends ONE restore tap ("ui" column [CastBarPolicy.RESTORE]) per load (the hub
+ * document's boot), after the loading screen settles and before any other top-screen tap; the other taps wait for its answer (rst.n
+ * above 0) at most [HOLD_MS], then compare the game's words with the app's own per-character choices and tap only what still differs
+ * (normally nothing). A lost tap is sent once more ([MAX_TRIES]); past that the usual compare-and-tap heals everything as before. A
+ * restore held for a fight's end ([HubRestore.q]) holds nothing here: the app's own taps are kept by the add-on, so the late restore
+ * puts back the same choices.
+ */
+class RestorePolicy {
+    private var tapBoot = -1L
+    private var tapAt = 0L
+    private var tries = 0
+
+    /** a current hello (a login / reload): the next load gets its tap */
+    fun freshLogin() { tapBoot = -1L; tries = 0 }
+
+    /** the column to tap now, or null; the tap is recorded here */
+    fun step(r: HubRestore?, s: HubState?, live: Boolean, now: Long, settleUntil: Long = 0L): Int? {
+        if (r == null || r.col < 0 || s == null || !live || !s.current || !s.hasRow || now < settleUntil) return null
+        if (r.n > 0 || r.q) return null
+        if (tapBoot != s.boot) tries = 0
+        if (tries >= MAX_TRIES) return null
+        if (tapBoot == s.boot && now - tapAt < HOLD_MS) return null
+        tapBoot = s.boot; tapAt = now; tries += 1
+        return r.col
+    }
+
+    /** the other top-screen taps wait: this load's restore tap is sent and not answered yet (at most [HOLD_MS] after the last try) */
+    fun holding(r: HubRestore?, s: HubState?, now: Long): Boolean {
+        if (r == null || s == null || r.n > 0 || r.q) return false
+        return tapBoot == s.boot && now - tapAt < HOLD_MS
+    }
+
+    companion object {
+        const val MAX_TRIES = 2            // the tap, and one more
+        const val HOLD_MS = 3_000L         // the answer rides the next flush (the switch taps wait 1.5 s for theirs)
     }
 }
 

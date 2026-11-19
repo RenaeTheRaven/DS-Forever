@@ -137,15 +137,24 @@ object HomeSettings {
         set(v) { if (v != pauseOverGame) { prefs?.edit()?.putBoolean("pauseOverGame", v)?.apply(); for (l in listeners) l() } }
 
     /**
-     * B: PET FOLLOW (the user, 2026-11-16: "I want a pet class specific option where pressing B in the out of combat home menu basically
-     * stops the pet attacking"; PetFollowB): PER CHARACTER ([who] = "Name-Realm", GameUi.character), ON BY DEFAULT (the row shows only
-     * for a pet class); no character known = the default
+     * B: PET RECALL (the user, 2026-11-18: "I like the pet recall but I think we need to remove the pet smart attack, its obnoxious"; the
+     * pick: ON by default for pet classes, a player's saved choice kept; PetRecall): PER CHARACTER ([who] = "Name-Realm",
+     * GameUi.character), the row shows only for a pet class; no character known = Off (nothing to tell). A character's SAVED choice is
+     * kept as it was made: 2026-11-17's Smart pet ("smartPet.<who>", the same key on), else 2026-11-16's B: pet follow
+     * ("petFollowB.<who>"); nothing saved = ON
      */
-    fun petFollowB(who: String?): Boolean = who?.let { prefs?.getBoolean("petFollowB.$it", true) } ?: true
-    fun setPetFollowB(who: String?, on: Boolean) {
+    fun petRecall(who: String?): Boolean {
+        val k = who ?: return false
+        val p = prefs ?: return false
+        if (p.contains("smartPet.$k")) return p.getBoolean("smartPet.$k", true)
+        if (p.contains("petFollowB.$k")) return p.getBoolean("petFollowB.$k", true)
+        return true
+    }
+    fun setPetRecall(who: String?, on: Boolean) {
         val k = who ?: return
-        if (on == petFollowB(k)) return
-        prefs?.edit()?.putBoolean("petFollowB.$k", on)?.apply()
+        val p = prefs ?: return
+        if (p.contains("smartPet.$k") && on == petRecall(k)) return
+        p.edit().putBoolean("smartPet.$k", on).apply()                 // always its own key: a choice the user made is kept as made
         for (l in listeners) l()
     }
 
@@ -567,7 +576,7 @@ class HomeSettingsSection(context: Context,
 
     override fun onDraw(c: Canvas) {
         UiKit.asTitle(pSection); UiKit.asBody(pLabel); UiKit.asBody(pSub)
-        c.drawColor(Theme.ink)
+        // feat/beautify (themes 8.4): no page ink - the room's RoomGround.settings (the dimmed rock) shows through
         lay(c)
     }
 
