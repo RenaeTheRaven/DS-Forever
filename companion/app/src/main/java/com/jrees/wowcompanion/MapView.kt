@@ -3895,7 +3895,7 @@ class MapView(context: Context) : View(context) {
     var onShownFocusChanged: (() -> Unit)? = null
     /** the host's way to make a quest the game's focus (Home's one focus path); the default focus is pushed through it */
     var onPushFocus: ((questId: Int) -> Boolean)? = null
-    private val focusPush = DefaultFocusPush()
+    private val focusPush = DefaultFocusPush().also { p -> p.onGiveUp = { q -> android.util.Log.i("WCMAP", "default focus $q: gave up after ${DefaultFocusPush.MAX_SENDS} pushes the game never took") } }
     private fun pushDefault() {
         // only while the game is live: a push refused as "Waiting for the game" would wait out RETRY_MS after the first document
         // (test18: refused every 30 s for 5 minutes, then pushed only by hand)
@@ -8291,7 +8291,7 @@ class MapView(context: Context) : View(context) {
             // the game's own filter button (pressed while the panel is open), as the other rooms draw it, Select / View's glyph to its left
             val fb = UiKit.tex(if (filterOpen) "map_filter_btn_down" else "map_filter_btn")
             if (fb != null) c.drawBitmap(fb, null, btnFilter, pArt) else drawButton(c, btnFilterDraw, "≡", seed.isNotEmpty(), 1f)
-            UiKit.pad(c, "gen_back", btnFilter.left - 28f, btnFilter.centerY(), 44f)
+            UiKit.pad(c, Glyphs.select(), btnFilter.left - 28f, btnFilter.centerY(), 44f)
             // the storey spine stands on top of the plus button, its lowest storey nearest it
             val here = placeHere(m)
             if (here != null && here.levels.size > 1) {

@@ -53,17 +53,36 @@ object GeneralTiles {
     /** the compact rows, in their groups' order */
     enum class Row(val label: String) {
         LANGUAGE("Language"), LOGIN("Battle.net login"), GAME_ACCOUNT("Game account"), WINDOWS_ID(WindowsId.ROW_ID),
-        WINDOWS_RESTART("Restart the game"), REPORT("Problem report"), RELOAD("Reload game UI"), STATUS("Status")
+        // the user, 2026-11-18 (upstream v2.4.5's Browser login, opt-in): Off / On, from the next game start
+        BROWSER_LOGIN(BrowserLogin.ROW_ID),
+        WINDOWS_RESTART("Restart the game"), REPORT("Problem report"), RELOAD("Reload game UI"), STATUS("Status"),
+        // the user, 2026-11-19 ("reset to defaults buttons, split into four"): General > Reset, one full-width button each (ResetPlan)
+        RESET_SETTINGS("Reset settings"), RESET_LAYOUTS("Reset layouts"), RESET_SKILLS("Reset skills"), RESET_ALL("Reset everything"),
+        // the user, 2026-11-19: "just a simple button at the bottom that says 'Support the Project'" (SupportLink): the tab's last row
+        SUPPORT(SupportLink.ROW_ID)
     }
 
-    /** [g]'s compact rows now: the login row only when the host has it; Restart the game only while the running game used the other ID */
+    /** [g]'s compact rows now: the login row only when the host has it; Restart the game only while the running game used the other ID
+     *  or signed in the other way (Browser login) */
     fun rows(g: SettingsTabs.Group, loginRow: Boolean, winIdRestart: Boolean): List<Row> = when (g) {
         SettingsTabs.Group.LOOK -> listOf(Row.LANGUAGE)
         SettingsTabs.Group.ACCOUNT -> listOfNotNull(if (loginRow) Row.LOGIN else null, Row.GAME_ACCOUNT, Row.WINDOWS_ID,
-            if (winIdRestart) Row.WINDOWS_RESTART else null)
+            Row.BROWSER_LOGIN, if (winIdRestart) Row.WINDOWS_RESTART else null)
         SettingsTabs.Group.HELP -> listOf(Row.REPORT, Row.RELOAD, Row.STATUS)
+        SettingsTabs.Group.RESET -> listOf(Row.RESET_SETTINGS, Row.RESET_LAYOUTS, Row.RESET_SKILLS, Row.RESET_ALL)
+        SettingsTabs.Group.SUPPORT -> listOf(Row.SUPPORT)
         else -> emptyList()
     }
+
+    /** a Reset row's button (null = not one) */
+    fun resetOf(r: Row): ResetPlan.Button? = when (r) {
+        Row.RESET_SETTINGS -> ResetPlan.Button.SETTINGS; Row.RESET_LAYOUTS -> ResetPlan.Button.LAYOUTS
+        Row.RESET_SKILLS -> ResetPlan.Button.SKILLS; Row.RESET_ALL -> ResetPlan.Button.EVERYTHING; else -> null
+    }
+    /** a row that is ONE button across it, its words on the button (Support the Project, the Reset buttons) */
+    fun wide(r: Row): Boolean = r == Row.SUPPORT || resetOf(r) != null
+    /** the note on Reset layouts / skills with no character known yet */
+    const val NO_CHARACTER = "No character yet"
 
     /** the Theme tile's page (themes' Theme maker, ThemeMakerPage): set by the room's host; null = the premade themes in its band */
     @Volatile var onOpenTheme: (() -> Boolean)? = null
@@ -163,6 +182,10 @@ object GeneralTiles {
         return (0 until n).map { k -> GameUiTiles.Box(l + k * w, t, l + (k + 1) * w, t + CONTROL_H) }
     }
 
+    /** a row that is ONE button across it (Support the Project): from the label's x to the control room's right end, [CONTROL_H] tall */
+    fun wideButton(row: GameUiTiles.Box) =
+        GameUiTiles.Box(row.l + LABEL_X, row.cy - CONTROL_H / 2f, row.r - 16f, row.cy + CONTROL_H / 2f)
+
     /** one button right-aligned in [room] */
     fun button(room: GameUiTiles.Box, w: Float = BUTTON_W) =
         GameUiTiles.Box(room.r - w, room.cy - CONTROL_H / 2f, room.r, room.cy + CONTROL_H / 2f)
@@ -199,6 +222,8 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
      *  is Dismiss for THAT report only; a later saved report starts at Open issue again (2026-11-17 review: a flag never reset let a
      *  new report be dismissed unseen) */
     private var reportTriedAt = 0L
+    /** when Support the Project last found no browser (its button says so for [SupportLink.NOTE_MS]); 0 = never */
+    private var supportFailedAt = 0L
     private var voiceAvailAt = -10_000L
     private var voiceNeeds = false
 
@@ -208,6 +233,7 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
         ReportFlow.init(context)
         ReportFlow.onChange { postInvalidate() }
         WindowsId.onChange { post { relayout() } }
+        BrowserLogin.onChange { post { relayout() } }
         if (group == SettingsTabs.Group.HELP) StatusLine.onChange = { post { invalidate() } }
     }
 
@@ -235,7 +261,8 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
     private fun slots(): List<GeneralTiles.Slot> = if (group == SettingsTabs.Group.LOOK) GeneralTiles.slots(ScreenSwap.offered) else emptyList()
     private fun rows(): List<GeneralTiles.Row> = GeneralTiles.rows(group, host.loginRow, winIdRestart())
 
-    private fun winIdRestart(): Boolean = WindowsId.showRestart(host.gameRunning(), SetupBridge.restarting, WindowsId.launched, Settings.windowsId)
+    private fun winIdRestart(): Boolean = WindowsId.showRestart(host.gameRunning(), SetupBridge.restarting, WindowsId.launched, Settings.windowsId) ||
+        BrowserLogin.showRestart(host.gameRunning(), SetupBridge.restarting, BrowserLogin.launched, Settings.browserLogin)
     private fun swapPending(): ScreenSwap.Pending =
         ScreenSwap.pending(Settings.swapScreens, ScreenSwap.inUseNow, host.gameRunning(), ScreenSwap.restart != null)
 
@@ -328,11 +355,16 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
                     out += Control(r, b, { Settings.gameAccountAsk = k == 0 }) }
                 GeneralTiles.Row.WINDOWS_ID -> segs(room, WindowsId.SEGMENTS).forEachIndexed { k, b ->
                     out += Control(r, b, { Settings.windowsId = WindowsId.VALUES[k] }) }
+                GeneralTiles.Row.BROWSER_LOGIN -> segs(room, BrowserLogin.SEGMENTS).forEachIndexed { k, b ->
+                    out += Control(r, b, { Settings.browserLogin = k == 1 }) }
                 GeneralTiles.Row.WINDOWS_RESTART -> out += Control(r, GeneralTiles.button(room).rect(), { host.onRestart() })
                 GeneralTiles.Row.REPORT -> out += Control(r, GeneralTiles.button(room).rect(), { reportPress() })
                 GeneralTiles.Row.RELOAD -> out += Control(r, GeneralTiles.button(room).rect(), { reloadPress() }, reload = true)
                 // read-only: a stop so the cursor reaches the page's last row (A there does nothing)
                 GeneralTiles.Row.STATUS -> out += Control(r, box.rect(), {})
+                GeneralTiles.Row.SUPPORT -> out += Control(r, GeneralTiles.wideButton(box).rect(), { supportPress() })
+                GeneralTiles.Row.RESET_SETTINGS, GeneralTiles.Row.RESET_LAYOUTS, GeneralTiles.Row.RESET_SKILLS, GeneralTiles.Row.RESET_ALL ->
+                    out += Control(r, GeneralTiles.wideButton(box).rect(), { resetPress(GeneralTiles.resetOf(r)!!) })
             }
         }
         return out
@@ -453,6 +485,40 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
         }
     }
 
+    /** Support the Project: the host opens the Ko-fi page in the browser; none = the button says so for a few seconds */
+    private fun supportPress() {
+        if (host.onOpenUrl(SupportLink.URL)) { supportFailedAt = 0L; return }
+        supportFailedAt = SystemClock.elapsedRealtime()
+        postDelayed({ invalidate() }, SupportLink.NOTE_MS + 50)
+    }
+
+    /** when a Reset button last had no character to reset ([GeneralTiles.NO_CHARACTER] on it for a few seconds); 0 = never */
+    private var noWhoAt = 0L
+    private var noWhoFor: ResetPlan.Button? = null
+
+    /** a Reset button: its Yes / No pop-up (the room's ResetAskHost); Layouts / Skills need the character, else a short note */
+    private fun resetPress(b: ResetPlan.Button) {
+        if (host.resetBusy()) return
+        val who = host.resetWho() != null
+        if (!who && (b == ResetPlan.Button.LAYOUTS || b == ResetPlan.Button.SKILLS)) {
+            noWhoAt = SystemClock.elapsedRealtime(); noWhoFor = b
+            postDelayed({ invalidate() }, SupportLink.NOTE_MS + 50)
+            return
+        }
+        host.onResetAsk(b, who)
+    }
+
+    /** a Reset button's words now: its outcome / "Resetting" a few seconds, the no-character note, else its name (the tests) */
+    fun resetWord(b: ResetPlan.Button): String {
+        if (noWhoFor == b && SystemClock.elapsedRealtime() - noWhoAt < SupportLink.NOTE_MS) return GeneralTiles.NO_CHARACTER
+        host.resetWord(b)?.let { if (it == ResetFlow.WORKING) postInvalidateDelayed(300) else postInvalidateDelayed(ResetFlow.SHOW_MS); return it }
+        return SettingsTabs.resetLabel(b)
+    }
+
+    /** the Support the Project button's words now (the tests) */
+    fun supportWord(): String =
+        if (supportFailedAt != 0L && SystemClock.elapsedRealtime() - supportFailedAt < SupportLink.NOTE_MS) SupportLink.NO_BROWSER else SupportLink.ROW_ID
+
     private fun reloadPress() {
         val now = SystemClock.elapsedRealtime()
         if (reloadArmedAt != 0L && now - reloadArmedAt < ARM_MS) {
@@ -487,6 +553,10 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
             val room = GeneralTiles.controlRoom(box)
             val lw = room.l - box.l - GeneralTiles.LABEL_X - 16f
             val cs = ctl.filter { it.row == r }.map { it.box }
+            // a row that is one button (Support the Project) has no label beside it: its words are on the button
+            if (r == GeneralTiles.Row.SUPPORT) { UiKit.button(c, cs[0], supportWord(), UiKit.Button.UP); continue }
+            val rb = GeneralTiles.resetOf(r)
+            if (rb != null) { UiKit.button(c, cs[0], resetWord(rb), if (host.resetBusy()) UiKit.Button.DOWN else UiKit.Button.UP); continue }
             c.drawText(fitText(pLabel, label(r), lw, 28f, 20f), box.l + GeneralTiles.LABEL_X, box.cy + 10f, pLabel)
             drawControl(c, r, box, room, cs)
         }
@@ -513,6 +583,7 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
             GeneralTiles.Row.GAME_ACCOUNT -> seg(c, cs, GAME_ACCOUNT, if (Settings.gameAccountAsk) 0 else 1)
             GeneralTiles.Row.WINDOWS_ID -> seg(c, cs, WindowsId.SEGMENTS, WindowsId.VALUES.indexOf(Settings.windowsId))
             GeneralTiles.Row.LOGIN -> UiKit.button(c, cs[0], if (host.loginSaved()) "Change" else "Save", UiKit.Button.UP)
+            GeneralTiles.Row.BROWSER_LOGIN -> seg(c, cs, BrowserLogin.SEGMENTS, if (Settings.browserLogin) 1 else 0)
             GeneralTiles.Row.WINDOWS_RESTART -> UiKit.button(c, cs[0], "Restart", UiKit.Button.UP)
             GeneralTiles.Row.REPORT -> {
                 val rec = DiagLog.recording()
@@ -536,6 +607,8 @@ class GeneralTilesView(context: Context, private val host: SettingsView, val gro
                 c.drawText(fitText(pValue, say, room.w - 8f, 26f, 20f), room.r - 8f, box.cy + 9f, pValue)
                 pValue.textAlign = Paint.Align.LEFT; pValue.textSize = 22f
             }
+            GeneralTiles.Row.SUPPORT, GeneralTiles.Row.RESET_SETTINGS, GeneralTiles.Row.RESET_LAYOUTS, GeneralTiles.Row.RESET_SKILLS,
+            GeneralTiles.Row.RESET_ALL -> {}                     // drawn in onDraw: the whole row is its button
         }
     }
 

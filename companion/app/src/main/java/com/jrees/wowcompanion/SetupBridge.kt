@@ -41,6 +41,15 @@ object SetupBridge {
     /** the waiting screen's Menu > Exit game: the stream's end while one runs, else the local game's */
     @Volatile var exitStream: (() -> Unit)? = null
     /**
+     * feat/pause-power: THE CLEAN DISCONNECT while a stream runs (StreamTop's; null = Local, or no stream): "end_session" to Desktop
+     * (the PC's WoW closes - [quitAsked] = the game's own Exit Game was tapped first - and the PC is put back), the picture stopped, the
+     * bridge disconnected once Desktop has answered; then [done] with Desktop's word. The pause menu's power button closes DS Forever
+     * after it
+     */
+    @Volatile var endSession: ((why: String, quitAsked: Boolean, done: (PausePower.Ended) -> Unit) -> Unit)? = null
+    /** feat/pause-power: the waiting screen's Menu > Exit game while streaming: the same clean disconnect, then back to the chooser */
+    @Volatile var endStream: (() -> Unit)? = null
+    /**
      * Streaming's settings while Streaming's top screen is open ([StreamSettingsLink], set by StreamTop): Settings > Performance >
      * Stream settings shows them in its band on the BOTTOM screen (the user, 2026-11-18: "the streaming settings appear on the top screen
      * and the controller inputs get all wacky, they should probably appear on the bottom screen in the stream settings box"); null = Local
@@ -74,7 +83,10 @@ object SetupBridge {
     fun blockGameA(): Boolean = holdsGamePad()
 
     /** a pop-up of ours asks for a press with the game up: A, B and the D-pad are held back from the game (PopupHold) */
-    fun holdsGamePad(): Boolean = PopupHold.holds(signIn, LauncherHooks.gameUp(), loginFormOpen, noticeAsking)
+    fun holdsGamePad(): Boolean = PopupHold.holds(signIn, LauncherHooks.gameUp(), loginFormOpen, noticeAsking) || wheelHolds()
+
+    /** the context wheel's Yes / No or rename pop-up is up (PopupHold.Wheel): A, B, X, Y, the D-pad, the shoulders, Start, Select held */
+    fun wheelHolds(): Boolean = PopupHold.wheel.holds(android.os.SystemClock.uptimeMillis())
 
     /** the report's notice on Home asks for a press (Open issue / OK): the game's A is held back meanwhile (board f-problem-report) */
     @Volatile var noticeAsking = false

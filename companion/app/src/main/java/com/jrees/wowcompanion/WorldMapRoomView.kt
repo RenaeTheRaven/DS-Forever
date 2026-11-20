@@ -2218,7 +2218,7 @@ class WorldMapRoomView(context: Context) : View(context) {
         else { pFill.color = Color.argb(230, 10, 8, 6); c.drawCircle(funnelR.centerX(), funnelR.centerY(), funnelR.width() / 2f, pFill) }
         // Select / View opens Show: (the game's own filter button; Start until the user's 2026-10-09 ruling made Start the pause wheel
         // in every room): its glyph just LEFT of the funnel, where the game's gamepad mode draws its own
-        UiKit.pad(c, "gen_back", funnelR.left - GLYPH_PX / 2f - 6f, funnelR.centerY(), GLYPH_PX)
+        UiKit.pad(c, Glyphs.select(), funnelR.left - GLYPH_PX / 2f - 6f, funnelR.centerY(), GLYPH_PX)
         // (the quest panel's toggle is gone: the user after b104, "remove the Y to open quest bar and keep it open")
     }
 
@@ -3039,9 +3039,19 @@ class WorldMapRoomView(context: Context) : View(context) {
     }
 
     // ---------------------------------------------------------------- touch: the same things a finger can reach
+    private var psDownY = 0f; private var psLastY = 0f; private var psDragging = false
     override fun onTouchEvent(e: MotionEvent): Boolean {
-        if (e.action == MotionEvent.ACTION_DOWN) { downAt = e.eventTime; return true }
+        if (e.action == MotionEvent.ACTION_DOWN) { downAt = e.eventTime; psDownY = e.y; psLastY = e.y; psDragging = false; return true }
+        // fix/desk-click-switch (the user, 2026-11-19: "when opening it I STILL cant see all of the steps"): the Polestar menu's list
+        // follows a finger; a drag is never a tap
+        if (e.action == MotionEvent.ACTION_MOVE && psOpen) {
+            if (!psDragging && kotlin.math.abs(e.y - psDownY) > 18f) psDragging = true
+            if (psDragging) { psMenu?.cur?.view?.let { psPane.scrollBy(psLastY - e.y, it) }; invalidate() }
+            psLastY = e.y
+            return true
+        }
         if (e.action != MotionEvent.ACTION_UP) return true
+        if (psOpen && psDragging) { psDragging = false; return true }
         val x = e.x; val y = e.y
         val long = e.eventTime - downAt >= LONG_PRESS_MS
         // pm1: the Polestar menu: a button presses its key, a row selects it, the header goes back to the map

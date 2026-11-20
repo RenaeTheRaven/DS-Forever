@@ -179,6 +179,8 @@ object GameConfigWtf {
             WowSwitch.replace(flavorInfo, "Product Flavor!STRING:0\n${product.code}\n".toByteArray())
         }
         val configWtf = File(flavorDir, "WTF/Config.wtf")
+        // Reset settings while the game ran (2026-11-19): the recorded originals back first; this start's own rules then apply as ever
+        File(configWtf.parentFile, RESET_RESTORE).takeIf { it.exists() }?.let { m -> runCatching { restoreOriginals(configWtf.parentFile!!) }; m.delete() }
         val legacyDone = File(configWtf.parentFile, LEGACY_DONE)
         val lowOn = File(configWtf.parentFile, LOW_MEMORY_ON)
         val saved8File = File(configWtf.parentFile, LOW_MEMORY_8GB_SAVED)
@@ -257,6 +259,36 @@ object GameConfigWtf {
 
     private val SIZE = Regex("[1-9][0-9]{2,4}x[1-9][0-9]{2,4}")
 
+    /** Reset settings pressed while the game ran: [ensure] gives the recorded originals back first at the next start (WTF/, beside
+     *  Config.wtf) */
+    const val RESET_RESTORE = ".dsf-reset-restore"
+
+    /**
+     * RESET SETTINGS GIVES BACK WHAT DS FOREVER CHANGED (the user, 2026-11-19: "It ALSO restores only the game settings DS Forever itself
+     * changed, back to the player's saved originals ... Nothing else in the game is touched"): the ONE set DS Forever records the player's
+     * own values for is [LOW_MEMORY_8GB] ([LOW_MEMORY_8GB_SAVED]). Each of its keys still at DS Forever's value gets exactly the recorded
+     * value back (a key that had no line goes again); a key the player changed in the game since stays theirs; the record goes. No
+     * record = nothing written. Never while the game runs (the caller: [RESET_RESTORE] instead). Returns the keys given back.
+     */
+    fun restoreOriginals(wtfDir: File): List<String> {
+        val configWtf = File(wtfDir, "Config.wtf")
+        val saved8File = File(wtfDir, LOW_MEMORY_8GB_SAVED)
+        if (!saved8File.isFile || !configWtf.isFile) return emptyList()
+        val saved = runCatching { savedOf(saved8File.readText()) }.getOrNull() ?: return emptyList()
+        val back = ArrayList<String>()
+        val lines = configWtf.readLines()
+        val updated = lines.mapNotNull { line ->
+            val parts = line.takeIf { it.startsWith("SET ", ignoreCase = true) }?.removePrefix("SET ")?.trim()?.split(" ", limit = 2)
+            val key8 = parts?.takeIf { it.size == 2 }?.let { low8Key(it[0]) }
+            if (key8 == null || !saved.containsKey(key8) || parts[1] != LOW_MEMORY_8GB.getValue(key8)) return@mapNotNull line
+            back += key8
+            saved[key8]?.let { "SET $key8 $it" }
+        }
+        if (updated != lines) WowSwitch.replace(configWtf, (updated.joinToString("\n") + "\n").toByteArray())
+        runCatching { saved8File.delete() }          // after Config.wtf: a stop between the two gives them back once more
+        return back
+    }
+
     /** #293's two markers as this start leaves Config.wtf; a marker that cannot be written never stops Play */
     private fun markers(legacyDone: File, lowOn: File, lowMemory: Boolean) {
         runCatching { if (!legacyDone.exists()) legacyDone.writeText("") }
@@ -303,6 +335,32 @@ object GameConfigWtf {
         if (parts?.size != 2 || ACCOUNT_CHOICE_KEYS.none { it.equals(parts[0], ignoreCase = true) }) null
         else parts[1].trim().trim('"').takeIf { v -> v.split('|').any { it.trim().startsWith("!") } }
     }.lastOrNull()?.takeIf { it.length <= 512 && it.none { c -> c == '"' || c == '\r' || c == '\n' } }
+
+    /**
+     * THE THOR'S UI SCALE FOR THE PC'S STREAM (the user's ruling 2026-11-18: "while streaming, Desktop also sets WoW's UI scale to match
+     * the Thor's and puts the PC's own back after the session"): the game's own UI scale keys in [lines] ([UI_SCALE_KEYS], the
+     * last line of each, in that spelling), plain numbers only; null when Config.wtf has neither (the game's default: the PC is left
+     * alone). Sent on the bridge's hello. Pure
+     */
+    fun uiScale(lines: List<String>): Map<String, String>? {
+        val out = LinkedHashMap<String, String>()
+        for (line in lines) {
+            val parts = line.trim().takeIf { it.startsWith("SET ", ignoreCase = true) }?.drop(4)?.trim()?.split(" ", limit = 2) ?: continue
+            if (parts.size != 2) continue
+            val key = UI_SCALE_KEYS.firstOrNull { it.equals(parts[0], ignoreCase = true) } ?: continue
+            val v = parts[1].trim().trim('"').trim()
+            if (v.length <= 16 && UI_SCALE_VALUE.matches(v)) out[key] = v
+        }
+        return out.takeIf { it.isNotEmpty() }
+    }
+    /** WoW's UI scale CVars (useUiScale turns the slider on, uiScale is its value) */
+    val UI_SCALE_KEYS = listOf("useUiScale", "uiScale")
+    private val UI_SCALE_VALUE = Regex("^[0-9]+(\\.[0-9]+)?$")
+
+    /** [uiScale] of [root]'s Config.wtf for the client it runs ([WowProduct.of]); null when unreadable or none */
+    fun uiScale(root: File): Map<String, String>? = runCatching {
+        File(File(root, WowProduct.of(root).flavorDir), "WTF/Config.wtf").takeIf { it.isFile }?.readLines()?.let(::uiScale)
+    }.getOrNull()
 
     /** [rememberedAccountList] of [root]'s Config.wtf for the client it runs ([WowProduct.of]); null when unreadable */
     fun rememberedAccountList(root: File): String? = runCatching {

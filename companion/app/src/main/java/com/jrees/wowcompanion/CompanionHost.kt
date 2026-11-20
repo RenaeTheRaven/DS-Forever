@@ -108,6 +108,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private lateinit var pauseView: HomePauseView
     /** the TARGET radial (Y out of a fight with a target; PadMap m101 / Quests q51) */
     private lateinit var targetRadial: TargetRadialView
+    private lateinit var targetRadialKb: ChatKeyboard
     /** 1.0.18: LB held on Home pictures the game's party targeting (LbPartyView) */
     private lateinit var lbView: LbPartyView
     private fun tradOpen() = ::targetRadial.isInitialized && targetRadial.isOpen
@@ -147,6 +148,39 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var lastBook: SpellsModel.Book? = null
     /** m62: the latest padmap (Settings' Smart Y section reads its Smart buffs) */
     private var lastPadMap: PadMapModel.Map? = null
+
+    /** General > Reset: the character playing now, else the one the radials' kept lists last belonged to (the game not up yet) */
+    private fun resetWho(): String? = GameUi.character?.takeIf { it.isNotEmpty() }
+        ?: getSharedPreferences("wc_radial", MODE_PRIVATE).getString("who", null)?.takeIf { ResetPlan.isCharKey(it) }
+
+    private val resetRun by lazy {
+        ResetRun({ getSharedPreferences(it, MODE_PRIVATE) }, svKeptDir(),
+            java.io.File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "DS Forever/combat")) { Log.i("WCSETUP", it) }
+    }
+    private val resetFlow by lazy {
+        ResetFlow(
+            live = { LauncherHooks.gameUp() && GameInput.live() },
+            gameUp = { LauncherHooks.gameUp() },
+            tap = { col -> TapBridge.tap(this, questsPad, HomePauseModel.ROW, col) { why -> Log.i("WCSETUP", "settings reset: tap refused ($why)") } },
+            apply = { b, all -> resetApply(b, all) },
+            reload = { if (GameInput.reload()) reloadStarted() },
+            clock = { SystemClock.elapsedRealtime() },
+            log = { Log.i("WCSETUP", it) })
+    }
+
+    /** the app's half of a reset, then every room reads its values again */
+    private fun resetApply(b: ResetPlan.Button, all: Boolean): ResetRun.Result {
+        val who = resetWho()
+        // the Thor's own game runs only in Local (streaming, the PC's does: the Thor's Config.wtf can be written now)
+        val localGame = LauncherHooks.gameUp() && PlayModes.current != PlayMode.STREAM
+        val r = resetRun.run(b, who, all, localGame)
+        val kinds = b.kinds
+        if (ResetPlan.Kind.SETTINGS in kinds) { Theme.use("classic"); Tr.setChoice(this, "auto"); Settings.resetDone(); FrameGen.resetDone() }
+        HomeSettings.resetDone(); GameUi.resetDone()
+        if (ResetPlan.Kind.SKILLS in kinds) { RadialMeta.reload(); if (::combatKeep.isInitialized) combatKeep.resetDone(if (all) null else who) }
+        if (ResetPlan.Kind.LAYOUTS in kinds && ::settings.isInitialized) settings.homeSection.dpadChanged()
+        return r
+    }
     private var lastGameMenu: JSONObject? = null
     private var lastAddonAt = 0L
     private var gmAckAt = 0L          // the game menu row's last answer (Radial.lua r12 "gmack") and its cell
@@ -663,6 +697,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // pm1 (the user, 2026-11-16: "x to open the polestar menu"): the Map room's X opens the Quests room's own Polestar menu (one
         // instance: one open state, one frame in flight)
         worldMapRoom.psMenu = questsView.psMenu
+        questsView.psMenu.onPress = { psHandoff.playerPressed() }          // fix/desk-click-switch: the player's press ends the hand-off
         questsView.onFocusPicked = { id, on -> mapView.psRelease(); if (!on) mapView.focusCleared(id) }
         // pg1: the Polestar tab's X / Y (the one pnav Skip / Previous tap), its fight state, and Home's / the Map room's "Choose your
         // path" row (D4): the Quests room straight on the choice
@@ -866,7 +901,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         StartMenu.onAutoLogin = { on -> HomeLoginStore.setAutoLogin(this, on); NativeLogin.logEvent("sign-in: Auto login ${if (on) "on" else "off"} (the Menu)"); if (!on) NativeLogin.clear() }
         StartMenu.onChangeLogin = { restartOnSave = LauncherHooks.gameUp() && HomeLoginStore.autoLogin(this); loginPrompt.open() }
         StartMenu.canExit = { SetupBridge.exitStream != null || LauncherHooks.gameUp() }
-        StartMenu.onExit = { (SetupBridge.exitStream ?: SetupBridge.exitGame)?.invoke() }
+        // feat/pause-power: Exit game while streaming = the clean disconnect (the PC's WoW closes, the PC put back), then the chooser
+        StartMenu.onExit = { (SetupBridge.endStream ?: SetupBridge.exitStream ?: SetupBridge.exitGame)?.invoke() }
         StartMenu.canForget = { HomeLoginStore.has(this) }
         StartMenu.onForgetLogin = { HomeLoginStore.clear(this); NativeLogin.logEvent("sign-in: the saved login forgotten (the Menu)"); NativeLogin.clear() }
         StartMenu.canRestart = { LauncherHooks.gameUp() }
@@ -888,6 +924,15 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             }, "region-card").apply { isDaemon = true }.start()
         }
         startView.onLoginButton = { gear -> if (gear || LauncherHooks.pkg != null) loginPrompt.open() else signIn() }
+        // the BLZ51914400 offer (the user, 2026-11-18): Browser login on, then the launcher's restart (the game's own Exit Game first)
+        startView.onBrowserLogin = {
+            Settings.browserLogin = true
+            NativeLogin.logEvent("sign-in: Browser login turned on from the BLZ51914400 offer; restarting the game")
+            startView.login = StartView.Login.NONE
+            val restart = SetupBridge.restartGame
+            if (restart == null) Log.w("WCSETUP", "browser login offer: no launcher hook, nothing restarts")
+            else { restartNotice(); restart() }
+        }
         loginPrompt = HomeLoginPrompt(this) { login ->
             settingsView.invalidate()
             NativeLogin.logEvent("sign-in: login saved (the login form)")
@@ -975,6 +1020,14 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         }
         settingsView.onReportSendNow = { DiagLog.stopRecording(); sendReport(ReportFlow.description.ifBlank { "(sent from Settings while recording)" }) }
         settingsView.onReportOpenSaved = { openSavedReport() }
+        // General > Support the Project (the user, 2026-11-19): the Ko-fi page, opened as the report's issue opens (openUrlOnTop)
+        settingsView.onOpenUrl = { url -> openUrlOnTop(url).also { DiagLog.event("app", "support link opened: $it") } }
+        // General > Reset (the user, 2026-11-19: "reset to defaults buttons, split into four"; ResetPlan / ResetRun / ResetFlow): the
+        // pop-up's Yes runs it - the add-on's half first while the game takes taps (the pause row's 20-27), then the app's, then Reload
+        settingsView.onReset = { b, all -> resetFlow.start(b, all); settingsView.invalidate() }
+        settingsView.resetWho = { resetWho() }
+        settingsView.resetWord = { b -> resetFlow.word(b) }
+        settingsView.resetBusy = { resetFlow.busy }
         settings.pad.padOverride = { k ->
             (::reportPage.isInitialized && reportPage.isOpen && run { reportPage.padKey(k); true }) ||
                 (::pathReview.isInitialized && pathReview.isOpen && run { pathReview.padKey(k); true }) ||
@@ -1087,17 +1140,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             Log.i("WCLOG", "class radial: $what capHolder=${capHolder.ifEmpty { "-" }} room=${room.name} pause=${pauseView.isOpen} " +
                 "wheel=${radialView.isOpen} tool=${homeView.toolWanted()} barCursor=${barSelect.open}")
         }
-        castView.overlayOpen = {
-            radialView.isOpen || (::pauseView.isInitialized && pauseView.isOpen) || homeView.toolWanted() ||
-                setupView.visibility == View.VISIBLE || loginPrompt.isOpen || barSelect.open ||
-                (::dialogView.isInitialized && dialogView.covers()) ||
-                (::interactView.isInitialized && interactView.visibility == View.VISIBLE) || spellsOverlay.visibility == View.VISIBLE ||
-                (room == Room.HOME && homeView.flow.screen.full.let { it == HomeModule.CHAT || it == HomeModule.MAP })
-        }
+        castView.overlayOpen = { overlayUp() }
         // #540: Home's B watch leaves a B alone while one of these overlays has it (and just after it closed one: overlayClosed)
         homeView.overlayOpen = { radialView.isOpen || (::pauseView.isInitialized && pauseView.isOpen) || tradOpen() || barSelect.open }
         pauseView = HomePauseView(this, strip, { questsPad }) { cells -> guestTap(cells) }
-        pauseView.onSlide = { t -> pauseSlideAll(t) }
+        pauseView.onSlide = { t -> slideBarsUp = true; pauseSlideAll(t) }          // feat/pause-power: Home's controller goes up
         // the open's REVERSE after the wheel has gone (the user 2026-10-09: "it needs to have a reverse animation for when the B button
         // gets pressed"): the same quick time; input is already the room's / Home's (the wheel is gone in the B frame)
         pauseView.onClose = { from ->
@@ -1127,9 +1174,16 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             }
         }
         pauseView.onPick = { s -> pausePick(s) }
+        // feat/pause-power: THE POWER BUTTON (the user, 2026-11-18): its prompt's line, a fight's refusal, and Close = [PausePower.Sequence]
+        pauseView.streaming = { SetupBridge.endSession != null }
+        pauseView.powerRefusal = { if (homeView.inFight()) PausePower.FIGHT_LINE else null }
+        pauseView.onPower = { powerOff.run() }
         pauseView.polestar = { mapView.polestarCanSkip() to mapView.polestarCanPrev() }      // pk1: its Skip / Previous step slices
         // THE TARGET RADIAL: the pause wheel's slide, close and place; a pick runs as the party menu's entries do
         targetRadial = TargetRadialView(this, strip, { questsPad }) { cells -> guestTap(cells) }
+        // Quests q69: the pet's Rename types on its own keyboard (Chat's borrowed field, as the Macros room's), over the wheel
+        targetRadialKb = targetRadial.makeKeyboard()
+        targetRadial.tapSpaced = { cells, gap -> TapBridge.tapsSpaced(this, questsPad, cells, gap) { w -> Log.i("WCHOME", "context radial: rename taps: $w") } }
         // 1.0.18 (the user: "When holding LB i want the bottom screen to shift around like when opening a radial ... the players bar with
         // the A button glyph ... a cross layout of the other 4 party members with the dpad glyphs ... We are just visualizing it"): on
         // Home, LB alone held (CastView's reader) slides Home's panels aside - Party mode's view with them - and shows the targeting
@@ -1147,7 +1201,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         castView.onTouchCast = { cell -> TapBridge.tap(this, questsPad, "tcast", cell) { why -> Log.i("WCLOG", "touch cast refused ($why)") } }
         // the context menus' icons (the raid markers too) asked for early, so the phone's icon harvest has them before a wheel opens
         ui.postDelayed({ runCatching { MenuIcons.prefetch() } }, 8_000L)
-        targetRadial.onSlide = { t -> pauseSlideAll(t) }
+        targetRadial.onSlide = { t -> slideBarsUp = false; pauseSlideAll(t) }      // the controller stays (f-pause-bars)
         targetRadial.onClose = { from -> pauseView.onClose(from) }
         targetRadial.barsBottom = { pauseView.barsBottom?.invoke() ?: 0f }
         targetRadial.onDo = { d, name -> targetDo(d, name) }
@@ -1208,6 +1262,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(targetRadial, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            addView(targetRadialKb, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, android.view.Gravity.BOTTOM))
             addView(lbView, FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             // the radial's pin picker: over the room only (the bar stays below it)
@@ -1435,6 +1491,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // which room the app itself left, and when: a "B" release echoing this leave is not the player's B (HomeBack.isOwnLeave)
         if (r != was) { leftIds = HomeBack.leftOf(was.name, r.name); leftAt = SystemClock.uptimeMillis() }
         room = r
+        // fix/lb-home-only: a room opening while LB is held drops the LB picture at once
+        if (r != was && ::lbView.isInitialized && lbView.isShown2) lbEval()
         // Chat's cursor only where presses reach it: the Chat room, not Home's borrowed full-screen chat (chat session's switch)
         chatView.cursorOnShow = r == Room.CHAT
         if (enterProfessions) { enterProfessions = false; professionsView.post { professionsView.enter() } }
@@ -2769,7 +2827,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // pg1: the Polestar tab (Map.lua WC.pg); pguide also heads Home's list and the Map room's ("Polestar · <zone>", D6)
             "pguide", "pgsteps", "pglist", "pgstep", "pgroute", "pgop" -> if (current) {
                 questsView.onPolestarDoc(msg)
-                if (msg.optString("type") == "pguide") mapView.onPolestarGuide(msg)
+                if (msg.optString("type") == "pguide") { mapView.onPolestarGuide(msg); polestarHandoff(msg) }
                 if (room == Room.MAP) worldMapRoom.postInvalidate()            // pm1: the Map room's Polestar menu draws them too
                 if (msg.optString("type") == "pgop" && !msg.optBoolean("ok")) Log.i("WCMAP", "polestar tab: op ${msg.optInt("op")} refused ${msg.optString("why", "")}")
             }
@@ -2813,6 +2871,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 chatView.onDoc(msg)      // Chat's rework: typed / quick chat answers, link tooltips
                 if (current && ::interactView.isInitialized) interactView.onChatAnswer(msg)     // 1.0.8: an NPC window's field (chat22)
                 if (current && ::macrosView.isInitialized) macrosView.onChatAnswer(msg)           // the Macros room's field (chat22)
+                if (current && tradOpen()) targetRadial.onChatAnswer(msg)                          // q69: the pet's rename field (chat22)
             }
             "quests" -> msg.optJSONObject("q")?.let {
                 it.optJSONObject("pad")?.let { p -> questsPad = p }
@@ -3077,6 +3136,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             "dialogpad" -> if (current) android.util.Log.w("WCDLG", "the dialogs have NO tap row: ${msg.optString("why")} (rows ${msg.optInt("rows", -1)})")
             "pvp" -> PvpModel.update(msg)   // the PvP rank (Character room tab 4) + the battleground queues (pvp session)
             "hub" -> GameUi.onHub(msg, current)
+            "padrx" -> GameUi.onPadRx(msg, current)           // fix/desk-click-switch: Hub hub70, a press's word at once
             // the layout editor (Hub hub55): its document, CURRENT or replayed (a replay only shows; the page taps only while it is open)
             "lay" -> LayoutModel.Live.note(msg)
             // hub22: a new hostile target with Start attack on: the secure /startattack cell (a live document only, never a replay)
@@ -3310,6 +3370,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 val line = runCatching { SvKeep.store(svKeptDir(), d, d.variable in svArmed) }.getOrElse { "settings backup: NOT kept (${it.message})" }
                 if (line.isNotEmpty()) Log.i("WCSETUP", line)
             }
+            // PadMap m175: the add-on's half of a Settings > General reset answered (ResetFlow: then the app's half and Reload)
+            "dsfreset" -> if (current) ui.post { resetFlow.onAck(msg.optInt("col", -1), msg.optBoolean("ok", false), msg.optString("why").ifEmpty { null })
+                if (::settingsView.isInitialized) settingsView.invalidate() }
             "padclean" -> {
                 // m45: PadMap's automatic removal of our own old DS macros (no UI): one line per character
                 if (msg.optString("why") == "auto") Log.i("WCSETUP", "padclean: removed ${msg.optInt("removed")} old DS macros (auto; " +
@@ -3765,6 +3828,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             chatView.onPad(JSONObject().put("type", "guestpad").put("id", "chat").put("k", "PADFORWARD").put("n", --directN)); return
         }
         if (room == Room.BAGS && bagsView.ownsStart()) return          // bagsView.onPadKey already had it (the unclaimed route)
+        if (tradOpen() && targetRadial.ownsStart()) return              // the context wheel's pop-up (rename's Done): its own reader had it
         if (::interactView.isInitialized && interactView.ownsStart()) return   // an NPC window's keyboard: its Done (onPadKey had it)
         if (room == Room.MACROS && macrosView.ownsStart()) return      // the Macros room's keyboard: its Done (onPadKey had it)
         if (room == Room.PROFESSIONS && professionsView.ownsStart()) return   // the search's keyboard: its Search (onPadKey had it)
@@ -3861,17 +3925,42 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     /** LB alone held now (CastView's reader) */
     private var lbAloneNow = false
     /** the LB picture shows while LB alone is held and nothing else has the screen: only in the world (1.0.19: never over the start-up
-     *  screens), and only once the class wheel is closed and covered (1.0.20: they take turns, HomeView.classBusy) */
+     *  screens), and only once the class wheel is closed and covered (1.0.20: they take turns, HomeView.classBusy).
+     *  fix/lb-home-only (the user 2026-11-19: "Pressing LB in menus like the auction house shows the party selected. That should only
+     *  appear on the home menu"): Home must be in front - the class wheel's own gate ([overlayUp]: an Interact window (AH, vendor, mail,
+     *  bank, trainer, loot), a dialog, the spells pop-up, a wheel, the keyboard tool, the bar cursor, Home's full-screen chat / map).
+     *  A room or one of those coming up while LB is held drops the picture at once (no fade); what the room does with LB is its own */
     private fun lbEval() {
-        val free = room == Room.HOME && !holdTalk.takesPad && !pauseView.isOpen && !tradOpen() && !(::radialView.isInitialized && radialView.isOpen) &&
+        val free = room == Room.HOME && !holdTalk.takesPad && !overlayUp() && !tradOpen() &&
             // 1.0.21 (the user, streaming: "when I press L it didnt show the party member targetor"): GameLife only knows the Thor's own
             // game; a live add-on stream (Local or Streaming) counts too
             (GameLife.worldNow || GameInput.live(System.currentTimeMillis())) && (!::chooserPanel.isInitialized || chooserPanel.visibility != View.VISIBLE) && !homeView.classBusy()
+        if (lbView.isShown2 && LbPartyView.dropNow(room == Room.HOME, overlayUp() || tradOpen())) {
+            lbView.drop()
+            // Home's sides back at once, unless the pause wheel / target radial now owns that slide
+            if (!pauseView.isOpen && !tradOpen()) homeView.pauseSlide(0f, LbPartyView.SIDE_PX)
+            return
+        }
         lbView.lb(lbAloneNow && free)
+        ui.removeCallbacks(lbWatch)
+        if (lbView.isShown2) ui.postDelayed(lbWatch, LB_WATCH_MS)
     }
+    /** while the picture is up, Home's cover is looked at again (a room / window opening while LB is held has no shoulder change) */
+    private val lbWatch = Runnable { if (!shell.hostGone() && ::lbView.isInitialized) lbEval() }
+    private val LB_WATCH_MS = 100L
 
+    /** b-radial-exclusive: another overlay is up over Home (the class wheel's gate, CastView.overlayOpen; the LB picture's too) */
+    private fun overlayUp(): Boolean =
+        radialView.isOpen || (::pauseView.isInitialized && pauseView.isOpen) || homeView.toolWanted() ||
+            setupView.visibility == View.VISIBLE || loginPrompt.isOpen || barSelect.open ||
+            (::dialogView.isInitialized && dialogView.covers()) ||
+            (::interactView.isInitialized && interactView.visibility == View.VISIBLE) || spellsOverlay.visibility == View.VISIBLE ||
+            (room == Room.HOME && homeView.flow.screen.full.let { it == HomeModule.CHAT || it == HomeModule.MAP })
+
+    /** feat/pause-power: the pause menu pushes Home's controller up (set at its open); the target radial keeps it (set at its open) */
+    private var slideBarsUp = false
     private fun pauseSlideAll(t: Float) {
-        homeView.pauseSlide(t)
+        homeView.pauseSlide(t, barsUp = slideBarsUp)
         // THE ROOM STEPS BACK (the user 2026-10-09: "the Pause screen needs to be pushing the other menus off screen"; UI Art's motion:
         // a full-screen room does not slide - alpha 1 -> 0 and scale 1 -> 0.96 about its centre over the first half of the open,
         // FastOutLinearIn; t = 0 puts it back at once). Home keeps its own slide-off (separate panels)
@@ -4165,6 +4254,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
      */
     private fun nativeRow(s: HomeLogin.State): Pair<StartView.Login, String>? = when {
         s.realm || NativeLogin.pastLogin -> null
+        // the user, 2026-11-18: a BLZ51914400 refusal offers Browser login (one button: it turns it on and restarts the game)
+        BrowserLogin.offer(s.phase == HomeLogin.Phase.FAILED, s.reason, Settings.browserLogin || NativeLogin.browserMode, SetupBridge.restarting) ->
+            StartView.Login.BROWSER to BrowserLogin.OFFER_LINE
+        // browser login: no saved-login row (the sign-in is Blizzard's page on this screen, BattleNetBrowserLogin)
+        NativeLogin.browserMode -> null
         // 2026-11-07 (the user: "the sign in prompts are still appearing ... if I dont push anything fast enough"): no authenticator,
         // failure or "not signed in yet" lines either - account select read as "not signed in"; the Menu and Keyboard are the way
         !HomeLoginStore.has(this) -> StartView.Login.FIRST to "Save it once and the game signs in by itself."
@@ -4926,6 +5020,41 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         return TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why -> Log.i("WCMAP", "polestar skip: tap failed: $why") }
     }
 
+    // fix/desk-click-switch (the user, 2026-11-19: Polestar on the PC "is still not on my step"): the guide and step last seen live are
+    // kept per character; a stream session's first PC guide is put on them once ([PolestarHandoff]); the player's press ends it
+    private val psHandoff = PolestarHandoff()
+    private var psHandoffStreaming = false
+    private var psHandoffOpened = false
+    private fun polestarHandoff(msg: JSONObject) {
+        val g = PolestarTab.Guide.parse(msg) ?: return
+        val ch = GameUi.character ?: return
+        val prefs = getSharedPreferences(PolestarHandoff.PREFS, MODE_PRIVATE)
+        val key = PolestarHandoff.key(ch)
+        val now = System.currentTimeMillis()
+        val streaming = PlayGate.streamingNow()
+        if (streaming != psHandoffStreaming) { psHandoffStreaming = streaming; psHandoff.reset(); psHandoffOpened = false }
+        val m = questsView.psMenu
+        if (streaming && !psHandoff.finished) {
+            val saved = PolestarHandoff.Saved.parse(prefs.getString(key, null))
+            when (val a = psHandoff.onGuide(g, saved, homeView.inFight())) {
+                PolestarHandoff.Act.None -> {}
+                PolestarHandoff.Act.Open -> { Log.i("WCMAP", "polestar handoff: the PC is on another guide; its tabs asked"); psHandoffOpened = true; m.open(now, force = true) }
+                is PolestarHandoff.Act.Continue -> { Log.i("WCMAP", "polestar handoff: continue tab ${a.tab}"); m.frame(PolestarTab.CONTINUE, a.stamp, listOf(a.tab)) }
+                is PolestarHandoff.Act.Look -> { Log.i("WCMAP", "polestar handoff: look at step ${a.step}"); m.frame(PolestarTab.LOOK, a.stamp, PolestarTab.two(a.step)) }
+                is PolestarHandoff.Act.Back -> { Log.i("WCMAP", "polestar handoff: back to the live step"); m.frame(PolestarTab.BACK, a.stamp) }
+                is PolestarHandoff.Act.Done -> Log.i("WCMAP", a.line)
+            }
+            // the menu told open only for the hand-off, and no room shows it: told closed again (after the frames in flight)
+            if (psHandoff.finished && psHandoffOpened && m.shownIn == null) { psHandoffOpened = false; m.close() }
+            if (!psHandoff.finished) return
+        }
+        // the newest place either side (Local, or the stream once its hand-off is over): what the next stream starts on
+        PolestarHandoff.Saved.of(g, now)?.let { s ->
+            val old = PolestarHandoff.Saved.parse(prefs.getString(key, null))
+            if (old == null || old.gs != s.gs || old.shown != s.shown || old.live != s.live) prefs.edit().putString(key, s.json().toString()).apply()
+        }
+    }
+
     // POLESTAR AS THE ROUTER (b-route-polestar): PolestarNav decides the taps of Map.lua's row "pnav" (only while the setting is Polestar;
     // switching away cancels its guidance)
     private fun polestarTick() {
@@ -4948,6 +5077,35 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         // "1, 34, 1" lost its second digit, the add-on never had all seven and never asked Polestar (RouteWaypoint spaces its digits too)
         TapBridge.tapsSpaced(this, pad, cols.map { PolestarNav.ROW to it }, 120L) { why ->
             mapView.polestar.lost(); Log.i("WCMAP", "polestar: tap failed: $why") }       // (ps4: the row's word said again)
+    }
+
+    /**
+     * feat/pause-power: CLOSE DS FOREVER from the pause menu's power button ([PausePower.Sequence]): Local = the safe close's clean exit
+     * then the app; Streaming = the game's own Exit Game tapped over the stream, Desktop's end_session, then the app
+     */
+    private val powerOff by lazy {
+        PausePower.Sequence(
+            streaming = { SetupBridge.endSession != null },
+            gameUp = { LauncherHooks.gameUp() },
+            cleanExit = { LauncherHooks.cleanExit },
+            quitTap = { quitTapOverStream() },
+            endSession = { SetupBridge.endSession },
+            quitApp = { force ->
+                ui.post {
+                    val q = LauncherHooks.quitApp
+                    if (q == null) Log.i("WCSETUP", "power: no launcher to close (the companion app alone): nothing closes") else q(force)
+                }
+            },
+            log = { Log.i("WCSETUP", it) },
+        )
+    }
+
+    /** streaming: the game's own Exit Game (Spells' secure gamemenu row) tapped over the stream, as the clean exit taps it locally:
+     *  true = asked (Desktop waits for it before closing the window); never in a fight or at the login screen (CleanExit's route) */
+    private fun quitTapOverStream(): Boolean {
+        val route = CleanExit.route(lastAddonAt, SystemClock.elapsedRealtime(), homeView.inFight(), CleanExit.quitCol(lastGameMenu))
+        if (route !is CleanExit.Route.Quit) { Log.i("WCSETUP", "power: no Exit Game tap over the stream (${(route as CleanExit.Route.Force).why})"); return false }
+        return TapBridge.tap(this, questsPad, GameMenuModel.ROW, route.col) { r -> Log.i("WCSETUP", "power: Exit Game tap refused ($r)") }
     }
 
     private fun cleanExit(why: String, done: (Boolean) -> Unit) {
