@@ -1153,9 +1153,6 @@ private val BUNDLED_DRIVERS = linkedMapOf(
     // StevenMXZ "Turnip Gen8 V38-patched" (Mesa 27.0.0 + WinNative patches; built for a8xx, its device table lists FD740).
     // The id must NOT contain "gen8": the launcher adds TU_DEBUG=nolrz to any such driver, which costs the a7xx its LRZ.
     "Turnip-StevenMXZ-V38p" to "turnip-stevenmxz-v38-patched.zip",
-    // Mesa main 69489e2167 (2026-11-18) built locally (~/dev/turnip-build): stock Turnip + the vk_icd* exports. Concurrent binning
-    // is off by default upstream since 2026-05-14 (the default driver above predates that); TU_DEBUG=forcecb turns it back on.
-    "Turnip-Mesa-Main-69489e2" to "turnip-mesa-main-69489e2.zip",
 )
 
 // custom-thor: the game folder's ".ds-env" switch file: extra environment variables ("KEY=VALUE KEY2=VALUE2", spaces between,
