@@ -1142,24 +1142,6 @@ private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 private const val DXVK_VERSION = "2.4.1-wow-aarch64-test"
 
-// custom-thor: every bundled Turnip build, driver id -> its asset zip. The Adreno 740 profile picks one with the game folder's
-// ".ds-driver" switch file (one id from this list; adb-writable, read at each Play), else DEFAULT_DRIVER.
-private val BUNDLED_DRIVERS = linkedMapOf(
-    DEFAULT_DRIVER to "turnip-wow-scheduler-test.zip",
-    ADRENO_8XX_DRIVER to "turnip-V32-RP6sched.zip",
-    "Turnip-Balemuni-Apex-v2" to "turnip-balemuni-apex-v2.zip",
-    "Turnip-MrPurple-T30" to "turnip-mrpurple-t30.zip",
-    "Turnip-StevenMXZ-v27" to "turnip-stevenmxz-v27.zip",
-    // StevenMXZ "Turnip Gen8 V38-patched" (Mesa 27.0.0 + WinNative patches; built for a8xx, its device table lists FD740).
-    // The id must NOT contain "gen8": the launcher adds TU_DEBUG=nolrz to any such driver, which costs the a7xx its LRZ.
-    "Turnip-StevenMXZ-V38p" to "turnip-stevenmxz-v38-patched.zip",
-)
-
-// custom-thor: the game folder's ".ds-env" switch file: extra environment variables ("KEY=VALUE KEY2=VALUE2", spaces between,
-// "#" lines ignored), appended after the container's own so each one overrides the default (e.g. TU_DEBUG=noconform,gmem).
-private fun extraEnv(): String = switchFile(".ds-env")?.lineSequence()
-    ?.map { it.trim() }?.filter { it.isNotEmpty() && !it.startsWith("#") }?.joinToString(" ").orEmpty()
-
 // custom-thor: the Adreno 740 renders at 1280x720 like the 8xx (measured on the Thor: 1080p is GPU-bound at ~41-46 fps);
 // the game folder's ".ds-resolution" switch file ("WIDTHxHEIGHT") overrides it.
 private const val ADRENO_740_SCREEN = "1280x720"
@@ -1202,10 +1184,9 @@ private data class GpuProfile(val driver: String, val tuDebug: String, val scree
             // Snapdragon 865 / Adreno 650 got the Adreno 740's 1080p. Turnip drives the a6xx family; 720p, conservative. UNTESTED on a Lite
             GpuProfile(DEFAULT_DRIVER, "noconform", "1280x720", "Adreno 650", "Thor Lite: Snapdragon 865 / Adreno 650 (untested)")
         } else {
-            val driver = switchFile(".ds-driver")?.takeIf { it in BUNDLED_DRIVERS } ?: DEFAULT_DRIVER
             val screen = switchFile(".ds-resolution")?.takeIf { SCREEN_SIZE.matches(it) } ?: ADRENO_740_SCREEN
-            Timber.i("custom-thor: Adreno 740 profile: driver %s, screen %s", driver, screen)
-            GpuProfile(driver, "noconform", screen, "Adreno 740", "Snapdragon 8 Series / Adreno 740")
+            Timber.i("custom-thor: Adreno 740 profile: screen %s", screen)
+            GpuProfile(DEFAULT_DRIVER, "noconform", screen, "Adreno 740", "Snapdragon 8 Series / Adreno 740")
         }
 
         private fun isThorLite(context: Context): Boolean =
@@ -1319,8 +1300,7 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
     val samsungEnv = if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) " FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=1" else ""
     val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144$samsungEnv " +
         // b-dxvk-load-crash: DXVK's own warnings into a private log (the container's vars come after DXVKHelper's "none")
-        com.jrees.wowcompanion.DxvkLogs.ENV + extraEnv().let { if (it.isEmpty()) "" else " $it" }
-    Timber.i("custom-thor: extra env [%s]", extraEnv())
+        com.jrees.wowcompanion.DxvkLogs.ENV
     return JSONObject().apply {
         put("id", CONTAINER_ID)
         put("name", "WoW Forever")
@@ -1328,11 +1308,7 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
         put("envVars", envVars)
         put("graphicsDriver", "Wrapper")
         put("graphicsDriverVersion", gpu.driver)
-        // custom-thor: the keys the launcher reads but the official config leaves out (it then passed WRAPPER_VK_VERSION=1.0.x);
-        // values are the generic container's defaults (Container.DEFAULT_GRAPHICSDRIVERCONFIG)
-        put("graphicsDriverConfig", "vulkanVersion=1.3,version=${gpu.driver},adrenotoolsTurnip=1,blacklistedExtensions=,maxDeviceMemory=0," +
-            "presentMode=mailbox,syncFrame=0,disablePresentWait=0,resourceType=buffer,bcnEmulation=auto,bcnEmulationType=compute," +
-            "bcnEmulationCache=0,gpuName=Device,quality=high")
+        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=auto,quality=high")
         put("displayRenderer", "vulkan")
         put("dxwrapper", "dxvk-$DXVK_VERSION-1")
         put("dxwrapperConfig", "version=$DXVK_VERSION-1")
@@ -1353,7 +1329,8 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
 }
 
 private fun installBundledComponents(context: Context, onStatus: (String) -> Unit) {
-    for ((driver, zip) in BUNDLED_DRIVERS) installDriver(context, driver, zip, onStatus)
+    installDriver(context, DEFAULT_DRIVER, "turnip-wow-scheduler-test.zip", onStatus)
+    installDriver(context, ADRENO_8XX_DRIVER, "turnip-V32-RP6sched.zip", onStatus)
 
     val protonDir = File(ImageFs.getSharedProtonDir(context), PROTON_VERSION)
     if (!File(protonDir, "profile.json").exists() || !File(protonDir, "bin/wine").exists()) {
