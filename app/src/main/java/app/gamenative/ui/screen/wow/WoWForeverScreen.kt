@@ -1232,7 +1232,7 @@ private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 // custom-thor: stock DXVK 3.1.1 built as plain Windows ARM64 (~/dev/dxvk-arm64), for its tiler mode on Turnip; it needs Vulkan 1.4.
 // The game folder's ".ds-dxvk" switch file ("2.4.1") goes back to the bundled 2.4.1; read once per app process (force-stop after a change).
 private const val DXVK_OLD = "2.4.1-wow-aarch64-test"
-private const val DXVK_NEW = "3.1.1-wow-aarch64-custom"
+private const val DXVK_NEW = "3.1.1-wow-aarch64-diag"
 private val DXVK_VERSION: String by lazy {
     val pick = if (switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
     Timber.i("custom-thor: DXVK %s", pick)
@@ -1458,6 +1458,8 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
     val envVars = "WRAPPER_MAX_IMAGE_COUNT=0 ZINK_DESCRIPTORS=lazy ZINK_DEBUG=compact,deck_emu MESA_SHADER_CACHE_DISABLE=false MESA_SHADER_CACHE_MAX_SIZE=512MB mesa_glthread=true WINEESYNC=0 MESA_VK_WSI_PRESENT_MODE=mailbox TU_DEBUG=${gpu.tuDebug} VKD3D_SHADER_MODEL=6_0 PULSE_LATENCY_MSEC=144$samsungEnv " +
         // b-dxvk-load-crash: DXVK's own warnings into a private log (the container's vars come after DXVKHelper's "none")
         com.jrees.wowcompanion.DxvkLogs.ENV +
+        // custom-thor: while testing DXVK 3.x its log goes to the game folder (Logs/) at info level, readable over adb
+        (if (DXVK_VERSION == DXVK_NEW) " DXVK_LOG_LEVEL=info DXVK_LOG_PATH=G:/_forever_/Logs" else "") +
         // #56 G1: DXVK's DXGI memory report capped (DXVK_CONFIG; the container's vars come after DXVKHelper's, so this one counts)
         (if (gfx.env.isNotEmpty()) " " + gfx.env else "")
     return JSONObject().apply {
