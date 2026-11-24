@@ -77,6 +77,35 @@ function WC.collectMapSafe()
     return { ok = false, err = tostring(m):sub(1, 200) }
 end
 
+-- custom-thor: the 15 s heartbeat as WC.snapshot("heartbeat") does it (always emitted, the dedup keys updated), split over five frames
+local hbBusy = false
+function WC.heartbeatStaged()
+    if hbBusy then return end
+    hbBusy = true
+    local st = {}
+    local stages = {
+        function() st.bar = WC.collectActionBar(); st.barJson = WC.encode(st.bar) end,
+        function() st.equipped = WC.collectEquipped() end,
+        function() st.player = WC.collectPlayer(); st.map = WC.collectMapSafe() end,
+        function() st.bags = WC.collectBags() end,
+        function()
+            lastBar = st.barJson
+            lastEquip = WC.encode(st.equipped or {})
+            WC.emit({ type = "full", v = WC.VERSION, reason = "heartbeat", actionbar = st.bar, player = st.player,
+                map = st.map, bags = st.bags, equipped = st.equipped })
+        end,
+    }
+    -- measured on the Thor: stages of 14-22, 6-7, 3-5, 22 and 31-33 ms; no picture freeze left (59.7 fps over 58 s, 0 hitches > 100 ms)
+    local i = 0
+    local function nextStage()
+        i = i + 1
+        local ok = pcall(stages[i])
+        if ok and i < #stages then C_Timer.After(0, nextStage); return end
+        hbBusy = false
+    end
+    C_Timer.After(0, nextStage)
+end
+
 -- A forced snapshot, coalesced. The harvester fires on MERCHANT_SHOW etc., and the player is
 -- standing at the thing when it does, so the map must include it on the very next push -- but
 -- three events can land in one frame (a merchant that also repairs and trains) and each must not
@@ -173,7 +202,9 @@ local function start()
     -- rotates immediately. Position updates alone cannot rebuild the map -- they carry no
     -- quests, POIs or services -- so the room sat on "Waiting for the game" until the player
     -- happened to change zone. 15 s costs one flush; the alternative is a blank map.
-    C_Timer.NewTicker(15.0, function() WC.snapshot("heartbeat") end)
+    -- custom-thor (2026-11-24): the heartbeat collects in STAGES, one per frame. In one go it took 80-100 ms of the game's own
+    -- thread (bar 20-24, equipment 14-30, bags 17-18, encode 15-18 ms on the Thor) and froze the picture 200-300 ms every 15 s.
+    C_Timer.NewTicker(15.0, function() WC.heartbeatStaged() end)
 
     -- Chat: buffered, not per-message. The General channel alone can produce several lines a
     -- second and each emit would otherwise cost its own pad burst.

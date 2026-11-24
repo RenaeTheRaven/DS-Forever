@@ -3,7 +3,7 @@ set 424
 fa7c9554ace1e551fa2c9c02411b05c6  WowCompanion/Bags.lua
 46f82d8e20a3c731f5f0b8983c8d2820  WowCompanion/Chat.lua
 737413c5fe597fe3a9182316cea7ad04  WowCompanion/Coords.lua
-94ab6334f7648beadf40f0b71e3585f2  WowCompanion/Core.lua
+28f7f4a73803463dcb88a5796885229e  WowCompanion/Core.lua
 b4ff17e4d060b05d738663fbd96be570  WowCompanion/Harvest.lua
 9be6c87c8af15125b63829b6f304528e  WowCompanion/Map.lua
 4ed262b33e624e55e68fb4c82b620ac8  WowCompanion/MapArt.lua
