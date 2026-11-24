@@ -17,6 +17,7 @@ import java.io.InputStream
 import com.jrees.wowcompanion.CdnStream
 import com.jrees.wowcompanion.GameRegion
 import com.jrees.wowcompanion.WowProduct
+import com.jrees.wowcompanion.CdnHttps
 import com.jrees.wowcompanion.WowSwitch
 import java.time.LocalDate
 import timber.log.Timber
@@ -36,10 +37,18 @@ object WowClientDownloader {
      * country table is GameRegion.guess, no second copy here)
      */
     private fun directBranch(region: String?) = region ?: GameRegion.guess(java.util.Locale.getDefault().country)
-    private val DEFAULT_CDN_HOSTS = listOf("level3.blizzard.com", "us.cdn.blizzard.com")
+    private val DEFAULT_CDN_HOSTS = CdnHttps.DEFAULT_HOSTS
 
-    /** a product's patch server (versions, cdns); the tests point it at a local server */
-    @Volatile internal var patchUrlFor: (WowProduct) -> String = { it.patchUrl }
+    /**
+     * a product's patch servers (versions, cdns), tried in turn: Blizzard's HTTPS version service, us then eu ([WowProduct.patchUrls];
+     * upstream v2.3.7 7d0b00d0 moved off the plain-HTTP port 1119). The tests point it at a local server
+     */
+    @Volatile internal var patchUrlsFor: (WowProduct) -> List<String> = { it.patchUrls }
+
+    /** one patch server for every product (the tests' local server): setting it replaces [patchUrlsFor] */
+    internal var patchUrlFor: (WowProduct) -> String
+        get() = { patchUrlsFor(it).first() }
+        set(value) { patchUrlsFor = { listOf(value(it)) } }
 
     private val patchHttp by lazy {
         Net.http.newBuilder()
@@ -109,23 +118,27 @@ object WowClientDownloader {
     /** [product]'s build on its patch server for the install whose .build.info row is [row] and the region [region]; null = no answer */
     private fun remoteCheck(
         product: WowProduct, row: Map<String, String>, localVersion: String, localBuildKey: String, region: String? = null,
-    ): VersionCheckResult? {
-        val versions = runCatching { fetchText("${patchUrlFor(product)}/versions") }.getOrElse {
-            Timber.w(it, "checkVersion: http call failed")
-            return null
-        } ?: run {
-            Timber.w("checkVersion: response body is null or unsuccessful")
-            return null
+    ): VersionCheckResult? = remoteAnswer(product, row, localVersion, localBuildKey, region, patchHttp).result
+
+    /** [remoteCheck]'s result, or why there is none ([PatchWhy]); [http] = the client of this try */
+    private fun remoteAnswer(
+        product: WowProduct, row: Map<String, String>, localVersion: String, localBuildKey: String, region: String?,
+        http: okhttp3.OkHttpClient,
+    ): PatchAnswer {
+        val fetched = fetchPatchWhy(product, "versions", http)
+        val versions = fetched.text ?: run {
+            Timber.w("checkVersion: the patch server did not answer (${fetched.why?.logWords ?: "?"})")
+            return PatchAnswer(null, fetched.why ?: PatchWhy(PatchFail.OTHER))
         }
         val remoteRow = remoteRow(parsePsv(versions), "Region", region, row["Branch"])
             ?: run {
                 Timber.w("checkVersion: no remote row in $versions")
-                return null
+                return PatchAnswer(null, PatchWhy(PatchFail.NO_BUILD))
             }
         val remoteVersion = remoteRow["VersionsName"] ?: remoteRow["VersionName"] ?: remoteRow["Version"]
             ?: run {
                 Timber.w("checkVersion: no remoteVersion in $remoteRow")
-                return null
+                return PatchAnswer(null, PatchWhy(PatchFail.NO_BUILD))
             }
         val remoteBuildKey = remoteRow["BuildConfig"].orEmpty()
 
@@ -135,13 +148,13 @@ object WowClientDownloader {
             Timber.w("checkVersion: no '$region' row; using '${rowRegion ?: "?"}' (the install's ${row["Branch"]})")
         }
 
-        val cdns = runCatching { fetchText("${patchUrlFor(product)}/cdns") }.getOrNull()?.let(::parsePsv).orEmpty()
+        val cdns = fetchPatchWhy(product, "cdns", http).text?.let(::parsePsv).orEmpty()
         val cdnsRow = remoteRow(cdns, "Name", rowRegion, row["Branch"])
 
         val isOutdated = needsDownload(localVersion, localBuildKey, remoteVersion, remoteBuildKey)
         Timber.i("checkVersion: ${product.code} region=$rowRegion (Branch ${row["Branch"]}) localVersion=$localVersion, " +
             "remoteVersion=$remoteVersion, isOutdated=$isOutdated")
-        return VersionCheckResult(
+        return PatchAnswer(VersionCheckResult(
             localVersion = localVersion,
             remoteVersion = remoteVersion,
             isOutdated = isOutdated,
@@ -153,7 +166,7 @@ object WowClientDownloader {
             remoteCdnServers = cdnsRow?.get("Servers"),
             remoteKeyRing = remoteRow["KeyRing"],
             region = rowRegion,
-        )
+        ), null)
     }
 
     /** a remote build is another than the install's: its version differs, or its BuildConfig (when the row names one). Pure */
@@ -176,7 +189,7 @@ object WowClientDownloader {
     fun regionNeedsDownload(gameRoot: File, target: String): Boolean? = runCatching {
         val choice = activeBuild(gameRoot)
         val product = choice.product ?: return null
-        val versions = fetchText("${patchUrlFor(product)}/versions") ?: return null
+        val versions = fetchPatch(product, "versions") ?: return null
         regionNeedsDownload(choice.row, parsePsv(versions), target)
     }.getOrNull()
 
@@ -290,7 +303,7 @@ object WowClientDownloader {
         val (hosts, servers, from) = when {
             known != null && known.product == product && known.remoteCdnServers != null ->
                 Triple(known.remoteCdnHosts, known.remoteCdnServers, "the last check's cdns")
-            else -> runCatching { fetchText("${patchUrlFor(product)}/cdns") }.getOrNull()?.let(::parsePsv)
+            else -> runCatching { fetchPatch(product, "cdns") }.getOrNull()?.let(::parsePsv)
                 ?.let { remoteRow(it, "Name", row["Branch"]) }?.takeIf { !it["Hosts"].isNullOrBlank() }
                 ?.let { Triple(splitHosts(it.getValue("Hosts")), it["Servers"], "the patch server's cdns") }
                 ?: other?.let { Triple(splitHosts(it.getValue("CDN Hosts")), it["CDN Servers"], "another .build.info row") }
@@ -325,12 +338,120 @@ object WowClientDownloader {
     fun install(gameRoot: File, region: String? = null, onStatus: (String) -> Unit) {
         onStatus("Checking the latest build...")
         // [region]: the player's pick (regions fix), else the device's country's region
-        val target = remoteCheck(WowProduct.LAUNCH, mapOf("Branch" to directBranch(region)), "", "")
-            ?.takeIf { it.remoteBuildConfig.isNotBlank() && it.remoteCdnConfig.isNotBlank() }
-            ?: throw IOException("Blizzard's patch server did not answer")
+        val target = installTarget(mapOf("Branch" to directBranch(region)), onStatus)
         listOf("Data/data", "Data/indices", "Data/config").forEach { check(File(gameRoot, it).run { isDirectory || mkdirs() }) { "can't write to $gameRoot" } }
         WowSwitch.replace(File(gameRoot, com.jrees.wowcompanion.DataStaleness.STREAMED), ByteArray(0))
         sync(gameRoot, target, fresh = true, onStatus)
+    }
+
+    // ------------------------------------------------------------------------------------------------ issue 150: why, and again
+
+    /** what kept the patch server's answer away, in the player's words ([patchFailText]) */
+    internal enum class PatchFail { DNS, CONNECT, TLS, TIMEOUT, HTTP, NO_BUILD, OTHER }
+
+    /** [fail], and the server's HTTP code for [PatchFail.HTTP] */
+    internal data class PatchWhy(val fail: PatchFail, val http: Int = 0) {
+        /** the setup log's words (no address, no host: the kind and the code) */
+        val logWords: String get() = when (fail) {
+            PatchFail.DNS -> "the server's name was not found (DNS)"
+            PatchFail.CONNECT -> "the connection was refused or blocked"
+            PatchFail.TLS -> "the secure connection (TLS) failed"
+            PatchFail.TIMEOUT -> "timed out"
+            PatchFail.HTTP -> "HTTP $http"
+            PatchFail.NO_BUILD -> "no build row in its answer"
+            PatchFail.OTHER -> "the connection failed"
+        }
+    }
+
+    /** a build check's result, or why there is none */
+    internal class PatchAnswer(val result: VersionCheckResult?, val why: PatchWhy?)
+
+    /** the install's patch check came to nothing after [tries] tries: [message] is the player's line, [detail] the setup log's */
+    class PatchServerException internal constructor(internal val why: PatchWhy, val tries: Int) : IOException(patchFailText(why)) {
+        val detail: String get() = "patch server: ${why.logWords}, $tries ${if (tries == 1) "try" else "tries"}"
+    }
+
+    /** the line every reason starts with (the words players and replies already know) */
+    const val PATCH_NO_ANSWER = "Blizzard's patch server did not answer"
+
+    /** the player's line for [why]: what failed, then what to try. Pure */
+    internal fun patchFailText(why: PatchWhy?): String = PATCH_NO_ANSWER + ": " + when (why?.fail) {
+        PatchFail.DNS -> "its name could not be found. Check the Wi-Fi, a VPN or an ad blocker."
+        PatchFail.CONNECT -> "the connection was blocked. Try another Wi-Fi, or turn off a VPN."
+        PatchFail.TLS -> "the secure connection failed. Check the date and time, or try another Wi-Fi."
+        PatchFail.TIMEOUT -> "it took too long. Try again, or try another Wi-Fi."
+        PatchFail.HTTP -> "it sent back an error (HTTP ${why.http}). Try again later."
+        PatchFail.NO_BUILD -> "it listed no build to install. Try again later."
+        PatchFail.OTHER, null -> "the connection failed. Try again, or try another Wi-Fi."
+    }
+
+    /** a network failure's kind, from the exception or its causes. Pure */
+    internal fun patchWhy(e: Throwable): PatchWhy {
+        var c: Throwable? = e
+        var depth = 0
+        while (c != null && depth++ < 8) {
+            when (c) {
+                is java.net.UnknownHostException -> return PatchWhy(PatchFail.DNS)
+                is javax.net.ssl.SSLException, is java.security.cert.CertificateException -> return PatchWhy(PatchFail.TLS)
+                is java.net.SocketTimeoutException -> return PatchWhy(PatchFail.TIMEOUT)
+                is java.net.ConnectException, is java.net.NoRouteToHostException, is java.net.PortUnreachableException ->
+                    return PatchWhy(PatchFail.CONNECT)
+            }
+            // OkHttp's call timeout is a bare InterruptedIOException("timeout")
+            if (c is java.io.InterruptedIOException) return PatchWhy(PatchFail.TIMEOUT)
+            c = c.cause
+        }
+        return PatchWhy(PatchFail.OTHER)
+    }
+
+    /** a try worth repeating: a network failure or a server's passing trouble (408, 429, 5xx); not another 4xx or a missing build. Pure */
+    internal fun patchRetries(why: PatchWhy?): Boolean = when (why?.fail) {
+        PatchFail.HTTP -> why.http == 408 || why.http == 429 || why.http >= 500
+        PatchFail.NO_BUILD -> false
+        else -> true
+    }
+
+    /** the install's tries of the patch check: the first, then two more ([patchBackoffMs] apart) with the longer [patchHttpSlow] */
+    const val PATCH_TRIES = 3
+
+    /** the waits before the second and the third try (the tests set them to 0) */
+    @Volatile internal var patchBackoffMs: List<Long> = listOf(2_000L, 5_000L)
+
+    /** a weak link's client for the retries: 15 s a call, not 6 */
+    private val patchHttpSlow by lazy {
+        Net.http.newBuilder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /**
+     * the direct install's build ([install]): up to [PATCH_TRIES] tries of the patch check (the status line says which), until one gives
+     * a build with both configs. Each try's reason goes to the log; the last one's is the [PatchServerException] the player reads
+     */
+    internal fun installTarget(row: Map<String, String>, onStatus: (String) -> Unit): VersionCheckResult {
+        var why: PatchWhy? = null
+        var tries = 0
+        for (attempt in 0 until PATCH_TRIES) {
+            if (attempt > 0) {
+                if (!patchRetries(why)) break
+                onStatus("Checking the latest build... (try ${attempt + 1} of $PATCH_TRIES)")
+                val wait = patchBackoffMs.getOrElse(attempt - 1) { patchBackoffMs.lastOrNull() ?: 0L }
+                if (wait > 0) Thread.sleep(wait)
+            }
+            tries++
+            val a = remoteAnswer(WowProduct.LAUNCH, row, "", "", null, if (attempt == 0) patchHttp else patchHttpSlow)
+            val r = a.result
+            if (r != null && r.remoteBuildConfig.isNotBlank() && r.remoteCdnConfig.isNotBlank()) {
+                if (attempt > 0) Timber.i("install: the patch server answered on try ${attempt + 1}")
+                return r
+            }
+            val w = a.why ?: PatchWhy(PatchFail.NO_BUILD)
+            why = w
+            Timber.w("install: patch check try ${attempt + 1} of $PATCH_TRIES: ${w.logWords}")
+        }
+        throw PatchServerException(why ?: PatchWhy(PatchFail.OTHER), tries)
     }
 
     /** [stopped]: asked between files; true = stop ([UpdateStopped]; the old install as it was, nothing of it deleted) */
@@ -340,7 +461,7 @@ object WowClientDownloader {
     private fun sync(gameRoot: File, target: VersionCheckResult, fresh: Boolean, onStatus: (String) -> Unit, stopped: () -> Boolean = { false }) {
         if (stopped()) throw UpdateStopped()
         val cdn = Cdn(
-            hosts = target.remoteCdnHosts.ifEmpty { DEFAULT_CDN_HOSTS },
+            servers = CdnHttps.servers(target.remoteCdnServers?.split(' ').orEmpty(), target.remoteCdnHosts),
             path = target.remoteCdnPath.ifEmpty { DEFAULT_CDN_PATH },
         )
         onStatus("Fetching build ${target.remoteVersion} manifest...")
@@ -389,7 +510,7 @@ object WowClientDownloader {
         val latest = checkVersion(gameRoot, region)
         if (latest != null && latest.remoteBuildConfig.isNotBlank()) return updateGame(gameRoot, latest, onStatus = onStatus)
 
-        val cdn = Cdn(hosts = splitHosts(row.getValue("CDN Hosts")), path = row.getValue("CDN Path"))
+        val cdn = Cdn(servers = CdnHttps.servers(row["CDN Servers"], row.getValue("CDN Hosts")), path = row.getValue("CDN Path"))
         onStatus("Reading build ${row["Version"].orEmpty()} manifest...")
         commit(syncClient(
             gameRoot = gameRoot,
@@ -401,6 +522,53 @@ object WowClientDownloader {
             },
             onStatus = onStatus,
         ))
+    }
+
+    /**
+     * REPAIR, THE LAUNCHER'S PART (#577, 1.0.37: damaged game files after an unclean stop, and no way back but a reinstall). For the
+     * build the folder RUNS (its .build.info row: never an update), every file DS Forever's own install puts in the folder is checked
+     * against its checksum and only a damaged or missing one is downloaded again: the build and CDN configs (their MD5 is their name),
+     * the client's own files (their MD5 in the install manifest; staged, then moved over together, the exe last) and the CDN archive
+     * indexes in Data/indices (checked by their footer). The same for Install directly's folder and a folder copied from a PC. The
+     * number of files downloaded again. [stopped] between files ([UpdateStopped]: nothing of the old install deleted).
+     */
+    fun repairFiles(gameRoot: File, onStatus: (String) -> Unit, stopped: () -> Boolean = { false }): Int {
+        val choice = activeBuild(gameRoot)
+        val row = choice.row
+        val product = checkNotNull(choice.product) { "Incompatible game product: ${row["Product"]}" }
+        val cdn = Cdn(servers = CdnHttps.servers(row["CDN Servers"], row["CDN Hosts"].orEmpty()), path = row["CDN Path"].orEmpty().ifEmpty { DEFAULT_CDN_PATH })
+        val buildKey = row["Build Key"].orEmpty()
+        val cdnKey = row["CDN Key"].orEmpty()
+        var fixed = 0
+        onStatus("Checking the game's own files...")
+        // the configs: a kept copy that is not its name's is downloaded again
+        val configs = listOf(buildKey, cdnKey).filter { Regex("[0-9a-f]{32}").matches(it) }.associateWith { key ->
+            val f = File(gameRoot, "Data/config/${key.substring(0, 2)}/${key.substring(2, 4)}/$key")
+            val kept = f.takeIf { it.isFile }?.readBytes()?.takeIf { configOk(it, key) }
+            kept ?: cdn.require("config", key).also { saveConfig(gameRoot, key, it); fixed++ }
+        }
+        if (stopped()) throw UpdateStopped()
+        val buildConfig = parseConfig(String(configs[buildKey] ?: throw IOException("the game folder names no build config")))
+        val cdnConfig = configs[cdnKey]?.let { parseConfig(String(it)) }
+        val moves = syncClient(
+            gameRoot = gameRoot, product = product, cdn = cdn, buildConfig = buildConfig,
+            archives = lazy { cdnConfig?.let { ArchiveLocator(cdn, gameRoot, it.getValue("archives")) } },
+            onStatus = onStatus, stopped = stopped,
+        )
+        commit(moves)
+        fixed += moves.size
+        cdnConfig?.let { cfg ->
+            val dir = File(gameRoot, "Data/indices")
+            val required = listOf("archives", "patch-archives").flatMap { cfg[it].orEmpty() } +
+                listOf("file-index", "patch-file-index", "archive-group", "patch-archive-group").mapNotNull { cfg[it]?.firstOrNull() }
+            // only a folder that keeps the CDN's indexes (Install directly's, a copy that brought them): a missing one is fetched there too
+            if (dir.isDirectory) {
+                val bad = required.distinct().count { !indexFileOk(File(dir, "$it.index"), it) }
+                if (bad > 0) { syncIndices(gameRoot, cdn, cfg, onStatus, stopped); fixed += bad }
+            }
+        }
+        runCatching { android.util.Log.i("WCSETUP", "repair: the game's own files checked; $fixed downloaded again") }
+        return fixed
     }
 
     /** the client's changed files, staged ([stage]): the temp -> file moves for [commit], the exe last; empty = nothing to change */
@@ -587,7 +755,11 @@ object WowClientDownloader {
      * (build config / CDN config) must hash to its own key ([configOk]); an archive index to its name ([indexOk]). A host whose answer
      * fails goes on to the next one, and a network failure is never reported as "missing" (a 403/404 elsewhere no longer hides it).
      */
-    internal class Cdn(val hosts: List<String>, val path: String) {
+    internal class Cdn(
+        /** HTTPS base URLs, e.g. "https://level3.ssl.blizzard.com" ([CdnHttps.servers]; the tests' local server may be http) */
+        val servers: List<String>,
+        val path: String,
+    ) {
         fun require(kind: String, key: String) =
             fetch(kind, key, verify = if (kind == "config") ({ b -> configOk(b, key) }) else null) ?: throw IOException("CDN is missing $kind/$key")
 
@@ -647,26 +819,30 @@ object WowClientDownloader {
          */
         private fun <T> each(kind: String, key: String, range: LongRange?, take: (okhttp3.Response, String) -> T): T? {
             var failure: IOException? = null
+            var refused: IOException? = null
             var missing = false
-            for (host in hosts) {
+            // a server whose certificate failed is skipped (upstream v2.3.9 efa6e700: Korea's blizzard.gcdn.cloudn.co.kr); the others
+            // mirror it, so it is neither a failure nor a "missing" of its own. Certificate checks themselves stay on
+            for (server in CdnHttps.usable(servers)) {
                 val request = Request.Builder()
-                    .url("http://$host/$path/$kind/${key.substring(0, 2)}/${key.substring(2, 4)}/$key")
+                    .url("$server/$path/$kind/${key.substring(0, 2)}/${key.substring(2, 4)}/$key")
                     .apply { if (range != null) header("Range", "bytes=${range.first}-${range.last}") }
                     .build()
                 try {
                     Net.http.newCall(request).execute().use { response ->
                         when {
-                            response.isSuccessful -> return take(response, host)
+                            response.isSuccessful -> return take(response, server)
                             response.code == 403 || response.code == 404 -> missing = true
-                            else -> failure = IOException("HTTP ${response.code} from $host")
+                            else -> failure = IOException("HTTP ${response.code} from $server")
                         }
                     }
                 } catch (e: IOException) {
-                    failure = e
+                    if (CdnHttps.note(server, e)) refused = e else failure = e
                 }
             }
             if (missing && failure == null) return null
-            throw failure ?: IOException("No CDN hosts in $BUILD_INFO")
+            throw failure ?: refused?.let { IOException("every CDN server failed its certificate check (${it.message})", it) }
+                ?: IOException("No CDN servers in $BUILD_INFO")
         }
     }
 
@@ -818,10 +994,42 @@ object WowClientDownloader {
         }
     }
 
-    private fun fetchText(url: String): String? =
-        patchHttp.newCall(Request.Builder().url(url).build()).execute().use { response ->
-            if (response.isSuccessful) response.body?.string() else null
+    /**
+     * the patch server's [table] ("versions", "cdns") of [product]: each of [patchUrlsFor] in turn until one answers with it. null =
+     * a server answered, none with it; a network failure on every one throws the last failure
+     */
+    private fun fetchPatch(product: WowProduct, table: String): String? {
+        val f = fetchPatchWhy(product, table, patchHttp)
+        f.failure?.takeIf { f.text == null && f.why?.fail != PatchFail.HTTP }?.let { throw it }
+        return f.text
+    }
+
+    /** one patch server's answer: its [text], else [why] there is none and the network [failure] behind it (null = it answered) */
+    private class PatchFetch(val text: String?, val why: PatchWhy?, val failure: IOException? = null)
+
+    /**
+     * [fetchPatch] that keeps WHY nothing came (issue 150: "Blizzard's patch server did not answer" said nothing of the cause): each of
+     * [patchUrlsFor] in turn through [http]; a server's error reply (its HTTP code) wins over a later server's network failure, as before
+     */
+    private fun fetchPatchWhy(product: WowProduct, table: String, http: okhttp3.OkHttpClient): PatchFetch {
+        var failure: IOException? = null
+        var why: PatchWhy? = null
+        for (base in patchUrlsFor(product)) {
+            try {
+                http.newCall(Request.Builder().url("$base/$table").build()).execute().use { response ->
+                    if (response.isSuccessful) response.body?.string()?.let { return PatchFetch(it, null) }
+                    Timber.w("patch server $base: HTTP ${response.code}")
+                    if (why?.fail != PatchFail.HTTP) why = PatchWhy(PatchFail.HTTP, response.code)
+                }
+            } catch (e: Exception) {
+                // any failure, not only IO (the old callers' runCatching took them all: the start's check must never throw)
+                Timber.w("patch server $base: ${e.message}")
+                failure = e as? IOException ?: IOException(e.message, e)
+                if (why?.fail != PatchFail.HTTP) why = patchWhy(e)
+            }
         }
+        return PatchFetch(null, why ?: PatchWhy(PatchFail.OTHER), failure)
+    }
 
     /** the row the game runs and its client: [WowProduct.choose], the one order the launcher and the companion share */
     private fun activeBuild(gameRoot: File, today: java.time.LocalDate = java.time.LocalDate.now()): WowProduct.Choice {

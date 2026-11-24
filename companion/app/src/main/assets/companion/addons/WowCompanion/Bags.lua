@@ -136,6 +136,13 @@
 -- bags-kit4 (issue #332, 1.0.32: "mage comprehension skill does not work, it opens the backpack room but states that there are no
 -- elligible items in bags despite unread scrolls"): an item-condition pick ("cond") lists the bags' non-gear items the game says it can go
 -- on (DoesItemMatchSpellItemCondition true), first; before, only gear was ever listed for it (KIT.list).
+-- bags-kit5 (issue 368, "Waylaid crates: the item list is empty"): a plain item pick ("spell") that a bag item's use started just now
+-- (a crate, a supply box: not a kit, a stone or an oil - KIT.isKit) listed only gear, so the trade goods a crate takes never showed.
+-- It now lists the bags' trade goods, reagents, quest and misc items and consumables first (the used item itself left out), then the
+-- gear as before; the game itself says no on the click to anything the pick cannot take. A kit's list is unchanged (gear only).
+-- bags-kit6 (the review of bags-kit5): the crate's list holds for the WHOLE pick (KIT.crate: the use just now, else KIT.pickKit kept as
+-- the pick started), not only the 2 s after the use - the list is made again on every D-pad move; and a crate is no kit because the
+-- pick it started "learned" it (WC._kitLearned holds every item that started a pick): only the item's class or the game's own fits say kit.
 -- bags-merge1 (the 1.0.30 test build merge, code 1453): bags-act1 / bags-act2 (feat/bags-actions), bags-kit3 (fix/kit-filter) and uneq1 / uneq2 (feat/unequip) side by side, each kept as written.
 -- bags-nocmp1 (the user, 2026-11-13: "the bag items are still showing currently equipped, I dont want to see that, but I do want to see
 -- the stat changes at the bottom of that weapon if I equip it"): the room asks Interact for its tooltips WITHOUT the worn pieces' own
@@ -1502,31 +1509,64 @@ end
 -- becomes our override (the item keeps its button), the player's binding for it goes back to free (one SaveBindings: the set
 -- as it was before Bags bound it), and the WCB macros are deleted. None existed on the Thor or the PC on 2026-10-09 (their WTF
 -- caches: the "DS ..." macros are Spells' / Home's, not these).
+-- Safety k6 (the 11-20 hunter, test build 1513): WC.charKey(), nil until the realm is known. It was "Name-?" / "Name-" + a marker
+-- (S()'s markers are strings) / "?-?": nothing is read or saved per character without the whole key now
 function BB.charKey()
-    local n = S(function() return UnitName("player") end)
-    local r = S(function() return GetRealmName() end)
-    return (type(n) == "string" and n or "?") .. "-" .. (type(r) == "string" and r or "?")
+    return ((function() if type(WC.charKey) == "function" then return (WC.charKey()) end; local ok, k = pcall(function() local n, r = UnitName("player"), GetRealmName(); if type(n) == "string" and type(r) == "string" and n:find("%S") and r:find("%S") and r ~= "?" and r ~= "_" then return n .. "-" .. r end end); return ok and k or nil end)())
 end
 
-function BB.load()
+-- bags-rk1 (the k6 review, round 3: "Bags overwrites the real bag binds when the key appears after login"): BB.load runs once, at
+-- PLAYER_LOGIN, and BB.save writes the whole record from memory. With no key at the login (the realm empty, the hint not there yet, the
+-- kept realm not resolved yet) BB.binds was {}; once the key came (the realm back, the hint, Safety's 2 s / 30 s re-checks) the next save
+-- wrote that near-empty set over the REAL bagBinds["Name-Realm"] (every earlier bind lost). Now BB.key is the key BB.load read under, and
+-- a save under any other key first reads that key's record (BB.sync: the stored binds, this session's own key-less binds on top); the
+-- first time the key appears (timers after the login, a world entry, a fight's end) BB.sync reads and applies it too. A key that CHANGES
+-- (a kept realm the game's own answer replaced) takes the new key's record as stored: the old key's set is never copied onto it.
+function BB.read(me)
     local db = type(WowCompanionDB) == "table" and WowCompanionDB.bagBinds or nil
-    local mine = type(db) == "table" and db[BB.charKey()] or nil
-    BB.binds = {}
+    local mine = me and type(db) == "table" and db[me] or nil
+    local out = {}
     if type(mine) == "table" then
         for k, id in pairs(mine) do
-            if type(k) == "string" and tonumber(id) and not chordRefusal(k) then BB.binds[k] = tonumber(id)
+            if type(k) == "string" and tonumber(id) and not chordRefusal(k) then out[k] = tonumber(id)
             elseif type(k) == "string" and tonumber(id) and k:match("([^%-]+)$") == "PADFORWARD" then BB.dropped = true end
         end
     end
+    return out
+end
+
+function BB.load()
+    local me = BB.charKey()
+    BB.key = me
+    BB.binds = BB.read(me)
     if BB.dropped then BB.save() end                    -- Start's old bind gone from our record too (the pause wheel's now)
 end
 
+-- bags-rk1: the key now against the one BB.binds was read under; true = BB.binds is now the key's own record (and applied)
+function BB.sync()
+    local me = BB.charKey()
+    if not me or me == BB.key then return false end
+    local had = BB.key
+    local stored = BB.read(me)
+    local mine = false
+    if had == nil then                                  -- binds made while no key was known: this character's, kept on top
+        for k, id in pairs(BB.binds) do stored[k] = id; mine = true end
+    end
+    BB.key, BB.binds = me, stored
+    if mine or BB.dropped then BB.save() end
+    BB.apply()                                          -- in a fight: waits for PLAYER_REGEN_ENABLED (BB.pending)
+    return true
+end
+
 function BB.save()
+    local me = BB.charKey()
+    if not me then return end                           -- k6: no character key yet: nothing saved (BB.load reads it again)
+    if me ~= BB.key then BB.sync(); return end          -- bags-rk1: never the whole record of another (or no) key over this one's
     if type(WowCompanionDB) ~= "table" then WowCompanionDB = {} end
     if type(WowCompanionDB.bagBinds) ~= "table" then WowCompanionDB.bagBinds = {} end
     local out = {}
     for k, id in pairs(BB.binds) do out[k] = id end
-    WowCompanionDB.bagBinds[BB.charKey()] = next(out) and out or nil
+    WowCompanionDB.bagBinds[me] = next(out) and out or nil
 end
 
 -- one secure item button per chord, made out of combat, off screen, never under a finger (no art: nothing to see)
@@ -1633,13 +1673,23 @@ end
 do
     local bf = CreateFrame("Frame")
     bf:RegisterEvent("PLAYER_LOGIN")
+    bf:RegisterEvent("PLAYER_ENTERING_WORLD")
     bf:RegisterEvent("PLAYER_REGEN_ENABLED")
     bf:SetScript("OnEvent", function(_, e)
         if e == "PLAYER_LOGIN" then
             BB.load(); BB.apply(); BB.oldDoc = BB.old()
             BB.migrated = nil
             for n = 1, 3 do C_Timer.After(2 * n, function() if not BB.migrated then BB.migrate() end end) end   -- bags-bindbox1
+            -- bags-rk1: no key at the login: asked again (every 5 s for a minute, then every 30 s for half an hour) until it is known
+            local function later(n)
+                if BB.key ~= nil or n > 72 then return end
+                C_Timer.After(n <= 12 and 5 or 30, function() pcall(BB.sync); later(n + 1) end)
+            end
+            if BB.key == nil then later(1) end
+        elseif e == "PLAYER_ENTERING_WORLD" then        -- bags-rk1: a world entry with the key known now
+            if BB.key == nil and BB.binds then pcall(BB.sync) end
         else                                            -- a fight's end: what waited for it, and an old stick bind not moved yet
+            if BB.key == nil then pcall(BB.sync) end    -- bags-rk1
             if BB.pending then BB.apply() end
             if BB.migrated == false then BB.migrate() end
         end
@@ -2367,6 +2417,27 @@ function KIT.food()
     for _, r in ipairs(rows) do r.at = nil end
     return rows
 end
+-- bags-kit5: an item that is applied TO gear (an armor kit, a stone, an oil: Item Enhancement, class 8 or consumable sub 6) or one
+-- the game said fits a worn piece (WC._kitFits, an enchant / item-condition pick's answers): its pick keeps the gear-only list.
+-- bags-kit6 (review): NOT WC._kitLearned - KIT.step learns EVERY bag item whose use starts a pick, the crate too, so a crate read as
+-- a kit the moment its pick started and its list was gear only again
+function KIT.isKit(id)
+    local fits = WC._kitFits and WC._kitFits[id]
+    if type(fits) == "table" then for _, r in pairs(fits) do if type(r) == "table" and r.ok == true then return true end end end
+    local okI, _, _, _, _, _, cls, sub = CALL(function() return C_Item.GetItemInfoInstant(id) end)
+    cls, sub = okI and SN(function() return cls end) or nil, okI and SN(function() return sub end) or nil
+    return cls == 8 or (cls == 0 and sub == 6)
+end
+-- bags-kit6 (review): the crate / supply box whose use started THIS pick, for the whole pick: the use just now (2 s), else the one
+-- KIT.step kept as the pick started (KIT.pickKit, nil once it ends). The list is made again on every D-pad move and bag change, long
+-- after those 2 s: bags-kit5's trade goods went from the list at the first move. nil = a kit's pick, a spell's pick, or none
+function KIT.crate()
+    local id = (KIT.last and GetTime() - KIT.last.t < 2) and KIT.last.id or (KIT.on() and KIT.pickKit) or nil
+    if type(id) == "number" and not KIT.isKit(id) then return id end
+    return nil
+end
+-- bags-kit5: the item classes a crate / supply pick may take (consumable, reagent, trade goods, quest, misc)
+KIT.CRATE_CLS = { [0] = true, [5] = true, [7] = true, [12] = true, [15] = true }
 function KIT.list(ctx)
     ctx = ctx or KIT.ctx() or "spell"
     if ctx == "feed" then
@@ -2379,7 +2450,9 @@ function KIT.list(ctx)
     -- (the player's report, 2026-11-10, issue 90: "feed pet brings up item select, but doesnt show consumables"): a pick a SPELL started
     -- (not an armor kit or stone used from the bags just now) and not an enchant / item-condition pick lists the bags' consumables too,
     -- food and drink first; the game itself says no on the click to anything the spell cannot take
-    if ctx == "spell" and not (KIT.last and GetTime() - KIT.last.t < 2) then
+    -- bags-kit6: a crate's pick lists its consumables below (with its trade goods), never twice
+    local crate = ctx == "spell" and KIT.crate() or nil
+    if ctx == "spell" and not (KIT.last and GetTime() - KIT.last.t < 2) and not crate then
         local food, other = {}, {}
         for _, e in ipairs(layout()) do
             local n = SN(function() return C_Container.GetContainerNumSlots(e.bag) end) or 0
@@ -2403,6 +2476,30 @@ function KIT.list(ctx)
         for _, r in ipairs(food) do front[#front + 1] = r end
         for _, r in ipairs(other) do front[#front + 1] = r end
         -- (issue #126) the consumables before the worn gear, never past the cap: 10 rows are left for the bags' gear
+        local room = math.max(0, KIT.MAX - #out - 10)
+        for i = math.min(#front, room), 1, -1 do table.insert(out, 1, front[i]) end
+    end
+    -- bags-kit5 (issue 368): a plain pick a bag item's use started, that item not a kit: the non-gear items a crate takes
+    -- (bags-kit6: for the whole pick, KIT.crate)
+    if crate then
+        local front = {}
+        for _, e in ipairs(layout()) do
+            local n = SN(function() return C_Container.GetContainerNumSlots(e.bag) end) or 0
+            for s = 1, n do
+                local id = bagItemID(e.bag, s)
+                if id and id ~= crate then
+                    local okI, _, _, _, _, _, cls = CALL(function() return C_Item.GetItemInfoInstant(id) end)
+                    cls = okI and SN(function() return cls end) or nil
+                    if cls and KIT.CRATE_CLS[cls] then
+                        local info = infoAt(e.bag, s)
+                        front[#front + 1] = { src = "bag", bag = e.bag, s = s, id = id,
+                            name = S(function() return (C_Item.GetItemNameByID(id)) end) or S(function() return (GetItemInfo(id)) end),
+                            icon = info and SN(function() return info.iconFileID end) or nil,
+                            q = info and SN(function() return info.quality end) or nil, ok = true }
+                    end
+                end
+            end
+        end
         local room = math.max(0, KIT.MAX - #out - 10)
         for i = math.min(#front, room), 1, -1 do table.insert(out, 1, front[i]) end
     end

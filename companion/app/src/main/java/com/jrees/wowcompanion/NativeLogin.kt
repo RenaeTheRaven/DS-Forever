@@ -124,6 +124,14 @@ object NativeLogin {
     private const val REARM_LIFE_MS = 300_000L
     /** the client run left the world (a logout, or its traffic stopped) and has not come back: a re-login file may be waiting */
     @Volatile var outOfWorld = false; private set
+    /** issue 560 (the review): the world back by its traffic while [outOfWorld] (AddonSilence.WorldTraffic); main thread */
+    private val worldAgain = AddonSilence.WorldTraffic()
+    /**
+     * issue 560: the start screen's add-ons word waits while this holds - out of the world since a logout / a disconnect (the
+     * re-login's character select) and the world's traffic not back yet. The documents back end it too ([worldBack]); the traffic
+     * back ends it for add-ons that stay silent (switched off at character select), so their word is not held for the whole run.
+     */
+    val outOfWorldHold: Boolean get() = outOfWorld && !worldAgain.back
     /**
      * this client run has been IN THE WORLD (the add-on's documents current: [worldSeen]); only then can leaving it write the re-login
      * file. NOT character select's traffic: measured 2026-10-09 10:30, the first character select (after the sign-in, before the world)
@@ -159,6 +167,17 @@ object NativeLogin {
      * a minute. The unread file's cap waits then, and the start screen says "Game downloading". Main thread.
      */
     @Volatile var downloading = false; private set
+    /**
+     * #579 / #576 (1.0.37: "local stuck on login screen (connecting)": a partial install downloading 232-386 MB a minute right through the
+     * Connecting screen, under "Waiting for the world."): past the login screen (or after the read) and before the world, the game
+     * receives at least [PreLoginTraffic.BUSY_MB] MB a minute. The start screen says "Game downloading" then, and a restart asks first.
+     * Main thread.
+     */
+    @Volatile var downloadingAfter = false; private set
+    /** the MB the game received in the last whole minute past the login screen (the start screen's line; 0 = no whole minute yet) */
+    val afterLoginMb: Long get() = PreLoginTraffic.mb(afterLogin.lastMinute)
+    /** the game downloads now, before or past its login screen ([downloading] or [downloadingAfter]) */
+    val downloadingNow: Boolean get() = downloading || downloadingAfter
     /** the last moment [downloading] was seen (0 = not in this run): the 5-minute cap counts from here once the download ends */
     private var holdFrom = 0L
     /** the "kept past its cap" line once per file */
@@ -207,8 +226,9 @@ object NativeLogin {
         browserMode = browser; browserHold = browser; holdEndSec = 0L
         consumed = false; firstReadAt = 0L; pastLogin = false; pastLoginAt = 0L; quietFor = 0; quiet = false   // a new client run
         outOfWorld = false; reachedWorld = false; lifeMs = MAX_LIFE_MS; appCtx = ctx.applicationContext; changed()
+        runCatching { NetStall.runStarts() }               // issues 582 / 560 (review 11-23): the stall count is this run's
         playAt = System.currentTimeMillis(); windowArmed = false; windowSeen = false; expiredUnread = false; main.post { preLogin.reset(); afterLogin.reset() }
-        downloading = false; holdFrom = 0L; capHeld = false
+        downloading = false; downloadingAfter = false; holdFrom = 0L; capHeld = false
         downloadAtRead = false; lastHeavyAt = 0L; heavyNoted = false; readMs = 0L
         val root = shadowRoot(ctx).apply { mkdirs() }
         val isLinkF = { f: File -> Files.isSymbolicLink(f.toPath()) }
@@ -349,11 +369,25 @@ object NativeLogin {
             // still while the device sleeps
             afterReadDue()
             worldTraffic(rxBytes); onTrafficSample?.invoke(rxBytes, txBytes)
+            // issues 582 / 560 (11-23): one line per stall in the world (how long, what was sent, the Wi-Fi, the game's latency)
+            runCatching { NetStall.second(appCtx, rxBytes, txBytes, reachedWorld && !outOfWorld && !GameLife.awayNow) }
             val counts = PreLoginTraffic.counts(firstReadAt > 0L, pastLogin, reachedWorld)
             if (counts) preLogin.add(rxBytes, System.currentTimeMillis())?.let { logEvent(it) }
             // issue #215: past the login screen and still downloading before the world: the minute's line and the bottom screen's state
             if (PreLoginTraffic.countsAfter(firstReadAt > 0L, pastLogin, reachedWorld)) afterLogin.add(rxBytes, System.currentTimeMillis())?.let {
                 logEvent(it + (runCatching { bottomState?.invoke() }.getOrNull()?.let { s -> "; bottom screen: $s" } ?: ""))
+            }
+            // #579: past the login screen and before the world, the same "Game downloading" while it fetches (the line had said
+            // "Waiting for the world." through 1.6 GB of it)
+            val da = PreLoginTraffic.downloading(PreLoginTraffic.countsAfter(firstReadAt > 0L, pastLogin, reachedWorld), afterLogin.busy)
+            if (da != downloadingAfter) {
+                downloadingAfter = da
+                logEvent(when {
+                    da -> "the game is downloading past its login screen (before the world)"
+                    reachedWorld -> "the game reached the world while downloading"
+                    else -> "the game's download past its login screen ended"
+                })
+                onChange?.invoke()
             }
             // issue #132: downloading before the login screen holds the unread file's cap and says "Game downloading"
             val d = PreLoginTraffic.downloading(counts, preLogin.busy)
@@ -441,6 +475,7 @@ object NativeLogin {
         val fl = flavorDir ?: return
         val ctx = appCtx ?: return
         outOfWorld = true
+        worldAgain.reset()                              // issue 560 (the review): this time out counts afresh (main thread)
         val login = savedFor(ctx) ?: run { logEvent("out of the world ($why); ${if (browserMode) "browser login" else "no saved login"}, nothing written"); return }
         try {
             val f = File(fl, FILE)
@@ -524,9 +559,10 @@ object NativeLogin {
 
     /** the game screen went: the file goes and the watching stops */
     fun end(ctx: Context? = null) {
+        runCatching { NetStall.runEnds() }                 // issues 582 / 560: a stall under way is said now
         outOfWorld = false
         browserStopped("the game screen went")
-        if (downloading) { downloading = false; changed() }
+        if (downloading || downloadingAfter) { downloading = false; downloadingAfter = false; changed() }
         clear(ctx)
         observer?.stopWatching(); observer = null
         logEvent("client run ends")
@@ -544,6 +580,7 @@ object NativeLogin {
     /** the game's traffic stopping after the world (a disconnect: in the world it never drops under ~2 KB/s) writes the re-login file */
     private fun worldTraffic(rx: Long) {
         if (!pastLogin) return
+        if (outOfWorld) worldAgain.second(rx)           // issue 560 (the review): the world back by its traffic
         if (rx < 200) {
             if (++quietFor == 5 && !quiet) { quiet = true; rearm("the world's traffic stopped") }
         }
