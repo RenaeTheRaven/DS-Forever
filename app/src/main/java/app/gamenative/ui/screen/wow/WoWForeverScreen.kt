@@ -1229,7 +1229,16 @@ private fun Throwable.isPermissionDenied() =
 private const val DEFAULT_DRIVER = "Turnip-WoW-scheduler-test"
 private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
-private const val DXVK_VERSION = "2.4.1-wow-aarch64-test"
+// custom-thor: stock DXVK 3.1.1 built as plain Windows ARM64 (~/dev/dxvk-arm64), for its tiler mode on Turnip; it needs Vulkan 1.4.
+// The game folder's ".ds-dxvk" switch file ("2.4.1") goes back to the bundled 2.4.1; read once per app process (force-stop after a change).
+private const val DXVK_OLD = "2.4.1-wow-aarch64-test"
+private const val DXVK_NEW = "3.1.1-wow-aarch64-custom"
+private val DXVK_VERSION: String by lazy {
+    val pick = if (switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
+    Timber.i("custom-thor: DXVK %s", pick)
+    pick
+}
+private val DXVK_VULKAN: String get() = if (DXVK_VERSION == DXVK_NEW) ",vulkanVersion=1.4" else ""
 
 // custom-thor: the Adreno 740 renders at 1280x720 like the 8xx (measured on the Thor: 1080p is GPU-bound at ~41-46 fps);
 // the game folder's ".ds-resolution" switch file ("WIDTHxHEIGHT") overrides it.
@@ -1458,7 +1467,7 @@ private fun containerConfig(gameRoot: File, gpu: GpuProfile, executablePath: Str
         put("envVars", envVars)
         put("graphicsDriver", "Wrapper")
         put("graphicsDriverVersion", gpu.driver)
-        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=${gfx.bcn},quality=high")
+        put("graphicsDriverConfig", "version=${gpu.driver},adrenotoolsTurnip=1,resourceType=buffer,bcnEmulation=${gfx.bcn},quality=high$DXVK_VULKAN")
         put("displayRenderer", "vulkan")
         put("dxwrapper", "dxvk-$DXVK_VERSION-1")
         put("dxwrapperConfig", "version=$DXVK_VERSION-1")
