@@ -26,7 +26,7 @@ The official zip supplies the add-ons (`companion/`); the Sunshine AppImage is e
 
 ## Settings
 
-- `~/.config/dsforever-desktop/env`: the Proton prefix, runner and game id WoW is started with (Faugus Launcher's by default).
+- `~/.config/dsforever-desktop/env`: the Proton prefix, runner and game id WoW is started with (placeholders on first start: set them to your launcher's prefix, umu game id and Proton).
 - `~/.config/dsforever-desktop/sunshine-extra.conf`: extra Sunshine settings, for example `output_name = DP-3` for the monitor.
 - Logs: `~/.local/share/dsforever-desktop/` (helper, Sunshine console, Desktop console); Desktop's own log and data are in the
   prefix, `drive_c/users/steamuser/AppData/Local/DSForeverDesktop`.

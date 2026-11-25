@@ -1,3 +1,7 @@
+> **This is the custom-thor fork**, tuned for the AYN Thor (Snapdragon 8 Gen 2 / Adreno 740): 720p render, a working 30 fps
+> frame-gen limit, DXVK 3.1.1, no 15-second add-on freeze — a steady 60 with High textures and shadows.
+> What changed, why, and the measurements: **[CUSTOM-THOR.md](CUSTOM-THOR.md)**. Unofficial; not supported by upstream.
+
 # DS Forever
 
 Android launcher and companion for the World of Warcraft: Forever beta. Forked

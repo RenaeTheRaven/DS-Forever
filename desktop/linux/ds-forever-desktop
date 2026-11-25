@@ -11,13 +11,15 @@ CONF=${XDG_CONFIG_HOME:-$HOME/.config}/dsforever-desktop
 STATE=${XDG_DATA_HOME:-$HOME/.local/share}/dsforever-desktop
 mkdir -p "$CONF" "$STATE"
 
-# where the game lives: the prefix, runner and game id Battle.net is started with (Faugus Launcher's, here)
+# where the game lives: the prefix, runner and game id Battle.net is started with (edit ~/.config/dsforever-desktop/env to match
+# your launcher: Faugus, Lutris, Heroic or plain umu all work)
 if [ ! -f "$CONF/env" ]; then
     cat > "$CONF/env" <<'EOF'
 # DS Forever Desktop on Linux: the Proton prefix WoW runs in, and how it is started. Sourced by the launcher.
-WINEPREFIX="$HOME/Faugus/battlenet"
-GAMEID="umu-faugus5dd8f7d6"
-PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/Proton-CachyOS Latest"
+# Set these to your own install: the prefix Battle.net and WoW are installed in, its umu game id, and the Proton build it uses.
+WINEPREFIX="$HOME/Games/battlenet"
+GAMEID="umu-battlenet"
+PROTONPATH="$HOME/.local/share/Steam/compatibilitytools.d/GE-Proton"
 PROTON_ENABLE_WAYLAND=0
 WINE_SIMULATE_WRITECOPY=1
 EOF
