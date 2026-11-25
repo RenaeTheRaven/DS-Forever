@@ -1239,13 +1239,19 @@ private const val DEFAULT_DRIVER = "Turnip-WoW-scheduler-test"
 private const val ADRENO_8XX_DRIVER = "Turnip-V32-RP6sched"
 private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 // custom-thor: stock DXVK 3.1.1 built as plain Windows ARM64 (~/dev/dxvk-arm64), for its tiler mode on Turnip; it needs Vulkan 1.4.
-// The game folder's ".ds-dxvk" switch file ("2.4.1") goes back to the bundled 2.4.1; read once per app process (force-stop after a change).
+// The game folder's ".ds-dxvk" switch file ("2.4.1") goes back to the bundled 2.4.1.
 private const val DXVK_OLD = "2.4.1-wow-aarch64-test"
 private const val DXVK_NEW = "3.1.1-wow-aarch64-diag2"
-private val DXVK_VERSION: String by lazy {
-    val pick = if (switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
-    Timber.i("custom-thor: DXVK %s", pick)
-    pick
+// A test graphics driver (Settings > General > Graphics driver) also gets 2.4.1: through the wrapper, Mesa 26.3.1 doesn't offer
+// VK_KHR_load_store_op_none, which DXVK 3 requires (no adapter = "Your 3D accelerator card is not supported"). Picked per launch.
+@Volatile private var dxvkTestDriver = false
+private val DXVK_VERSION: String
+    get() = if (dxvkTestDriver || switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
+
+private fun pickDxvk(context: Context) {
+    com.jrees.wowcompanion.Settings.init(context)
+    dxvkTestDriver = com.jrees.wowcompanion.Settings.graphicsDriver != com.jrees.wowcompanion.GraphicsDriver.Choice.RECOMMENDED
+    Timber.i("custom-thor: DXVK %s (graphics driver %s)", DXVK_VERSION, com.jrees.wowcompanion.Settings.graphicsDriver.id)
 }
 private val DXVK_VULKAN: String get() = if (DXVK_VERSION == DXVK_NEW) ",vulkanVersion=1.4" else ""
 
@@ -1311,6 +1317,7 @@ private data class GpuProfile(val driver: String, val tuDebug: String, val scree
 }
 
 private fun prepareLaunch(context: Context, gameRoot: File, profile: GpuProfile, onStatus: (String) -> Unit): String {
+    pickDxvk(context)
     installBundledComponents(context, onStatus)
     // 2026-11-23: Settings > General > Graphics driver (Recommended = the profile's own driver, exactly as before; a test driver only
     // on the profiles that take one), logged as REQUESTED; the watch below logs what the game's processes really LOADED
