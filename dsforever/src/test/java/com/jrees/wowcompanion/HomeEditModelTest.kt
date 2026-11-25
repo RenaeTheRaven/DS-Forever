@@ -518,8 +518,9 @@ class HomeEditModelTest {
      *  HomeEditBandTest) - none movable, none removable - and the 1518 stops keep the motion keys they had (their wiggle phases and paces) */
     @Test fun theBandHasNoMovingStopsAndTheKeysStay() {
         assertEquals(listOf("CHAT", "MAP", "QUEST", "DIVIDER", "CAST", "PARTY", "PLUS", "ROOMS", "DONE", "PAD_PEN", "FACE_PEN", "LOOK",
-            "EXTRAS", "FIGHT_PEN", "FIGHT"), EditStop.values().map { it.name })
-        assertEquals("the party list keeps the key it wiggled on in 1518", listOf(2, 3, 4, 5, 6, HomeEditMotion.PARTY, 7, 8, 13, 9, 11, 12, 14, 1, 15),
+            "EXTRAS", "FIGHT_PEN", "FIGHT", "PARTY_PEN"), EditStop.values().map { it.name })
+        // (party sizing, 2026-11-23: the party list's pencil on the one key left free under 16)
+        assertEquals("the party list keeps the key it wiggled on in 1518", listOf(2, 3, 4, 5, 6, HomeEditMotion.PARTY, 7, 8, 13, 9, 11, 12, 14, 1, 15, 0),
             EditStop.values().map { it.key })
         assertEquals(EditStop.values().size, EditStop.values().map { it.key }.toSet().size)
         assertTrue(HomeEditModel.GONE_CHECKED.containsAll(setOf(EditStop.QUEST, EditStop.CAST, EditStop.PARTY)))
@@ -769,5 +770,25 @@ class HomeEditModelTest {
         m = model(start = EditStop.CAST); m.press("PAD1")
         assertTrue(m.cursorCheck(stops(m.draft).filterKeys { it != EditStop.CAST }))
         assertNull(m.lifted); assertNull(m.barLifted)
+    }
+
+    /** fix/fight-pencil-strip (the user's pick 2026-11-23, "Hold still until closed"): the fight pencil's held place lives only while its
+     *  bubble is open - B, a tap off it, another pencil's bubble, a fight parking edit mode: each drops it; a new bubble takes its own */
+    @Test fun theFightPencilsHoldEndsWithItsBubble() {
+        val held = HomeLayoutSolver.Box(15f, 15f, 47f, 47f)
+        val m = model(start = EditStop.FIGHT_PEN)
+        m.toggleFight()
+        for ((way, close) in listOf<Pair<String, (HomeEditModel) -> Unit>>(
+            "B" to { it.press("PAD2") }, "a tap off it" to { it.closeMenu() }, "the same pencil again" to { it.pencilTap(EditStop.FIGHT_PEN) },
+            "another pencil" to { it.pencilTap(EditStop.PAD_PEN) }, "a fight" to { it.park(); it.resume() })) {
+            if (!m.fightPreview) m.toggleFight()
+            m.pencilTap(EditStop.FIGHT_PEN)
+            assertEquals(way, EditStop.FIGHT_PEN, m.menu)
+            m.fightPenHold = held
+            m.press("PADDDOWN")                                                 // a row walked: still held
+            assertEquals("$way: held while open", held, m.fightPenHold)
+            close(m)
+            assertNull("$way: the hold ends with the bubble", m.fightPenHold)
+        }
     }
 }

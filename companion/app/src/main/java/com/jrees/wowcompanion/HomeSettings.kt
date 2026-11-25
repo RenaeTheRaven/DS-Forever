@@ -260,6 +260,15 @@ object HomeSettings {
             prefs?.edit()?.putBoolean(KEY_COMBAT_GROW, v == HomeLayout.FightBand.GROW)?.apply()
             HomeLayoutStore.update { it.copy(fight = v) }
         }
+    /** "CAST BAR IN FIGHTS" (the user's ruling 2026-11-23; with In fights = Top screen only): this character's cast bar and swing timer
+     *  in a Top-screen fight - across the top of the bottom screen (BOTTOM, the default) or the game's own on the top screen (TOP;
+     *  TopCombatBar.castWanted, CompanionHost sends the add-on's flag out of combat). The record's field: per character */
+    var fightCast: HomeLayout.FightCast
+        get() = layout.fightCast
+        set(v) {
+            if (v == fightCast) return
+            HomeLayoutStore.update { it.copy(fightCast = v) }
+        }
 
     /** p-swing-timer (a player: "would rather turn this off"): the SWING line under the controller in a fight (batch 12: not the cast bar); true = shown (the
      *  default, today's), false = none */
@@ -332,6 +341,11 @@ object HomeSettings {
     var clockAmmo: Boolean
         get() = prefs?.getBoolean(KEY_CLOCK_AMMO, true) ?: true
         set(v) { if (v != clockAmmo) { prefs?.edit()?.putBoolean(KEY_CLOCK_AMMO, v)?.apply(); for (l in listeners) l() } }
+    /** feat/extras-polish (the user, 2026-11-23: "we should add pet happiness to this and remove it from the top screen HUD"): the pet's
+     *  happiness face in the row (shown only while a pet with happiness is out: a hunter's); on by default, as the HUD's face was */
+    var clockPet: Boolean
+        get() = prefs?.getBoolean(KEY_CLOCK_PET, true) ?: true
+        set(v) { if (v != clockPet) { prefs?.edit()?.putBoolean(KEY_CLOCK_PET, v)?.apply(); for (l in listeners) l() } }
 
     fun onChange(l: () -> Unit) { listeners.add(l) }
     /** a reset (ResetRun) removed saved values: every listener reads them again */
@@ -349,6 +363,7 @@ object HomeSettings {
     private const val KEY_CLOCK_GOLD = "clockGold"
     private const val KEY_CLOCK_BAGS = "clockBags"
     private const val KEY_CLOCK_AMMO = "clockAmmo"
+    private const val KEY_CLOCK_PET = "clockPet"
     private const val KEY_COMBAT_GROW = "combatGrow"
     private const val KEY_SWING = "swingTimer"
     private const val KEY_PAUSE_TAP = "pauseTap"
@@ -678,6 +693,11 @@ class HomeSettingsSection(context: Context,
             listOf("Grow", "Same size", "Top screen"), HomeLayout.FightBand.values().indexOf(HomeSettings.fightBand),
             listOf({ HomeSettings.fightBand = HomeLayout.FightBand.GROW }, { HomeSettings.fightBand = HomeLayout.FightBand.SAME },
                 { HomeSettings.fightBand = HomeLayout.FightBand.TOP }))
+        // the user's ruling 2026-11-23: with Top screen, where the cast bar and the swing timer go in the fight
+        if (HomeSettings.fightBand == HomeLayout.FightBand.TOP)
+            y = row(c, y + GAP, "Cast bar in fights", listOf("With the controller on the top screen: the cast bar and swing timer."),
+                listOf("Bottom screen", "Top screen"), HomeLayout.FightCast.values().indexOf(HomeSettings.fightCast),
+                listOf({ HomeSettings.fightCast = HomeLayout.FightCast.BOTTOM }, { HomeSettings.fightCast = HomeLayout.FightCast.TOP }))
         // p-swing-timer: the swing line under the controller in a fight (batch 12: the cast bar is not this setting)
         y = row(c, y + GAP, "Swing timer", listOf("The swing line under the controller in a fight. The cast bar stays."),
             listOf("On", "Off"), if (HomeSettings.swingTimer) 0 else 1,
@@ -718,6 +738,8 @@ class HomeSettingsSection(context: Context,
             listOf({ HomeSettings.clockBags = true }, { HomeSettings.clockBags = false }))
         y = row(c, y + GAP, "Ammo", listOf("In the row under the clock."), listOf("On", "Off"), if (HomeSettings.clockAmmo) 0 else 1,
             listOf({ HomeSettings.clockAmmo = true }, { HomeSettings.clockAmmo = false }))
+        y = row(c, y + GAP, "Pet happiness", listOf("In the row under the clock, with a hunter's pet."), listOf("On", "Off"),
+            if (HomeSettings.clockPet) 0 else 1, listOf({ HomeSettings.clockPet = true }, { HomeSettings.clockPet = false }))
         // START ATTACK ON CAST (Spells' m13): Off / On, from the add-on's word (null = an older add-on: no row); its notes under it
         HomeAttackSwitch.state?.let { s ->
             y = row(c, y + GAP, "Start the attack when a spell is cast",

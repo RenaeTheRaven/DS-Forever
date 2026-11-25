@@ -3095,38 +3095,92 @@ object UiKit {
      * piece's place and size eased between the two, so the block scales smoothly. [rowAlpha] = the row's own fade (the triggers).
      */
     fun clockBlock(c: Canvas, cx: Float, chipTop: Float, time: String, battery: Int, charging: Boolean, gold: Long?, spot: FloatArray?,
-                   items: List<BandItem>, g: Float, rowAlpha: Int = 255, chipAlpha: Int = 255, pose: CellPose? = null) {
+                   items: List<BandItem>, g: Float, rowAlpha: Int = 255, chipAlpha: Int = 255, pose: CellPose? = null,
+                   keep: Float = Float.NaN, lift: Float = 0f, clip: RectF? = null) {
         val floor = chipTop - ClockBand.CHIP_TOP + ClockBand.chipBottom(gold != null) + ClockBand.CHIP_PAD
         val grown = if (g > 0.001f && spot != null) clockGrown(spot, chipTop, time, battery, gold, items) else null
         val e = if (grown == null) 0f else g.coerceIn(0f, 1f)
+        // fix/badges-cast: never drawn into a cast name's lane ([clip]) while the cast may show
+        val clipped = if (clip != null) c.save().also { c.clipOutRect(clip) } else -1
         if (chipAlpha > 0) {
             val s = 1f + (grown?.let { it.chip - 1f } ?: 0f) * e
             c.save(); c.scale(s, s, cx, chipTop)
             clockChip(c, cx, chipTop, time, battery, charging, chipAlpha, gold, pose)
             c.restore()
         }
-        if (spot == null || items.isEmpty() || rowAlpha <= 0) return
-        if (grown == null || e <= 0f) { clockBand(c, spot, items, floor, rowAlpha, pose); return }
-        val pv = bandPaint(rowAlpha)
-        val small = clockBandBoxes(spot, items, floor)
-        for ((i, it) in items.withIndex()) {
-            // a plain scale: today's cell (icon over its value) from its place and size today to its grown place and size
-            val sb = small[i]
-            val w = bandWidth(it, pv)
-            val k0 = sb.height() / ClockBand.CELL_H
-            val k = k0 + (grown.rowScale - k0) * e
-            val left = sb.left + (grown.lefts[i] - sb.left) * e
-            val top = sb.top + (grown.rowTop - sb.top) * e
-            c.save()
-            pose?.apply(c, i, left + w * k / 2f, top + ClockBand.CELL_H * k / 2f)
-            c.translate(left, top); c.scale(k, k)
-            when (it) {
-                is BandItem.Icon -> {
-                    bandIcon(c, w / 2f, it.icon, it.cooling, it.glow, rowAlpha)
-                    if (it.value.isNotEmpty()) c.drawText(Tr.t(it.value), w / 2f, BAND_BASE, if (it.out) bandOut(pv) else pv)
+        val lk = if (keep.isNaN()) 0f else lift.coerceIn(0f, 1f)
+        if (spot != null && items.isNotEmpty() && rowAlpha > 0) {
+            if ((grown == null || e <= 0f) && lk <= 0f) clockBand(c, spot, items, floor, rowAlpha, pose)
+            else {
+                val pv = bandPaint(rowAlpha)
+                val small = smallBoxes(spot, items, floor, keep, lk)
+                for ((i, it) in items.withIndex()) {
+                    // a plain scale: today's cell (icon over its value) from its small place and size (lifted over a cast's name by [lk])
+                    // to its grown place and size
+                    val w = bandWidth(it, pv)
+                    cellBetween(small[i], w, grown, i, e, lk, cellAt)
+                    val left = cellAt[0]; val top = cellAt[1]; val k = cellAt[2]
+                    c.save()
+                    pose?.apply(c, i, left + w * k / 2f, top + ClockBand.CELL_H * k / 2f)
+                    c.translate(left, top); c.scale(k, k)
+                    when (it) {
+                        is BandItem.Icon -> {
+                            bandIcon(c, w / 2f, it.icon, it.cooling, it.glow, rowAlpha)
+                            if (it.value.isNotEmpty()) c.drawText(Tr.t(it.value), w / 2f, BAND_BASE, if (it.out) bandOut(pv) else pv)
+                        }
+                    }
+                    c.restore()
                 }
             }
-            c.restore()
+        }
+        if (clipped >= 0) c.restoreToCount(clipped)
+    }
+
+    private val cellAt = FloatArray(3)
+
+    /**
+     * a row cell between its small box [sb] (its width [w] at scale 1) and its grown place at [e] (0 small .. 1 grown; [grown] null =
+     * small), into [out] (left, top, scale): a plain scale from one to the other - and, as far as the small end is lifted over a cast's
+     * name ([lk], fix/badges-cast), an L instead of a diagonal: from the grown row (low and wide, under the buttons) it first shrinks and
+     * slides sideways into the neck's columns, then rises into the neck (growing back: down first, then out) - never across a button's
+     * corner. [lk] 0 = exactly the plain scale, as before
+     */
+    private fun cellBetween(sb: RectF, w: Float, grown: ClockBand.Grown?, i: Int, e: Float, lk: Float, out: FloatArray) {
+        val k0 = sb.height() / ClockBand.CELL_H
+        if (grown == null) { out[0] = sb.left; out[1] = sb.top; out[2] = k0; return }
+        var k = k0 + (grown.rowScale - k0) * e
+        var left = sb.left + (grown.lefts[i] - sb.left) * e
+        var top = sb.top + (grown.rowTop - sb.top) * e
+        if (lk > 0f) {
+            val ex = (2f * e - 1f).coerceAtLeast(0f); val ey = (2f * e).coerceAtMost(1f)
+            val kL = k0 + (grown.rowScale - k0) * ex
+            val c0 = sb.left + w * k0 / 2f; val c1 = grown.lefts[i] + w * grown.rowScale / 2f
+            val leftL = c0 + (c1 - c0) * ex - w * kL / 2f
+            val topL = sb.top + (grown.rowTop - sb.top) * ey
+            k += (kL - k) * lk; left += (leftL - left) * lk; top += (topL - top) * lk
+        }
+        out[0] = left; out[1] = top; out[2] = k
+    }
+
+    /**
+     * fix/badges-cast: the row's small boxes - today's ([clockBandBoxes]) eased by [k] toward the row lifted over a cast's name
+     * ([keep]: the lane's top less the clearance; ClockBand.lift), cell by cell. The way there is an L, never a diagonal: the first half
+     * slides each cell sideways to its lifted place at today's height (under the buttons: the hourglass is wide there), the second
+     * half raises it into the neck between the D-pad's Right and the faces' left button - so no cell cuts across a button's corner
+     * (and back the same way)
+     */
+    private fun smallBoxes(spot: FloatArray, items: List<BandItem>, floor: Float, keep: Float, k: Float): List<RectF> {
+        val a = clockBandBoxes(spot, items, floor)
+        if (k <= 0f || keep.isNaN()) return a
+        val b = clockBandBoxes(spot, items, floor, keep)
+        if (k >= 1f) return b
+        val kx = (2f * k).coerceAtMost(1f); val ky = (2f * k - 1f).coerceAtLeast(0f)
+        return a.indices.map { i ->
+            val p = a[i]; val q = b[i]
+            val top = p.top + (q.top - p.top) * ky; val h = p.height() + (q.height() - p.height()) * ky
+            val w = p.width() * h / p.height()
+            val cx = p.centerX() + (q.centerX() - p.centerX()) * kx
+            RectF(cx - w / 2f, top, cx + w / 2f, top + h)
         }
     }
 
@@ -3135,7 +3189,7 @@ object UiKit {
      * box (null = no gold) and each row cell's box, in the caller's px
      */
     fun clockBlockBoxes(cx: Float, chipTop: Float, time: String, battery: Int, gold: Long?, spot: FloatArray?, items: List<BandItem>,
-                        g: Float): Triple<RectF, RectF?, List<RectF>> {
+                        g: Float, keep: Float = Float.NaN, lift: Float = 0f): Triple<RectF, RectF?, List<RectF>> {
         val floor = chipTop - ClockBand.CHIP_TOP + ClockBand.chipBottom(gold != null) + ClockBand.CHIP_PAD
         val grown = if (g > 0.001f && spot != null) clockGrown(spot, chipTop, time, battery, gold, items) else null
         val e = if (grown == null) 0f else g.coerceIn(0f, 1f)
@@ -3145,17 +3199,15 @@ object UiKit {
         val cs = clockChipSize(time, battery, gold)
         val chip = scaled(RectF(cx - cs[0] / 2f, chipTop, cx + cs[0] / 2f, chipTop + cs[1]))
         if (spot == null || items.isEmpty()) return Triple(chip, goldBox, emptyList())
-        val small = clockBandBoxes(spot, items, floor)
+        val lk = if (keep.isNaN()) 0f else lift.coerceIn(0f, 1f)
+        val small = smallBoxes(spot, items, floor, keep, lk)
         if (grown == null || e <= 0f) return Triple(chip, goldBox, small)
         val pv = bandPaint(255)
+        val at = FloatArray(3)
         val cells = items.indices.map { i ->
-            val sb = small[i]
             val w = bandWidth(items[i], pv)
-            val k0 = sb.height() / ClockBand.CELL_H
-            val k = k0 + (grown.rowScale - k0) * e
-            val left = sb.left + (grown.lefts[i] - sb.left) * e
-            val top = sb.top + (grown.rowTop - sb.top) * e
-            RectF(left, top, left + w * k, top + ClockBand.CELL_H * k)
+            cellBetween(small[i], w, grown, i, e, lk, at)
+            RectF(at[0], at[1], at[0] + w * at[2], at[1] + ClockBand.CELL_H * at[2])
         }
         return Triple(chip, goldBox, cells)
     }
@@ -3167,20 +3219,28 @@ object UiKit {
     }
 
     /** the extras row's placement, its fit to the band's height and its top (shared by [clockBand] and [clockBandBoxes]) */
-    private fun bandLayout(spot: FloatArray, items: List<BandItem>, floor: Float, pv: Paint): Triple<ClockBand.Placement, Float, Float> {
+    private fun bandLayout(spot: FloatArray, items: List<BandItem>, floor: Float, pv: Paint,
+                           keep: Float = Float.NaN): Triple<ClockBand.Placement, Float, Float> {
         val fit = ((spot[3] - spot[1]) / ClockBand.CELL_H).coerceAtMost(1f)          // a shorter band: the row shrinks to its height
         val widths = FloatArray(items.size) { bandWidth(items[it], pv) * fit }
         val pl = ClockBand.place(widths, spot[0], spot[2], spot[4])
         val whole = pl.lefts.last() + widths.last() * pl.scale - pl.lefts[0]
         val top = ClockBand.rowTop(spot, pl.lefts[0], pl.lefts[0] + whole, ClockBand.CELL_H * fit * pl.scale, floor)
+        // fix/badges-cast: a cast's name under the row ([keep]: its lane's top less the clearance) - a row reaching it lifts clear
+        if (!keep.isNaN() && top + ClockBand.CELL_H * fit * pl.scale > keep) {
+            // an end cell's glow (the ready Hearthstone's halo, [bandIcon]: 1.1 icons round its middle) stays off the buttons too
+            fun reach(i: Int) = (items[i] as? BandItem.Icon)?.takeIf { it.glow }?.let { ClockBand.ICON * 1.1f * fit - widths[i] / 2f } ?: 0f
+            val (lp, lt) = ClockBand.lift(spot, widths, ClockBand.CELL_H * fit, floor, keep, maxOf(0f, reach(0), reach(items.size - 1)))
+            return Triple(lp, fit, lt)
+        }
         return Triple(pl, fit, top)
     }
 
     /** where [clockBand] puts each item (the Settings pictures ring the one a row is about) */
-    fun clockBandBoxes(spot: FloatArray, items: List<BandItem>, floor: Float = Float.NEGATIVE_INFINITY): List<RectF> {
+    fun clockBandBoxes(spot: FloatArray, items: List<BandItem>, floor: Float = Float.NEGATIVE_INFINITY, keep: Float = Float.NaN): List<RectF> {
         if (items.isEmpty()) return emptyList()
         val pv = bandPaint(255)
-        val (pl, fit, top) = bandLayout(spot, items, floor, pv)
+        val (pl, fit, top) = bandLayout(spot, items, floor, pv, keep)
         val k = fit * pl.scale
         return items.indices.map { i ->
             val w = bandWidth(items[i], pv) * fit * pl.scale
@@ -3402,6 +3462,29 @@ object UiKit {
             c.drawLine(t.centerX() - ts * 0.06f, t.bottom - ts * 0.24f, t.right - ts * 0.16f, t.top + ts * 0.2f, pFlat)
             pFlat.strokeCap = Paint.Cap.BUTT
         }
+        pFlat.style = Paint.Style.FILL
+    }
+
+    /**
+     * PadMap m188 ON TOP OF YOUR MACRO (the user's pick 2026-11-23: "Mark a slot on Home and in the Controller room when an In combat
+     * spell or our command sits over a macro"): a small badge centred at ([cx], [cy]), radius [r] - the kit's dark gold-rimmed disc (as
+     * [wornMark] and Cast's DS mark) holding two stacked cards, the gold one in front: "something of ours lies over what you put here".
+     * Drawn by hand (no picture to miss), at any size.
+     */
+    fun overMark(c: Canvas, cx: Float, cy: Float, r: Float) {
+        pFlat.style = Paint.Style.FILL; pFlat.color = Color.argb(230, 12, 10, 8)
+        c.drawCircle(cx, cy, r, pFlat)
+        pFlat.style = Paint.Style.STROKE; pFlat.strokeWidth = maxOf(1f, r * 0.14f); pFlat.color = Theme.gold
+        c.drawCircle(cx, cy, r, pFlat)
+        val s = r * 0.78f; val o = r * 0.2f
+        // the card behind (the player's macro): an outline, lower left
+        pFlat.strokeWidth = maxOf(1f, r * 0.11f); pFlat.color = Color.rgb(236, 226, 200)
+        c.drawRect(cx - s / 2f - o, cy - s / 2f + o, cx + s / 2f - o, cy + s / 2f + o, pFlat)
+        // the card in front (ours): gold, upper right, edged dark so the two read apart
+        pFlat.style = Paint.Style.FILL; pFlat.color = Theme.gold
+        c.drawRect(cx - s / 2f + o, cy - s / 2f - o, cx + s / 2f + o, cy + s / 2f - o, pFlat)
+        pFlat.style = Paint.Style.STROKE; pFlat.color = Color.argb(230, 12, 10, 8); pFlat.strokeWidth = maxOf(1f, r * 0.08f)
+        c.drawRect(cx - s / 2f + o, cy - s / 2f - o, cx + s / 2f + o, cy + s / 2f - o, pFlat)
         pFlat.style = Paint.Style.FILL
     }
 
@@ -4629,6 +4712,15 @@ object UiKit {
         c.drawRect(r, pFlat)
     }
 
+    /** the kit's pet happiness face for [mood] (1 unhappy, 2 content, 3 happy: the game's three), null = none / not in the kit (the pet
+     *  page's face and, feat/extras-polish, the clock extras row's pet badge) */
+    fun petMood(mood: Int): Bitmap? = if (mood in 1..3) tex(when (mood) { 1 -> "pet_mad"; 2 -> "pet_neutral"; else -> "pet_happy" }) else null
+
+    /** a clock extra's own picture by its Settings key (BottomTiles.CLOCK_LINES): its icon; the pet's happiness the kit's happy face
+     *  (feat/extras-polish; the line's icon when the kit has none) - edit mode's data-less cell and the "+" tray's row */
+    fun clockLinePicture(key: String): Bitmap? =
+        (if (key == "pet") petMood(3) else null) ?: BottomTiles.CLOCK_LINES.firstOrNull { it.first == key }?.let { Icons.get(it.third) }
+
     /** a class's own picture ([classFile] as the game gives it, "HUNTER"), or null when the kit has none */
     fun classIcon(classFile: String): Bitmap? = tex("classicon_" + classFile.lowercase())
 
@@ -4644,7 +4736,7 @@ object UiKit {
         val s = minOf(r.width() * 0.5f, r.height() * 0.4f)
         val top = r.top + r.height() * 0.12f
         framed(c, icon, r.centerX() - s / 2f, top, s)
-        if (mood in 1..3) tex(when (mood) { 1 -> "pet_mad"; 2 -> "pet_neutral"; else -> "pet_happy" })?.let {
+        petMood(mood)?.let {
             c.drawBitmap(it, null, RectF(r.left + 18f, r.top + 18f, r.left + 18f + 96f, r.top + 18f + 96f), pBmp)
         }
         return RectF(r.left + 24f, top + s + 20f, r.right - 24f, r.bottom - 20f)
@@ -6486,11 +6578,13 @@ object UiKit {
      * held by a finger (the game's pushed square).
      */
     fun professionButton(c: Canvas, r: RectF, icon: Bitmap?, name: String, inert: Boolean = false, chosen: Boolean = false,
-                         down: Boolean = false) {
+                         down: Boolean = false, on: Boolean = false) {
         val s = 88f
         val x = r.left + 8f; val y = r.centerY() - s / 2f
         framed(c, icon, x, y, s, dim = inert)
         val sq = RectF(x + 8f, y + 8f, x + s - 8f, y + s - 8f)
+        // [on] (Professions p28): a tracking the game has on (Find Herbs...), the game's own checked look on its book button
+        if (on && !inert) checkedGlow(c, sq, orHilite = true)
         if (down && !inert) tex("focus_frame")?.let { c.drawBitmap(it, null, sq, pBmp) }
         if (chosen && !inert) slotFocus(c, sq)
         val tx = x + s + 14f

@@ -217,7 +217,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private var flashKind = 0
     private var flashAtMs = 0L
 
-    private fun flash(kind: Int) { flashKind = kind; flashAtMs = SystemClock.elapsedRealtime(); invalidate() }
+    private fun flash(kind: Int) { flashKind = kind; flashAtMs = SystemClock.elapsedRealtime(); invalidate(); onLine?.invoke() }
 
     /**
      * Home sets this while it shows the band in combat: the view then draws the line along its own
@@ -245,6 +245,12 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
      *  loops along the line ([PREVIEW_SWING_MS]) so Swing timer On / Off shows; false (always outside edit mode) = nothing changes */
     var swingPreview = false
         set(v) { if (field != v) { field = v; invalidate() } }
+    /** Edit Home (the user, 2026-11-23: "I was just meaning to declutter it in that mode we can hide them"; then "Hide them too" for the
+     *  ZL / ZR chips): the band's L / R shoulder plates' and ZL / ZR trigger chips' strength (Party mode's trigger plates too, a held
+     *  trigger's glow with them), 1 = drawn as ever, 0 = not drawn (Home fades it with edit mode's chrome). Their room stays: nothing
+     *  else moves */
+    var platesAlpha = 1f
+        set(v) { val a = v.coerceIn(0f, 1f); if (field != a) { field = a; invalidate() } }
 
     /** P1 (edit mode's top bar pieces): slot [pos]'s box (0..3 the D-pad L / U / R / D, 4..7 the faces) in this view's px into [out] */
     fun slotRect(pos: Int, out: RectF) {
@@ -269,6 +275,27 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
      */
     var away = false
         set(v) { if (field != v) { field = v; invalidate(); onCastState?.invoke() } }
+    /**
+     * THE CAST BAR IN A TOP-SCREEN FIGHT (the user's ruling 2026-11-23: "When the controller moves to the top, the cast bar should still
+     * show across the top of the bottom screen ... Same thing with the swing timer"): Home's fight strip (HomeLayoutSolver.hasFightStrip,
+     * FightCastStripView) carries this view's line - the cast bar, the swing timer, both hands - while the band is away and through its
+     * slide: the band draws no line of its own, the strip paints it ([drawFightStrip]), and the cast stays Home's ([ownCastBarShown]:
+     * the rooms' bar leaves it out). Set by Home
+     */
+    var lineAway = false
+        set(v) { if (field != v) { field = v; invalidate(); onCastState?.invoke(); onLine?.invoke() } }
+    /** the line's state moved (a hud state document, a flash, a predicted cast): Home's fight strip redraws */
+    var onLine: (() -> Unit)? = null
+    /** Cast bar in fights = Top screen in a Top-screen fight (the band away, no fight strip): the GAME's own casting bar shows the cast on
+     *  the top screen (the add-on, Hub hub76), so nothing of ours on the bottom screen - the rooms' bar leaves it out ([ownCastBarShown]).
+     *  Set by Home */
+    var lineTop = false
+        set(v) { if (field != v) { field = v; onCastState?.invoke() } }
+    /** THE SWING ALONE (the user's pick 2026-11-23, "Keep ours on the bottom": Cast bar in fights = Top screen with the GAME's own swing
+     *  timer off - TopCombatBar.swingOnly): Home's fight strip paints the swing timer only ([drawFightStrip]), the cast being the game's
+     *  own casting bar on the top screen (the rooms' bar quiet too: [lineAway]). Set by Home */
+    var stripNoCast = false
+        set(v) { if (field != v) { field = v; invalidate(); onLine?.invoke() } }
 
     /** while true the band draws NO presses (no push-down, no flash): Home's Select cursor owns the pad then
      *  (user 2026-09-30, LATER item 23a). Layers and the triggers still follow the pad. */
@@ -763,6 +790,19 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         set(v) { if (field != v) { field = v; cmdBtns.fill(null); invalidate() } }
     private val cmdBtns = arrayOfNulls<Btn>(32)
 
+    /**
+     * PadMap m188 SHOW WHAT'S ON TOP (the tester, 2026-11-23: "couldn't use any macros on LT or RT with a face button"; the user's pick
+     * "Mark a slot on Home and in the Controller room when an In combat spell or our command sits over a macro"): the cells
+     * ([HomeFightFace.cmdKey] = layer * 8 + position) where one of our overlays sits over the player's own macro
+     * ([PadMapModel.overMacroKeys]); each wears [UiKit.overMark] in its lower-left corner, in and out of fights
+     */
+    var overMacro: Set<Int>? = null
+        set(v) { if (field != v) { field = v; invalidate() } }
+    /** m188 review: [b] stands for the game's slot (its own button, or one of our overlays on it) - not Party mode's strip (it takes
+     *  every press while it routes), the DS WoW toolbar's room bar or its page arrows (those presses open rooms) */
+    private fun overSlotDrawn(b: Btn?): Boolean =
+        !partyStrip && (b == null || (roomBtns.none { it === b } && barBtns.none { it === b }))
+
     /** [HomeFightFace.trigFights]: in a fight, the trigger sets' In-combat spells by [HomeFightFace.cmdKey] -> (icon, spell id) */
     var trigFights: Map<Int, Pair<Int, Int>>? = null
         set(v) { if (field != v) { field = v; trigBtns.fill(null); invalidate() } }
@@ -1230,7 +1270,9 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
             val nb = h.layers[li][pos]
             if (nb == null || !nb.same(old?.layers?.get(li)?.get(pos))) clearMemory(li * 8 + pos)
         }
+        val swapWas = old?.swapT
         hud = h
+        if (swapWas != h.swapT) onSwapTargets?.invoke(h.swapT)
         layoutAtMs = now
         applyLive()                 // the layout carries the live buttons bare; re-dress them
         resolveIcons()
@@ -1455,6 +1497,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         }
         // feat/wk-itemcast: a cast that began, moved, ended or flashed redraws the rooms' bar (its cast band, [drawRoomCast])
         if (wasStart.compareTo(castStartMs) != 0 || wasEnd.compareTo(castEndMs) != 0 || wasFlash != flashAtMs) { onCastState?.invoke(); onInfoShrink?.invoke() }
+        onLine?.invoke()                                                     // the fight strip: the swing / cast as this document says
         val bu = ji(o.opt("bu"), 1) != 0
         if (bu != barsUsable) { barsUsable = bu; setLayer(computeLayer()) }
         liveF = o.optJSONObject("F")
@@ -1651,8 +1694,14 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
 
     // =================================================================== controller -> layer
 
-    /** 1.0.18: LB / RB held, for Home's LB party picture (LbPartyView) */
+    /** 1.0.18: LB / RB held, for Home's LB party picture (LbPartyView). fix/lbrb-wheels: each one ALONE of the triggers and of an open
+     *  class wheel (LB + LT / RB + RT are the class wheels' chords), so the picture can follow the game's friendly bumper either way */
     var onShoulders: ((lb: Boolean, rb: Boolean) -> Unit)? = null
+    /** fix/lbrb-wheels (a tester: "LB ... is now target enemy for me"): the game swaps its target bumpers (GamepadSwapTargetModifiers,
+     *  the hud document's cv.swapT, read only) - RB is the friendly one; before the first hud document, the lbmap document's word */
+    fun swapTargets(): Boolean = hud?.swapT ?: (LbMap.swap == true)
+    /** fix/lbrb-wheels: [swapTargets] changed with a hud document (the LB picture's bumper follows) */
+    var onSwapTargets: ((swapped: Boolean) -> Unit)? = null
     /** 1.0.18: a second listener on the held buttons (the LB picture's press feedback) */
     var onButtonsAlso: ((held: Int) -> Unit)? = null
 
@@ -1666,7 +1715,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         noteClassRadial()                                                 // f-class-radial: Home's mirror
         // 1.0.20 (the user: "the LB and class radial on L and L2 are conflicting and overlapping"): LB + a trigger is the class radial's
         // chord, so the LB picture shows for LB ALONE - never with LT / RT held or a class radial open
-        onShoulders?.invoke(lb && !lt && !rt && !classOpen, rb)
+        onShoulders?.invoke(lb && !lt && !rt && !classOpen, rb && !lt && !rt && !classOpen)
         noteJoin(SystemClock.elapsedRealtime())
         setLayer(computeLayer())
         invalidate()
@@ -1679,8 +1728,43 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
      * when a cast bar pops up or L+R"): Home's centre info block is small now - a cast (its bar, its prediction or its finish) shows,
      * LB + RB are held (the shortcuts layer) or ZL + ZR are (their join in the middle). [onInfoShrink] = something here may have changed it.
      */
-    fun infoShrink(now: Long = SystemClock.elapsedRealtime()): Boolean = castShowing(now) || (padLb && padRb) || (padLt && padRt)
+    fun infoShrink(now: Long = SystemClock.elapsedRealtime()): Boolean = castHoldLeft(now) > 0L || (padLb && padRb) || (padLt && padRt)
     var onInfoShrink: (() -> Unit)? = null
+
+    /**
+     * fix/badges-cast (the user on 1523, 2026-11-23: "The shift back also doesn't happen correctly when completing a cast"): how long from
+     * [now] a cast keeps Home's info block small with nothing new said, ms (0 = no cast does): its bar (to its end + the bar's own 100 ms
+     * tail, then [CastFx.END_WAIT_MS] for its end word), its prediction, its finish or interrupt - the name fades with the bar and is gone
+     * exactly when that ends ([CastFx.FINISH_MS] / [CastFx.FAIL_MS]). None of these ends comes with an event, so Home looks again at this
+     * very moment (its old 100 ms look-again was armed only from Home's own draw, which the cast bar's frames never run: the block stayed
+     * small until something else redrew Home, then jumped back late). Covers [castShowing] whole.
+     */
+    fun castHoldLeft(now: Long = SystemClock.elapsedRealtime()): Long {
+        var left = 0.0
+        if (!castStartMs.isNaN()) left = maxOf(left, castEndMs + maxOf(100.0, CastFx.END_WAIT_MS.toDouble()) - now)
+        if (predOn && predPressAt > 0L) left = maxOf(left, (predPressAt + CastPredict.CONFIRM_MS - now).toDouble())
+        if (flashKind == FLASH_CAST || flashKind == FLASH_FAIL) {
+            val fa = now - flashAtMs
+            if (fa >= 0) left = maxOf(left, ((if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS) - fa).toDouble())
+        }
+        return if (left > 0.0) kotlin.math.ceil(left).toLong() else 0L
+    }
+
+    /**
+     * fix/badges-cast (the user on 1523: "The icons shift smaller when casting but still overlap with the cast text instead of shifting
+     * up"): at rest the cast's name stands ON the bar in its TextBox plate, centred in the gap between the two button groups and at most
+     * that gap wide ([drawCastLine]); this is that lane - for any name, short or long - down to the view's bottom (the bar under it), into
+     * [out] in this view's px. false = no such plate here now (the fight's bar along the top edge, the fight strip carrying the line, the
+     * full room, a gap too narrow for the plate: the name inside the bar's strip, which the clock's spot clears already).
+     */
+    fun restNameLane(out: RectF): Boolean {
+        if (!bottomLine || lineAway || castTop || layout == Layout.FULL || width <= 0 || height <= 0) return false
+        val s = width / FRAME_W
+        if (!restGap(s)) return false
+        val barTop = height - (CastBarPlace.GAP + CastBarPlace.BAR) * s
+        out.set(gapL, barTop - 2f * s - CastBarPlace.PLATE_H * s, gapR, height.toFloat())
+        return true
+    }
 
     /** feat/clock-extras-v2: where Home's clock band goes (CastBarPlace.clockSpot) in this view's px; null = not the diamonds band */
     fun clockSpot(): FloatArray? =
@@ -2709,7 +2793,12 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         // a collapsed bar hides its prompts (mainactionbarframe.lua HideButtonIcons)
         if (!(drawCollapsed && keyText == null) && b?.noBadge != true) drawGlyphBadge(c, gx, gy, pos, keyText, outOfRange, pressed)
         // the companion mark: a small gold "two screens" tag in the lower-left corner (the slot drives the bottom screen)
-        if (b != null && b.ds) drawDsMark(c, cx - iconHalf * 0.62f, cy + iconHalf * 0.62f, iconHalf * 0.34f)
+        // PadMap m188: our overlay over the player's own macro takes that corner (the two never meet: an overlay is not a DS Bar slot)
+        // m188 review: not over a picture that is not the game's slot's at all (Party mode's strip, the DS WoW toolbar's room bar /
+        // its page arrows): the press goes to Party mode / the room there, never to the slot's macro or our overlay on it
+        val over = memKey >= 0 && overMacro?.contains(memKey) == true && !(drawCollapsed && keyText == null) && overSlotDrawn(b)
+        if (over) UiKit.overMark(c, cx - iconHalf * 0.62f, cy + iconHalf * 0.62f, iconHalf * 0.36f)
+        else if (b != null && b.ds) drawDsMark(c, cx - iconHalf * 0.62f, cy + iconHalf * 0.62f, iconHalf * 0.34f)
         // #471 the rank badge, top LEFT (the glyph is top right, a reagent count bottom right, the DS mark a macro's): a ranked spell only
         if (b != null && !empty && b.k == "spell" && !(drawCollapsed && keyText == null)) SpellRanks.of(if (b.rk > 0) b.rk else b.id)?.let { rb ->
             rect.set(cx - iconHalf, cy - iconHalf, cx + iconHalf, cy + iconHalf)
@@ -3323,37 +3412,86 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
                 if (fb != null && fb.k == "spell" && !isTrigFight(fb)) fightCdLeft(src, now) else -1f))
             c.restoreToCount(slotSave)
         }
-        val t = bandT()
-        val sx = bandScale(); val xo = bandXo(); val yo = bandYo()
-        val top = lerp(BAND_ROW_TOP, BAND_TAKE_TOP, t)
-        for (side in 0..1) {
-            val wFrame = lerp(if (side == 0) 118f else 118f, 124f, t)
-            val left = lerp(if (side == 0) 16f else 1106f, if (side == 0) 14f else 1102f, t)
-            val hFrame = wFrame * 31f / 39f
-            val cyFrame = lerp(64f, 16f + hFrame / 2f, t)
-            if (layout == Layout.DIAMONDS) {
-                // the plates stay in the top corners at ONE size, whatever the height (user, 17:44: the
-                // bumpers shrinking at rest looked goofy): the takeover's size, by width
+        // Edit Home: the L / R plates (and their bumper glyphs) and the ZL / ZR chips fade out with the chrome, at 0 not drawn at all
+        val plateA = (platesAlpha * 255f + 0.5f).toInt()
+        val plateSave = if (plateA in 1..254) c.saveLayerAlpha(0f, 0f, width.toFloat(), height.toFloat(), plateA) else c.save()
+        if (plateA > 0) for (side in 0..1) {
+            plateAt(side, plateBuf)
+            val px = plateBuf[0]; val py = plateBuf[1]; val unit = plateBuf[2]
+            drawPlate(c, h, side, px, py, unit)
+            if (layout == Layout.DIAMONDS && triggerStrip) {
+                // the bumper's own glyph at the plate's inner bottom corner (section 5): LB (right - 10, bottom - 9)
                 val ps = width / FRAME_W
-                val half = wFrame * ps / 2f
-                val px = if (side == 0) 14f * ps + half else width - 14f * ps - half
-                drawPlate(c, h, side, px, (cyFrame - top) * ps, wFrame * ps / 39f)
-                if (triggerStrip) {
-                    // the bumper's own glyph at the plate's inner bottom corner (section 5): LB (right - 10, bottom - 9)
-                    val pb = (cyFrame - top) * ps + hFrame * ps / 2f
-                    val gx = if (side == 0) px + half - 10f * ps else px - half + 10f * ps
-                    UiKit.pad(c, if (side == 0) "${padSet()}_lshoulder" else "${padSet()}_rshoulder", gx, pb - 9f * ps, BUMPER_GLYPH * ps)
-                }
-            } else drawPlate(c, h, side, xo + (left + wFrame / 2f) * sx, yo + (cyFrame - top) * sx, wFrame * sx / 39f)
+                val half = 19.5f * unit
+                val pb = py + 15.5f * unit
+                val gx = if (side == 0) px + half - 10f * ps else px - half + 10f * ps
+                UiKit.pad(c, if (side == 0) "${padSet()}_lshoulder" else "${padSet()}_rshoulder", gx, pb - 9f * ps, BUMPER_GLYPH * ps)
+            }
         }
         // Party mode: the ZL / ZR trigger PLATES (v13) in place of today's trigger words
-        if (partyStrip && layout == Layout.DIAMONDS) drawPartyPlates(c)
-        else if (triggerStrip && layout == Layout.DIAMONDS) next = min(next, drawTriggerStrip(c, now))
-        if (bottomLine) next = min(next, drawSwingLine(c, now))
+        if (plateA > 0) {
+            if (partyStrip && layout == Layout.DIAMONDS) drawPartyPlates(c)
+            else if (triggerStrip && layout == Layout.DIAMONDS) next = min(next, drawTriggerStrip(c, now))
+        }
+        c.restoreToCount(plateSave)
+        if (bottomLine && !lineAway) next = min(next, drawSwingLine(c, now))      // (the fight strip carries it: [lineAway])
         val focusLeft = FOCUS_MS - (now - focusAtMs)
         if (focusLeft > 0 || flashing) next = 0
         if (pressedPos >= 0 && now < pressedUntilMs) next = min(next, pressedUntilMs - now)
         return next
+    }
+
+    /** the band's L / R shoulder plate [side] (0 = L): (centre x, centre y, scale of its 39 x 31 unit plate) in view px into [out] */
+    private fun plateAt(side: Int, out: FloatArray) {
+        val t = bandT()
+        val top = lerp(BAND_ROW_TOP, BAND_TAKE_TOP, t)
+        val wFrame = lerp(118f, 124f, t)
+        val hFrame = wFrame * 31f / 39f
+        val cyFrame = lerp(64f, 16f + hFrame / 2f, t)
+        if (layout == Layout.DIAMONDS) {
+            // the plates stay in the top corners at ONE size, whatever the height (user, 17:44: the
+            // bumpers shrinking at rest looked goofy): the takeover's size, by width
+            val ps = width / FRAME_W
+            val half = wFrame * ps / 2f
+            out[0] = if (side == 0) 14f * ps + half else width - 14f * ps - half
+            out[1] = (cyFrame - top) * ps; out[2] = wFrame * ps / 39f
+        } else {
+            val sx = bandScale()
+            val left = lerp(if (side == 0) 16f else 1106f, if (side == 0) 14f else 1102f, t)
+            out[0] = bandXo() + (left + wFrame / 2f) * sx; out[1] = bandYo() + (cyFrame - top) * sx; out[2] = wFrame * sx / 39f
+        }
+    }
+    private val plateBuf = FloatArray(3)
+    /** the off-device checks: plate [side]'s box (0 = L) in this view's px, with its bumper glyph's box (Diamonds' trigger strip) */
+    fun shoulderPlateRect(side: Int, out: RectF) {
+        plateAt(side, plateBuf)
+        val px = plateBuf[0]; val py = plateBuf[1]; val unit = plateBuf[2]
+        out.set(px - 19.5f * unit, py - 15.5f * unit, px + 19.5f * unit, py + 15.5f * unit)
+        if (layout == Layout.DIAMONDS && triggerStrip) {
+            // as drawBand lays it: centred (inner edge -+ 10, bottom - 9), BUMPER_GLYPH tall and wide at most
+            val ps = width / FRAME_W
+            val gx = if (side == 0) out.right - 10f * ps else out.left + 10f * ps
+            val gy = out.bottom - 9f * ps
+            val g = BUMPER_GLYPH * ps / 2f
+            out.union(gx - g, gy - g, gx + g, gy + g)
+        }
+    }
+
+    /** the off-device checks: the ZL / ZR chip [side]'s box (0 = ZL) at rest under its bumper in this view's px (Party mode: its trigger
+     *  plate's), false (and [out] emptied) when the band draws none (the Thin row, no strip) */
+    fun triggerChipRect(side: Int, out: RectF): Boolean {
+        val ps = width / FRAME_W
+        when {
+            layout != Layout.DIAMONDS -> { out.setEmpty(); return false }
+            partyStrip -> { val l = if (side == 0) 14f * ps else width - 140f * ps; out.set(l, partyPlateTop, l + 126f * ps, partyPlateTop + 78f * ps) }
+            triggerStrip -> {
+                val cy = height - stripH() - TRIG_BOTTOM * ps
+                val cx = if (side == 0) TRIG_X * ps else width - TRIG_X * ps
+                out.set(cx - TRIG_W * ps / 2f, cy - TRIG_H * ps / 2f, cx + TRIG_W * ps / 2f, cy + TRIG_H * ps / 2f)
+            }
+            else -> { out.setEmpty(); return false }
+        }
+        return true
     }
 
     /** the line along the bottom edge: the swing timer while a swing runs, the plain divider otherwise */
@@ -3474,7 +3612,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val fa = now - flashAtMs
         val castFx = predicted || ((flashKind == FLASH_CAST || flashKind == FLASH_FAIL) && fa >= 0 &&
             fa < (if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS))
-        return SwingLine.dual(swingOn && !castOnly && !roomPass && !into, now.toDouble(), castStartMs, castEndMs, castFx,
+        return SwingLine.dual(swingOn && !castOnly && !roomPass && !(into && !intoSwing), now.toDouble(), castStartMs, castEndMs, castFx,
             offStartMs, offDurMs, SWING_GRACE)
     }
     /** true for the length of the off hand's line: [drawCastBar] draws hudS.so's swing (and its own flash), never a cast */
@@ -3541,6 +3679,54 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val fa = now - flashAtMs
         return (flashKind == FLASH_CAST || flashKind == FLASH_FAIL) && fa >= 0 && fa < (if (flashKind == FLASH_FAIL) CastFx.FAIL_MS else CastFx.FINISH_MS)
     }
+
+    /**
+     * THE FIGHT STRIP'S PAINT (see [lineAway]): this view's whole line - the cast bar (its name inside it), the swing timer, the dual
+     * wield's two lines, the finish and restart flashes, the predicted cast, edit mode's stand-in swing - into [r] of Home's strip
+     * ([FightCastStripView]'s canvas), the same state, art and code as the band's own line. Draw only; returns the next redraw delay
+     * (0 = every frame, Long.MAX_VALUE = nothing runs)
+     */
+    fun drawFightStrip(c: Canvas, r: RectF, now: Long = SystemClock.elapsedRealtime()): Long {
+        if (r.width() <= 0f || r.height() <= 0f) return Long.MAX_VALUE
+        val bh0 = curBh; val pl0 = curPlate
+        into = true; intoSwing = true; intoW = r.width(); intoH = r.height()
+        curPlate = false
+        // [stripNoCast]: the swing alone - the cast, its prediction and its finish / fail flash left out for this paint only (the game's
+        // own bar on the top screen has them); restored after, so the band and the rooms' bar keep the real state
+        val cs0 = castStartMs; val ce0 = castEndMs; val pr0 = predOn; val fk0 = flashKind
+        if (stripNoCast) {
+            castStartMs = Double.NaN; castEndMs = Double.NaN; predOn = false
+            if (flashKind == FLASH_CAST || flashKind == FLASH_FAIL) flashKind = 0
+        }
+        val save = c.save()
+        try {
+            if (dualShown(now)) {
+                // sw-dual's two lines in the strip's box: the main hand's on top, the off hand's thinner and dimmer under it
+                val rows = SwingLine.rows(0f, r.height(), r.width() / FRAME_W)
+                curBh = rows[1] - rows[0]
+                c.save(); c.translate(r.left, r.top + rows[1] - intoH)
+                var next = try { drawCastBar(c, now, r.width(), Double.NaN, 0.0) } finally { c.restore() }
+                curBh = rows[3] - rows[2]
+                val s2 = c.save()
+                try {
+                    c.translate(r.left, r.top + rows[3] - intoH)
+                    c.saveLayerAlpha(-8f, intoH - curBh - 8f, r.width() + 8f, intoH + 8f, SwingLine.OFF_ALPHA)
+                    offPass = true
+                    next = min(next, drawCastBar(c, now, r.width(), Double.NaN, 0.0))
+                } finally { offPass = false; c.restoreToCount(s2) }
+                return next
+            }
+            curBh = r.height()
+            c.translate(r.left, r.top)
+            return drawSwingLineIn(c, now, r.width())
+        } finally {
+            c.restoreToCount(save)
+            into = false; intoSwing = false; curBh = bh0; curPlate = pl0
+            if (stripNoCast) { castStartMs = cs0; castEndMs = ce0; predOn = pr0; flashKind = fk0 }
+        }
+    }
+    /** [drawFightStrip] is painting: the swing comes too ([drawCastInto] paints the cast only) */
+    private var intoSwing = false
 
     /** [drawCastInto] is painting: the box's own size stands in for the view's (Home's draw: false, the view's own) */
     private var into = false
@@ -3626,7 +3812,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
     private var roomNamePaint: Paint? = null
 
     /** Home draws this cast bar itself now (on screen, its band layout, a layout to draw): the rooms' bar leaves it out */
-    fun ownCastBarShown(): Boolean = isShown && !away && bottomLine && layout != Layout.FULL && hud != null && k > 0f && width > 0
+    fun ownCastBarShown(): Boolean = isShown && (!away || lineAway || lineTop) && bottomLine && layout != Layout.FULL && hud != null && k > 0f && width > 0
 
     /**
      * review fix: when this view leaves the screen or comes back (a room opens, a Home module covers the band, Home returns) the answer
@@ -3700,7 +3886,7 @@ class CastView(context: Context, private val onCast: (String) -> Unit) : View(co
         val flashLen = when (fk) { FLASH_SWING -> SWING_FLASH_MS; FLASH_FAIL -> CastFx.FAIL_MS; else -> CastFx.FINISH_MS }
         // P4: edit mode's fight preview with no real swing: the stand-in loops (the main hand's line only)
         val standIn = swingPreview && !offPass && swingStartMs.isNaN()
-        val parts = SwingLine.parts(swingOn && !castOnly && !roomPass && !into, now.toDouble(), castStartMs, castEndMs,
+        val parts = SwingLine.parts(swingOn && !castOnly && !roomPass && !(into && !intoSwing), now.toDouble(), castStartMs, castEndMs,
             if (standIn) (now - now % PREVIEW_SWING_MS).toDouble() else if (offPass) offStartMs else swingStartMs,
             if (standIn) PREVIEW_SWING_MS.toDouble() else if (offPass) offDurMs else swingDurMs, SWING_GRACE,
             fk != 0, fk == FLASH_SWING, fa, flashLen)
@@ -4546,6 +4732,9 @@ internal object CastFx {
     const val FINISH_MS = 500L
     /** an interrupt / failure: HoldFadeOutAnim holds 1.0 s, then fades over 0.3 s */
     const val FAIL_MS = 1300L
+    /** fix/badges-cast: a cast run past its end with no end word yet keeps Home's info block small this long after its end (the bar's own
+     *  100 ms tail, then the word's wait: a late word's finish shows with no grow-and-shrink-again in between; no word at all, back then) */
+    const val END_WAIT_MS = 400L
     /** StandardFinish loops: its longest piece (Flakes03) starts 0.25 s in and runs 0.5 s */
     const val LOOP_MS = 750L
     /** the game's bar width in units (the outer glow is 222 = 208 + its 7-unit halo each side) */

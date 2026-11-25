@@ -57,8 +57,8 @@ android {
         manifestPlaceholders["screenOrientation"] = "unspecified"
         buildConfigField("boolean", "XR_BUILD", "false")
 
-        versionCode = 1522
-        versionName = "1.0.39-custom"
+        versionCode = 1527
+        versionName = "1.0.40-custom"
 
         buildConfigField("boolean", "GOLD", "false")
         // DS Forever's self-update (Track C, the user's rulings 2026-10-12): the PUBLIC release repo "owner/repo" whose latest GitHub
@@ -223,8 +223,31 @@ val checkTrimmedProton = tasks.register("checkTrimmedProton") {
     }
 }
 
+// The opt-in test graphics drivers (2026-11-23; GraphicsDriver.kt, tools/turnip-test/): git-ignored like the other bundled components,
+// pinned in tools/components-test-drivers.sha256. A wrong file stops the build; a missing one only warns (Settings then offers only
+// Recommended: the app lists a test driver only when its zip is in the APK). tools/build_release.py requires every one.
+val testDriverPins = rootProject.file("tools/components-test-drivers.sha256")
+val testDriverDir = file("src/main/assets/bundled_components")
+val checkTestDrivers = tasks.register("checkTestDrivers") {
+    val pins = testDriverPins
+    val dir = testDriverDir
+    inputs.file(pins)
+    doLast {
+        for (line in pins.readLines().filter { it.isNotBlank() }) {
+            val expected = line.substringBefore(' ').lowercase()
+            val f = File(dir, line.substringAfter(' ').trim().removePrefix("*"))
+            if (!f.isFile) {
+                logger.warn("DS Forever: no test driver ${f.name} (Settings > Graphics driver offers only Recommended): see tools/turnip-test/build_mesa.sh")
+                continue
+            }
+            val actual = MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { "%02x".format(it) }
+            require(actual == expected) { "${f.name} is $actual, not the pinned test driver $expected (tools/components-test-drivers.sha256)" }
+        }
+    }
+}
+
 tasks.configureEach {
-    if (name.startsWith("merge") && name.endsWith("Assets") && !name.contains("Test")) dependsOn(checkSessionBridge, checkTrimmedProton)
+    if (name.startsWith("merge") && name.endsWith("Assets") && !name.contains("Test")) dependsOn(checkSessionBridge, checkTrimmedProton, checkTestDrivers)
     if (name == "preModernReleaseBuild") {
         doFirst {
             require(listOf("WC_KEYSTORE", "WC_KEYSTORE_PASS", "WC_KEY_ALIAS", "WC_KEY_PASS").all {

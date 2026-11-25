@@ -87,13 +87,21 @@ fun WoWForeverScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val gpu = remember { GpuProfile.detect(context) }
+    val gpu = remember {
+        GpuProfile.detect(context).also { p ->
+            // 2026-11-23 (the opt-in test driver): Settings offers the test drivers only on the profiles that take them (the Adreno 740 /
+            // 650 Thors: the recommended driver is DEFAULT_DRIVER) and only those whose zip this APK carries
+            com.jrees.wowcompanion.GraphicsDriver.profileTakesTests = p.driver == DEFAULT_DRIVER
+            com.jrees.wowcompanion.GraphicsDriver.assets =
+                runCatching { context.assets.list("bundled_components")?.toSet() }.getOrNull().orEmpty()
+        }
+    }
     // the problem report's GPU / driver line (StartupDiag): the profile picked, the GPU as the driver names it, the container's versions
     LaunchedEffect(gpu) {
         val renderer = withContext(Dispatchers.IO) {
             runCatching { "${com.winlator.core.GPUInformation.getRenderer(context)} (${com.winlator.core.GPUInformation.getVersion(context)})" }.getOrDefault("?")
         }
-        com.jrees.wowcompanion.LauncherHooks.gpuLine = "${gpu.edition}: driver ${gpu.driver}, TU_DEBUG ${gpu.tuDebug}, screen ${gpu.screenSize}; " +
+        com.jrees.wowcompanion.LauncherHooks.gpuLine = "${gpu.edition}: recommended driver ${gpu.driver}, TU_DEBUG ${gpu.tuDebug}, screen ${gpu.screenSize}; " +
             "GPU $renderer; DXVK $DXVK_VERSION, Wine $PROTON_VERSION"
     }
 
@@ -1000,6 +1008,7 @@ fun WoWForeverScreen(
         addonsProblem = addonsProblem,
         dependencies = dependencies,
         indoor = interiors.label.substringAfter(": "),
+        indoorDone = interiors.done,
         client = versionStatus?.let { if (it.isOutdated) "${it.localVersion} (${it.remoteVersion} needed)" else "${it.localVersion} (up to date)" },
         gameOutdated = versionStatus?.takeIf { it.isOutdated }?.remoteVersion,
         appUpdate = appUpdate?.takeIf { !appUpdateLater }?.let { "v${it.version}" },
@@ -1301,8 +1310,11 @@ private data class GpuProfile(val driver: String, val tuDebug: String, val scree
     }
 }
 
-private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onStatus: (String) -> Unit): String {
+private fun prepareLaunch(context: Context, gameRoot: File, profile: GpuProfile, onStatus: (String) -> Unit): String {
     installBundledComponents(context, onStatus)
+    // 2026-11-23: Settings > General > Graphics driver (Recommended = the profile's own driver, exactly as before; a test driver only
+    // on the profiles that take one), logged as REQUESTED; the watch below logs what the game's processes really LOADED
+    val (gpu, driverLaunch) = withDriverChoice(context, profile, onStatus)
     // b-dxvk-load-crash: the last run's DXVK log is kept (DXVK truncates it at start: a restart after a crash would erase it)
     runCatching { com.jrees.wowcompanion.DxvkLogs.rotate(com.jrees.wowcompanion.DxvkLogs.dir(context.dataDir)) }
     runCatching { com.jrees.wowcompanion.DxvkLogs.cacheDir(context.dataDir).mkdirs() }       // issue #12: DXVK's state cache
@@ -1332,12 +1344,15 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
         val screen = gameScreenSize(context)
         Timber.i("Config.wtf: the game's window fills its screen (gxMaximize 1, gxWindowedResolution %s)", screen ?: "1920x1080: size unread")
         // A (the user's ruling 2026-11-20): the game account the game itself marked after the last login, learned BEFORE anything is
-        // written (both routes: saved login and Browser login), kept as a label in the app's private settings; never logged
+        // written (both routes: saved login and Browser login), kept as a label in the app's private settings; never logged.
+        // 2026-11-23: only a mark the game wrote ANEW replaces the pick (GameAccountHandover.markIsNew), so a stale one never undoes a
+        // pick learned from the game's list on Browser login
         val learned = com.jrees.wowcompanion.GameConfigWtf.accountPickIn(gameRoot, product)
         val pickBefore = com.jrees.wowcompanion.Settings.gameAccountPick
+        val markNew = com.jrees.wowcompanion.GameAccountHandover.markIsNew(learned)
         // bug 2026-11-20 (test 1513): the file's account keys as the game left them, before any write (states and counts only)
         val shapeBefore = com.jrees.wowcompanion.GameAccountDiag.shape(com.jrees.wowcompanion.GameAccountDiag.configWtf(gameRoot, product))
-        if (learned != null && learned != pickBefore) com.jrees.wowcompanion.Settings.gameAccountPick = learned
+        if (learned != null && markNew && learned != pickBefore) com.jrees.wowcompanion.GameAccountHandover.remember(learned)
         val ask = com.jrees.wowcompanion.Settings.gameAccountAsk
         val pick = com.jrees.wowcompanion.Settings.gameAccountPick
         val accountKeys = com.jrees.wowcompanion.GameConfigWtf.ensure(gameRoot, product, choice?.row,
@@ -1349,9 +1364,9 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
             // with a saved login name, and a list the game did not write may be what broke logins with BLZ51914400 (the fork's #62).
             // The pick is still LEARNED above from a mark the game wrote itself; Ask each time still clears a marked list
             accountPick = null, lowMemory8 = com.jrees.wowcompanion.DeviceTier.lowMemCuts())
-        val learnedWord = when { learned == null -> "none marked"; learned == pickBefore -> "same"; else -> "new" }
-        accountPlay = com.jrees.wowcompanion.GameAccountDiag.Play(ask, pick != null,
-            com.jrees.wowcompanion.GameAccountDiag.learned(learned, pickBefore), shapeBefore, !ask && accountKeys.isNotEmpty())
+        val learnedState = com.jrees.wowcompanion.GameAccountDiag.learned(learned, pickBefore, markNew)
+        val learnedWord = learnedState.word
+        accountPlay = com.jrees.wowcompanion.GameAccountDiag.Play(ask, pick != null, learnedState, shapeBefore, !ask && accountKeys.isNotEmpty())
         if (ask) {
             Timber.i("Config.wtf game account: ask each time; cleared %s; pick %s (learned: %s)", accountKeys.joinToString(" ").ifEmpty { "nothing (no remembered choice)" },
                 if (pick != null) "set" else "unset", learnedWord)
@@ -1412,7 +1427,55 @@ private fun prepareLaunch(context: Context, gameRoot: File, gpu: GpuProfile, onS
     // Frame generation (board f-frame-gen): Settings' values with the player's own Lossless.dll; Off = armed false, nothing else
     com.jrees.wowcompanion.FrameGen.init(context)
     containerManager.getContainerById(CONTAINER_ID)?.let { app.gamenative.utils.LsfgVkManager.applyDsForever(it); it.saveData() }
+    // which Vulkan driver the game's own processes map (diagnostics only: /proc/<pid>/maps of our uid's processes, a few looks, then none)
+    com.jrees.wowcompanion.GraphicsDriver.watch(driverLaunch, context.filesDir, keep = { com.jrees.wowcompanion.Settings.graphicsDriverRan = it },
+        forMs = 300_000L)
     return CONTAINER_ID
+}
+
+/**
+ * THE LAUNCH'S GRAPHICS DRIVER (the user, 2026-11-23: an opt-in test driver, the default unchanged): Recommended = [profile] as it is
+ * (its own driver, the same container config as before); a test choice on a profile that takes one = that driver's folder, unpacked
+ * first if needed ([installTestDriver]); a test choice that cannot be used = the recommended driver, with the reason logged.
+ */
+private fun withDriverChoice(context: Context, profile: GpuProfile, onStatus: (String) -> Unit):
+    Pair<GpuProfile, com.jrees.wowcompanion.GraphicsDriver.Launch> {
+    val G = com.jrees.wowcompanion.GraphicsDriver
+    com.jrees.wowcompanion.Settings.init(context)
+    val choice = com.jrees.wowcompanion.Settings.graphicsDriver
+    val takes = profile.driver == DEFAULT_DRIVER
+    val installed = choice.folder != null && takes && choice.asset in G.assets && installTestDriver(context, choice, onStatus)
+    val pick = G.pick(choice, profile.driver, takes, installed)
+    val launch = G.markLaunched(choice, pick.driver, pick.note)
+    Timber.i("%s", G.requestLine(launch))
+    return (if (pick.driver == profile.driver) profile else profile.copy(driver = pick.driver)) to launch
+}
+
+/**
+ * a test driver's folder ready: its meta.json names it and its library is there. Unpacked from its zip when not, into "<folder>.part"
+ * first and renamed after the checks, so a stopped unpack never leaves a folder that looks installed (installDriver never unpacks a
+ * folder that has its meta.json again). The recommended drivers keep [installDriver], unchanged.
+ */
+private fun installTestDriver(context: Context, choice: com.jrees.wowcompanion.GraphicsDriver.Choice, onStatus: (String) -> Unit): Boolean {
+    val folder = choice.folder ?: return false
+    val asset = choice.asset ?: return false
+    val root = File(context.filesDir, "contents/adrenotools")
+    val dir = File(root, folder)
+    fun ready(d: File): Boolean = runCatching {
+        val meta = JSONObject(File(d, "meta.json").readText())
+        meta.optString("name") == folder && File(d, meta.optString("libraryName").ifEmpty { "-" }).let { it.isFile && it.length() > 0 }
+    }.getOrDefault(false)
+    if (ready(dir)) return true
+    onStatus("Installing the test graphics driver...")
+    val part = File(root, "$folder.part")
+    part.deleteRecursively(); dir.deleteRecursively()
+    part.mkdirs()
+    val ok = FileUtils.extractZipFromAssets(context, "bundled_components/$asset", part) && ready(part) && part.renameTo(dir)
+    if (!ok) {
+        Timber.e("Test graphics driver %s did not unpack from %s", folder, asset)
+        part.deleteRecursively()
+    }
+    return ok && ready(dir)
 }
 
 /**

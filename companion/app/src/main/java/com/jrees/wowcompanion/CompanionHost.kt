@@ -443,6 +443,26 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
      *  login offer's); null = Settings' own ([restartFromSettings]) */
     private var restartAskThen: (() -> Unit)? = null
 
+    /** PadLayerNote's per-character memory: prefs `padnote`, "bars.<character key>" = the two values last seen ("st=3;ps=1") */
+    private val padNoteStore: PadLayerNote.Store by lazy {
+        val p = getSharedPreferences("padnote", MODE_PRIVATE)
+        object : PadLayerNote.Store {
+            override fun get(who: String): String? = p.getString("bars.$who", null)
+            override fun put(who: String, memo: String) { p.edit().putString("bars.$who", memo).apply() }
+        }
+    }
+
+    /** a current hud document's `bars` (ActionBar's read-only Stance / Possess Bar values): a change onto LT / RT is Home's note, once */
+    private fun padLayerNote(bars: JSONObject, docName: String?) {
+        val who = PadLayerNote.whoFor(GameUi.character, docName)            // the review: only the document's own character
+        val notes = runCatching { PadLayerNote.onBars(padNoteStore, who, bars) }.getOrDefault(emptyList())
+        for (w in notes) {
+            val l = PadLayerNote.logLine(w)
+            Log.i("WCSETUP", l); DiagLog.event("pad", l)
+            ui.post { homeView.padNote(w) }
+        }
+    }
+
     private fun noticeShow(s: ReportNotice.State) {
         reportNotice.show(s)
         SetupBridge.noticeAsking = reportNotice.asking
@@ -627,7 +647,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         chatView.onTalkChannel = { if (talkPanelUp()) talkTabs.refresh(chatView.talkTabs()); talkDraw() }
         HomeSettings.onChange { ui.post { talkDraw() } }
         // movable Home: a new layout (a preset, the swap, another character's) tells the add-on its DS toolbar sides (out of combat)
-        HomeLayoutStore.onChange { ui.post { lastDpad?.let { mirrorCheck(it); topCheck(it) } } }
+        HomeLayoutStore.onChange { ui.post { lastDpad?.let { mirrorCheck(it); topCheck(it); castCheck(it) } } }
         characterView = CharacterView(this)
         // B leaves the cursor -> Home (user ruling, every room)
         characterView.onLeave = { roomLeft(Room.CHARACTER) }
@@ -867,6 +887,8 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
             // our own sign-in's row on the start screen takes the pad while it shows (LATER 29); then Interact's loot ring
             // (the edge is taken on EVERY mask, whatever the route, so a press held through a route change is not swallowed later)
             val down = m and loginPadHeld.inv(); loginPadHeld = m
+            // PadLayerNote: B lets Home's game-setting note go (seen only: B still does what it does below / in the game)
+            if (PadInput.isHeld(down, PadInput.SLOT_FACE_RIGHT)) ui.post { homeView.padNoteB() }
             // loot-pop review: the rolls read the presses while they cover the screen, or while the fight's small panel shows a roll's bind
             // confirm with the GAME's focus (its A / B are the game's pop-up's: never also the loot window's under it); every other mask is
             // only SEEN, so the first press after the panel grows / opens is a real edge (DialogView.padSeen)
@@ -1270,7 +1292,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
         homeView.onEditFilters = { show(Room.CHAT); chatView.post { chatView.openFilters() } }
         // 1518 (the autosave): the add-on hears the record's D-pad sides and fight bar only once edit mode is not live (Done, Discard,
         // a fight, another room); while it is, the pictures preview the draft
-        homeView.onEditLive = { on -> if (!on) ui.post { lastDpad?.let { mirrorCheck(it); topCheck(it) } } }
+        homeView.onEditLive = { on -> if (!on) ui.post { lastDpad?.let { mirrorCheck(it); topCheck(it); castCheck(it) } } }
         homeView.onEditChanged = { on ->
             lbEval(); trackSync(); strip.invalidate()
             // the 1515 merge: a key question that waited for edit mode is looked at again once edit mode has ended
@@ -1337,7 +1359,9 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 p.copy(cx = p.cx + (a[0] - b[0]), top = p.top + if (p.classic) 0 else a[1] - b[1])
             }
         }
-        castView.onShoulders = { lb, rb -> lbAloneNow = lb && !rb; lbEval() }
+        // fix/lbrb-wheels: the FRIENDLY bumper alone (RB while the game swaps its target bumpers), and again when the swap changes
+        castView.onShoulders = { lb, rb -> shLb = lb; shRb = rb; lbAloneNow = LbPartyView.friendlyAlone(lb, rb, castView.swapTargets()); lbEval() }
+        castView.onSwapTargets = { sw -> lbAloneNow = LbPartyView.friendlyAlone(shLb, shRb, sw); lbEval() }
         // hold to talk's pop-up: a finger on a chat tab picks it (as LB / RB do)
         castView.onTalkTab = { key -> if (talkPanelUp() && talkTabs.pick(key)) {
             holdTalk.tabTouched(SystemClock.uptimeMillis()); Log.i("WCHOME", "hold to talk: chat $key (touch)"); talkDraw() } }
@@ -2970,6 +2994,10 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                     if (current) GameUi.onTracking(it.optJSONObject("track"))     // LATER 25: the "While tracking" minimap
                 }
                 msg.optJSONObject("actionbar")?.let { castView.update(it); bagsView.castTick() }      // bags-de1: the grid's bar too
+                // PadMap m187's report: a WoW Stance / Possess Bar setting moved onto LT / RT for this character: Home's note, once
+                if (current) msg.optJSONObject("actionbar")?.optJSONObject("hud")?.optJSONObject("bars")?.let {
+                    padLayerNote(it, msg.optJSONObject("player")?.optString("name", "")?.takeIf { n -> n.isNotEmpty() })
+                }
                 homeView.onFull(msg, current)
                 if (castAskOpen && homeView.inFight()) castBarAsk()          // a fight: the cast bar question goes at once (back after)
                 if (keyAskOpen && homeView.inFight()) keyAskTick.run()       // Safety k10: the key question too (asked again after it)
@@ -3602,7 +3630,7 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                     // the 1514 merge (CharKey): the WHOLE key only; named with no realm = pending (no record read or written, the
                     // previous character's key let go; an edit meanwhile is laid on the real record once the key comes)
                     if (current && named) HomeLayoutStore.character(ck, d.name)
-                    if (current) { mirrorCurrent = true; mirrorCheck(d); topCheck(d) }
+                    if (current) { mirrorCurrent = true; mirrorCheck(d); topCheck(d); castCheck(d) }
                     // Quests q35: the rooms' guests keep Start from the game while the toolbar is on (our wheel), and let it through while
                     // it is off (the game's own wheel); told at the first current word and at every change of the toolbar's state
                     // issue 588 (the user's ruling 2026-11-23): with PadMap m186+ Start is our wheel with the toolbar off too: always 36
@@ -4278,8 +4306,11 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
     private var slideT = 0f
 
     /** Home's panels, the bar and the room on show, at [t] of the pause wheel's open (0 = at rest) */
-    /** LB alone held now (CastView's reader) */
+    /** LB alone held now (CastView's reader); fix/lbrb-wheels: the friendly bumper alone (RB while the game swaps its target bumpers) */
     private var lbAloneNow = false
+    /** fix/lbrb-wheels: the bumpers as CastView last said (each alone of the triggers), for a swap that changes while one is held */
+    private var shLb = false
+    private var shRb = false
     /** the LB picture shows while LB alone is held and nothing else has the screen: only in the world (1.0.19: never over the start-up
      *  screens), and only once the class wheel is closed and covered (1.0.20: they take turns, HomeView.classBusy).
      *  fix/lb-home-only (the user 2026-11-19: "Pressing LB in menus like the auction house shows the party selected. That should only
@@ -5213,6 +5244,38 @@ class CompanionHost(base: Context, private val shell: HostShell) : ContextWrappe
                 val sent = padTabTap(TopCombatBar.cells(a.on))
                 Log.i(HomeView.TAG, "top combat bar: ${if (a.on) "on" else "off"} ${if (sent) "sent" else "not sent"}")
                 if (++topTries < MIRROR_TRIES) ui.postDelayed(topAgain, TopCombatBar.RESEND_MS + 200L)
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- the cast bar in a Top-screen fight (PadMap m187, Book b77)
+    private var castSentAt: Long? = null
+    private var castSentWant: Boolean? = null
+    private var castTries = 0
+    private val castAgain = Runnable { lastDpad?.let { castCheck(it) } }
+    private val CAST_AFTER_TOP_MS = 1_000L
+
+    /** TopCombatBar.castWanted ("Cast bar in fights: Top screen" with In fights = Top screen) vs the add-on's `cc`: [topCheck]'s rules
+     *  (out of combat, re-sent every TopCombatBar.RESEND_MS until `cc` says it, nothing while edit mode is live or with no key; an older
+     *  add-on without `cc`: nothing to send - the bottom screen's strip carries the bar, TopCombatBar.honoured) */
+    private fun castCheck(d: PadMapModel.Dpad) {
+        if (!mirrorCurrent) return
+        if (CharKey.of(d.name, d.realm) == null) { ui.removeCallbacks(castAgain); return }
+        if (homeView.editing) { ui.removeCallbacks(castAgain); return }
+        val want = TopCombatBar.castWanted(HomeSettings.layout)
+        if (castSentWant != want) { castSentAt = null; castTries = 0 }
+        val now = SystemClock.elapsedRealtime()
+        ui.removeCallbacks(castAgain)
+        // the top flag's own taps just went (the same page-3 cells: TapPad's 0.25 s repeat guard would swallow this batch's first 39)
+        if (topSentAt?.let { now - it < CAST_AFTER_TOP_MS } == true) { ui.postDelayed(castAgain, CAST_AFTER_TOP_MS); return }
+        when (val a = TopCombatBar.decide(want, d.cc, homeView.inFight(), castSentAt?.let { now - it })) {
+            TopCombatBar.Act.Matched -> { castSentAt = null; castSentWant = null; castTries = 0 }
+            TopCombatBar.Act.Wait -> if (d.cc != null) ui.postDelayed(castAgain, TopCombatBar.RESEND_MS)
+            is TopCombatBar.Act.Send -> {
+                castSentAt = now; castSentWant = want
+                val sent = padTabTap(TopCombatBar.castCells(a.on))
+                Log.i(HomeView.TAG, "fight cast bar: ${if (a.on) "top screen" else "bottom screen"} ${if (sent) "sent" else "not sent"}")
+                if (++castTries < MIRROR_TRIES) ui.postDelayed(castAgain, TopCombatBar.RESEND_MS + 200L)
             }
         }
     }
