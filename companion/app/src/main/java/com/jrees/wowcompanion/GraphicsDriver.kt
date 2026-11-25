@@ -49,7 +49,9 @@ object GraphicsDriver {
      */
     enum class Choice(val id: String, val label: String, val folder: String?, val asset: String?, val version: String?) {
         RECOMMENDED("recommended", "Recommended", null, null, null),
-        TEST_MESA("test-mesa-26.3.1", "Test: Mesa 26.3.1", "Turnip-Test-Mesa-26.3.1", "turnip-test-mesa-26.3.1.zip", "26.3.1-dsf-icd"),
+        // custom-thor: our own build of the same Mesa 26.3.1 with -Dandroid-strict=false (tools/turnip-test/custom-thor/): upstream's
+        // API 29 strict build hides VK_KHR_load_store_op_none (Android allows it from API 35), which DXVK 3.1.1 requires. Same id.
+        TEST_MESA("test-mesa-26.3.1", "Test: Mesa 26.3.1", "Turnip-Test-Mesa-26.3.1-nostrict", "turnip-test-mesa-26.3.1-nostrict.zip", "26.3.1-dsf-icd-nostrict"),
     }
 
     val DEFAULT = Choice.RECOMMENDED

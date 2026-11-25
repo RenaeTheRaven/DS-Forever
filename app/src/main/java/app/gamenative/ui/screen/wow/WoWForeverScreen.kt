@@ -1242,15 +1242,13 @@ private const val PROTON_VERSION = "proton-11.0-90624-arm64ec"
 // The game folder's ".ds-dxvk" switch file ("2.4.1") goes back to the bundled 2.4.1.
 private const val DXVK_OLD = "2.4.1-wow-aarch64-test"
 private const val DXVK_NEW = "3.1.1-wow-aarch64-diag2"
-// A test graphics driver (Settings > General > Graphics driver) also gets 2.4.1: through the wrapper, Mesa 26.3.1 doesn't offer
-// VK_KHR_load_store_op_none, which DXVK 3 requires (no adapter = "Your 3D accelerator card is not supported"). Picked per launch.
-@Volatile private var dxvkTestDriver = false
+// Read per launch. Every driver gets 3.1.1: the test driver is our no-strict Mesa 26.3.1 build (GraphicsDriver.TEST_MESA), which
+// offers VK_KHR_load_store_op_none (upstream's strict build didn't: "Your 3D accelerator card is not supported").
 private val DXVK_VERSION: String
-    get() = if (dxvkTestDriver || switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
+    get() = if (switchFile(".ds-dxvk")?.startsWith("2.4") == true) DXVK_OLD else DXVK_NEW
 
 private fun pickDxvk(context: Context) {
     com.jrees.wowcompanion.Settings.init(context)
-    dxvkTestDriver = com.jrees.wowcompanion.Settings.graphicsDriver != com.jrees.wowcompanion.GraphicsDriver.Choice.RECOMMENDED
     Timber.i("custom-thor: DXVK %s (graphics driver %s)", DXVK_VERSION, com.jrees.wowcompanion.Settings.graphicsDriver.id)
 }
 private val DXVK_VULKAN: String get() = if (DXVK_VERSION == DXVK_NEW) ",vulkanVersion=1.4" else ""
