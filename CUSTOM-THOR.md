@@ -2,7 +2,7 @@
 
 An unofficial fork of [Jreese702/DS-Forever](https://github.com/Jreese702/DS-Forever), tuned for the **AYN Thor with the
 Snapdragon 8 Gen 2 (Adreno 740, 16 GB)**. It tracks every upstream release (branch `custom-thor-<version>`, currently
-**1.0.40**); everything upstream does is unchanged except the points below. Not affiliated with or supported by upstream —
+**1.0.41**); everything upstream does is unchanged except the points below. Not affiliated with or supported by upstream —
 please don't report bugs from this build there.
 
 It installs **beside** the official app (package `app.dsforever.custom`, name "DS Forever Custom", its own signing key, no
