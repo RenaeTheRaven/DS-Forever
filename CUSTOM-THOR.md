@@ -105,9 +105,21 @@ Android allowlist only permits `VK_KHR_load_store_op_none` from API 35, so the d
 Mesa 26.3.1 tarball, patch and NDK r27c with `-Dandroid-strict=false` (`tools/turnip-test/custom-thor/`), shipped as
 `turnip-test-mesa-26.3.1-nostrict.zip`. With it DXVK 3.1.1 starts, tiler mode on, guest 30.1–30.3 / 60 Hz, GPU 75–83% busy at
 550–615 MHz. **Still experimental:** some UI elements (e.g. the personal resource bars) have been seen drawing as flat grey with
-this driver; the default *Recommended* driver is unaffected.
+this driver; Mesa 27 R3 (below) fixes that.
 
-### 10. Building on Linux, and DS Forever Desktop on Linux
+### 10. Mesa 27 R3 is the default driver on the Thor
+StevenMXZ's [Turnip v27.0.0-R3](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases/tag/v40) (Mesa main `c5ef4bdf` plus
+their a6xx/a7xx/a8xx and Android gralloc/UBWC patches) fixes the grey UI bars. Their release exports only the HMI entry point,
+so the Vulkan wrapper can't load it; this fork rebuilds it from source with all of their patches in their order, adds the same
+`vk_icd*` export patch and `-Dandroid-strict=false` (`tools/turnip-test/custom-thor/build_mesa27_r3.sh` and
+`pack_mesa27_r3.py`), shipped as `turnip-test-mesa-27.0-r3.zip`. With DXVK 3.1.1: tiler mode on, guest 30.0–30.2 / 60 Hz, GPU
+76–81% busy at 615–680 MHz, no DXVK errors. DXVK names it "Wrapper driver 26.99.99", Mesa's version for 27.0-devel.
+
+Settings › General › Graphics driver: **Recommended** runs Mesa 27 R3 on the Adreno 740 / 650 profiles (the 8xx profile keeps
+its own driver), **Stock** is the profile's own driver (what Recommended was before), and **Test: Mesa 26.3.1** stays. If the
+zip is missing or doesn't unpack, Recommended falls back to the profile's own driver.
+
+### 11. Building on Linux, and DS Forever Desktop on Linux
 Upstream builds on Windows. Small path fixes let the native helpers build with the Linux NDK, and `desktop/linux/` runs
 DS Forever Desktop under Proton with a native Linux [Sunshine](https://github.com/LizardByte/Sunshine) (see its README).
 
@@ -118,8 +130,8 @@ Same as upstream (`./gradlew :app:assembleModernRelease`, JDK 17, Android SDK + 
 
 - `app/src/main/assets/bundled_components/`: the four upstream components (`tools/fetch_components.sh`; the Proton wcp must be
   the trimmed one pinned in `tools/components-trimmed.sha256` — copying it out of the official APK is simplest), plus
-  `dxvk-3.1.1-wow-aarch64-diag2.wcp` (`tools/dxvk-custom/build.sh`) and `turnip-test-mesa-26.3.1-nostrict.zip`
-  (`tools/turnip-test/custom-thor/`).
+  `dxvk-3.1.1-wow-aarch64-diag2.wcp` (`tools/dxvk-custom/build.sh`) and the two driver zips
+  `turnip-test-mesa-26.3.1-nostrict.zip` and `turnip-test-mesa-27.0-r3.zip` (`tools/turnip-test/custom-thor/`).
 - `app/src/main/assets/wow-session-bridge.exe` and the native libraries: as upstream documents.
 
 ## Licence

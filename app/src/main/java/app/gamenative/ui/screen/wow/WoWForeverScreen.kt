@@ -1459,11 +1459,13 @@ private fun withDriverChoice(context: Context, profile: GpuProfile, onStatus: (S
     Pair<GpuProfile, com.jrees.wowcompanion.GraphicsDriver.Launch> {
     val G = com.jrees.wowcompanion.GraphicsDriver
     com.jrees.wowcompanion.Settings.init(context)
-    val choice = com.jrees.wowcompanion.Settings.graphicsDriver
+    val chosen = com.jrees.wowcompanion.Settings.graphicsDriver
     val takes = profile.driver == DEFAULT_DRIVER
+    // custom-thor: Recommended runs Mesa 27 R3 on the profiles that take test drivers (GraphicsDriver.resolve); Stock = the profile's own
+    val choice = G.resolve(chosen, takes, G.assets)
     val installed = choice.folder != null && takes && choice.asset in G.assets && installTestDriver(context, choice, onStatus)
     val pick = G.pick(choice, profile.driver, takes, installed)
-    val launch = G.markLaunched(choice, pick.driver, pick.note)
+    val launch = G.markLaunched(chosen, pick.driver, pick.note)
     Timber.i("%s", G.requestLine(launch))
     return (if (pick.driver == profile.driver) profile else profile.copy(driver = pick.driver)) to launch
 }

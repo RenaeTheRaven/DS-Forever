@@ -47,16 +47,29 @@ object GraphicsDriver {
      * launcher never unpacks again a folder that has its meta.json), [asset] its zip in bundled_components, [version] its meta.json
      * driverVersion. RECOMMENDED has none: the profile's own driver.
      */
-    enum class Choice(val id: String, val label: String, val folder: String?, val asset: String?, val version: String?) {
+    enum class Choice(val id: String, val label: String, val folder: String?, val asset: String?, val version: String?,
+                      val listed: Boolean = true) {
+        // custom-thor (2026-11-25, the user: make Mesa 27 R3 the default on the Thor; it fixed the grey bars): Recommended runs
+        // [RECOMMENDED_RUNS] on the profiles that take test drivers ([resolve]), else (Adreno 8xx, or its zip missing / not unpacked) the
+        // profile's own driver. [STOCK] is the profile's own driver, what Recommended was before.
         RECOMMENDED("recommended", "Recommended", null, null, null),
+        STOCK("stock", "Stock", null, null, null),
         // custom-thor: our own build of the same Mesa 26.3.1 with -Dandroid-strict=false (tools/turnip-test/custom-thor/): upstream's
         // API 29 strict build hides VK_KHR_load_store_op_none (Android allows it from API 35), which DXVK 3.1.1 requires. Same id.
         TEST_MESA("test-mesa-26.3.1", "Test: Mesa 26.3.1", "Turnip-Test-Mesa-26.3.1-nostrict", "turnip-test-mesa-26.3.1-nostrict.zip", "26.3.1-dsf-icd-nostrict"),
         // custom-thor (2026-11-25): StevenMXZ's Turnip v27.0.0-R3 (Adreno-Tools-Drivers v40, Mesa main c5ef4bdf + their a6xx/a7xx/a8xx and
         // gralloc/UBWC patches) rebuilt with the vk_icd exports (their release has only HMI) and android-strict off
         // (tools/turnip-test/custom-thor/build_mesa27_r3.sh). Experimental.
-        TEST_MESA27("test-mesa-27.0-r3", "Test: Mesa 27 R3", "Turnip-Test-Mesa-27.0-R3-dsf", "turnip-test-mesa-27.0-r3.zip", "27.0.0-devel-r3-dsf"),
+        TEST_MESA27("test-mesa-27.0-r3", "Test: Mesa 27 R3", "Turnip-Test-Mesa-27.0-R3-dsf", "turnip-test-mesa-27.0-r3.zip", "27.0.0-devel-r3-dsf", listed = false),
     }
+
+    /** custom-thor: the driver Recommended runs where test drivers apply (not listed on its own: it IS Recommended there) */
+    val RECOMMENDED_RUNS = Choice.TEST_MESA27
+
+    /** custom-thor: the choice the launch really uses for [chosen]: Recommended = [RECOMMENDED_RUNS] where the profile takes tests and
+     *  its zip is in this APK, else Recommended itself (the profile's own driver). Pure */
+    fun resolve(chosen: Choice, takesTests: Boolean = profileTakesTests, present: Set<String> = assets): Choice =
+        if (chosen == Choice.RECOMMENDED && takesTests && RECOMMENDED_RUNS.asset in present) RECOMMENDED_RUNS else chosen
 
     val DEFAULT = Choice.RECOMMENDED
 
@@ -67,8 +80,8 @@ object GraphicsDriver {
     fun words(c: Choice): String =
         if (c != Choice.RECOMMENDED) c.label else Tr.t(RECOMMENDED_KEY).let { if (it == RECOMMENDED_KEY) c.label else it }
 
-    /** a saved or passed id as a choice (anything else = Recommended) */
-    fun sanitize(id: String?): Choice = Choice.values().firstOrNull { it.id == id } ?: DEFAULT
+    /** a saved or passed id as a choice (anything else, or a choice no longer listed, e.g. "Test: Mesa 27 R3" = Recommended) */
+    fun sanitize(id: String?): Choice = Choice.values().firstOrNull { it.id == id && it.listed } ?: DEFAULT
 
     // ---- what this APK and device offer (the launcher sets both at its start; the standalone app never does: no row there)
 
@@ -78,10 +91,10 @@ object GraphicsDriver {
     @Volatile var assets: Set<String> = emptySet()
 
     /** the choices listed now: Recommended and every test driver whose zip this APK carries. Pure over [present] */
-    fun offered(present: Set<String> = assets): List<Choice> = Choice.values().filter { it.asset == null || it.asset in present }
+    fun offered(present: Set<String> = assets): List<Choice> = Choice.values().filter { it.listed && (it.asset == null || it.asset in present) }
 
     /** the Settings row shows: the profile takes test drivers and at least one is in this APK */
-    fun rowShown(takesTests: Boolean = profileTakesTests, present: Set<String> = assets): Boolean = takesTests && offered(present).size > 1
+    fun rowShown(takesTests: Boolean = profileTakesTests, present: Set<String> = assets): Boolean = takesTests && offered(present).any { it.asset != null }
 
     /** the row's segment lit for [chosen] among [list] (a choice not listed: Recommended's) */
     fun segment(chosen: Choice, list: List<Choice>): Int = list.indexOf(chosen).let { if (it < 0) 0 else it }

@@ -19,6 +19,8 @@ class GraphicsDriverTest {
     private fun read(path: String) = File(root, path).readText().replace("\r\n", "\n")
     private val TEST = GraphicsDriver.Choice.TEST_MESA
     private val REC = GraphicsDriver.Choice.RECOMMENDED
+    private val STOCK = GraphicsDriver.Choice.STOCK
+    private val M27 = GraphicsDriver.Choice.TEST_MESA27
     private val ASSETS = setOf("proton-11.0-90624-arm64ec.wcp", "turnip-wow-scheduler-test.zip", "turnip-test-mesa-26.3.1-nostrict.zip", "turnip-test-mesa-27.0-r3.zip")
 
     @After fun forget() = GraphicsDriver.forgetForTest()
@@ -28,20 +30,41 @@ class GraphicsDriverTest {
         assertEquals(REC, GraphicsDriver.sanitize(null))
         assertEquals(REC, GraphicsDriver.sanitize("banners-27.0"))
         assertEquals(TEST, GraphicsDriver.sanitize("test-mesa-26.3.1"))
-        assertEquals(listOf("Recommended", "Test: Mesa 26.3.1", "Test: Mesa 27 R3"), GraphicsDriver.Choice.values().map { it.label })
+        assertEquals(STOCK, GraphicsDriver.sanitize("stock"))
+        assertEquals("Mesa 27 R3 is Recommended now: its old saved id = Recommended", REC, GraphicsDriver.sanitize("test-mesa-27.0-r3"))
+        assertEquals(listOf("Recommended", "Stock", "Test: Mesa 26.3.1", "Test: Mesa 27 R3"), GraphicsDriver.Choice.values().map { it.label })
         // Settings' getter: nothing saved = Recommended
         assertTrue("GraphicsDriver.sanitize(prefs?.getString(GraphicsDriver.KEY, null))" in read("companion/app/src/main/java/com/jrees/wowcompanion/Settings.kt"))
     }
 
     @Test fun onlyDriversThisApkCarriesAreOffered() {
-        assertEquals(listOf(REC, TEST, GraphicsDriver.Choice.TEST_MESA27), GraphicsDriver.offered(ASSETS))
-        assertEquals("no test zip in the APK: Recommended only", listOf(REC), GraphicsDriver.offered(ASSETS - "turnip-test-mesa-26.3.1-nostrict.zip" - "turnip-test-mesa-27.0-r3.zip"))
+        assertEquals(listOf(REC, STOCK, TEST), GraphicsDriver.offered(ASSETS))
+        assertEquals("no test zip in the APK: Recommended and Stock (the same driver then)", listOf(REC, STOCK),
+            GraphicsDriver.offered(ASSETS - "turnip-test-mesa-26.3.1-nostrict.zip" - "turnip-test-mesa-27.0-r3.zip"))
+        assertFalse("no test zip at all: Recommended = Stock, no row", GraphicsDriver.rowShown(true, ASSETS - "turnip-test-mesa-26.3.1-nostrict.zip" - "turnip-test-mesa-27.0-r3.zip"))
         assertTrue(GraphicsDriver.rowShown(true, ASSETS))
         assertFalse("Adreno 8xx keeps its own driver: no row", GraphicsDriver.rowShown(false, ASSETS))
         assertFalse("nothing to choose: no row", GraphicsDriver.rowShown(true, setOf("turnip-wow-scheduler-test.zip")))
         assertFalse("the standalone app (the launcher never said): no row", GraphicsDriver.rowShown(false, emptySet()))
         assertEquals(1, GraphicsDriver.segment(TEST, listOf(REC, TEST)))
         assertEquals("a choice not listed lights Recommended", 0, GraphicsDriver.segment(TEST, listOf(REC)))
+    }
+
+    @Test fun recommendedRunsMesa27WhereTestDriversApplyAndStockIsTheProfilesOwn() {
+        assertEquals(M27, GraphicsDriver.RECOMMENDED_RUNS)
+        assertEquals(M27, GraphicsDriver.resolve(REC, takesTests = true, present = ASSETS))
+        assertEquals("Adreno 8xx: its own driver", REC, GraphicsDriver.resolve(REC, false, ASSETS))
+        assertEquals("no Mesa 27 zip: the profile's own driver", REC, GraphicsDriver.resolve(REC, true, ASSETS - "turnip-test-mesa-27.0-r3.zip"))
+        assertEquals(STOCK, GraphicsDriver.resolve(STOCK, true, ASSETS))
+        assertEquals(TEST, GraphicsDriver.resolve(TEST, true, ASSETS))
+        val rec = "Turnip-WoW-scheduler-test"
+        assertEquals(GraphicsDriver.Pick(rec, ""), GraphicsDriver.pick(STOCK, rec, true, false))
+        assertEquals(GraphicsDriver.Pick("Turnip-Test-Mesa-27.0-R3-dsf", ""), GraphicsDriver.pick(M27, rec, true, true))
+        assertEquals("Mesa 27 did not unpack: the profile's own", rec, GraphicsDriver.pick(M27, rec, true, false).driver)
+        val with = read("app/src/main/java/app/gamenative/ui/screen/wow/WoWForeverScreen.kt").substringAfter("private fun withDriverChoice(").substringBefore("\n}\n")
+        assertTrue("val choice = G.resolve(chosen, takes, G.assets)" in with)
+        assertTrue("G.markLaunched(chosen, pick.driver, pick.note)" in with)
+        for (lang in listOf("es", "fr")) assertTrue(lang, "\"Stock\":" in read("companion/app/src/main/assets/companion/i18n/$lang.json"))
     }
 
     @Test fun theLaunchPickKeepsTheRecommendedDriverUnlessATestOneIsReady() {
@@ -233,7 +256,7 @@ class GraphicsDriverTest {
         assertEquals("Recomendada", Tr.t("Recommended", "es"))                 // (the shared key: untouched)
         assertEquals("Controlador gráfico", Tr.t(GraphicsDriver.ROW_ID, "es"))
         // English (the JVM's usual language): the row shows the plain labels; a test driver's words are always its label
-        if (Tr.lang() == "en") assertEquals(listOf("Recommended", "Test: Mesa 26.3.1", "Test: Mesa 27 R3"), GraphicsDriver.Choice.values().map { GraphicsDriver.words(it) })
+        if (Tr.lang() == "en") assertEquals(listOf("Recommended", "Stock", "Test: Mesa 26.3.1", "Test: Mesa 27 R3"), GraphicsDriver.Choice.values().map { GraphicsDriver.words(it) })
         assertEquals(TEST.label, GraphicsDriver.words(TEST))
         // both drawings of the row use the row's words, never the bare label
         val gt = read("companion/app/src/main/java/com/jrees/wowcompanion/GeneralTiles.kt")
