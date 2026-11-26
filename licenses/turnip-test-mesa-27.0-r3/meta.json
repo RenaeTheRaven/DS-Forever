@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "name": "Turnip-Test-Mesa-27.0-R3-dsf",
+  "description": "OPT-IN TEST: StevenMXZ Turnip v27.0.0-R3 (Adreno-Tools-Drivers v40, Mesa main c5ef4bdfabf2) with its a6xx/a7xx/a8xx and Android gralloc/UBWC patches; DS Forever rebuild adds the vk_icd* loader exports and -Dandroid-strict=false.",
+  "author": "Mesa contributors; StevenMXZ (patches); DS Forever custom-thor rebuild",
+  "packageVersion": "1",
+  "vendor": "Mesa",
+  "driverVersion": "27.0.0-devel-r3-dsf",
+  "minApi": 29,
+  "libraryName": "libvulkan_freedreno.so"
+}

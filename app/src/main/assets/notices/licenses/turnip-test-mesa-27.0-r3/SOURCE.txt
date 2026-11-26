@@ -1,0 +1,22 @@
+Turnip-Test-Mesa-27.0-R3-dsf - source and build record (custom-thor)
+
+Source: Mesa main at c5ef4bdfabf2e1a76d5e41ab8e5d75ddbc121275
+  https://gitlab.freedesktop.org/mesa/mesa/-/commit/c5ef4bdfabf2e1a76d5e41ab8e5d75ddbc121275
+Patches: StevenMXZ/Adreno-Tools-Drivers commit 4b796491db77b896852354e5484a0ac839e63adc
+  (release v40, "Turnip v27.0.0-R3"), applied in the order of its build_turnip.sh,
+  plus its Android NDK source fixes. Their licence (GPL-3.0) and CREDITS.md are in this zip.
+DS Forever change: the vk_icd export patch (tools/turnip-test/mkpatch.py), so the
+  Vulkan wrapper can load the library (their release exports only HMI).
+The whole source difference from Mesa c5ef4bdfabf2 is mesa27-r3-dsf.diff (in this zip).
+Toolchain: Android NDK r27c (27.2.12479018), target aarch64-linux-android35,
+  meson 1.12.1, ninja 1.13.2, CachyOS Linux.
+Meson options: --wrap-mode=nofallback -Dbuildtype=release -Dstrip=true
+  -Dplatforms=android -Dvideo-codecs= -Dplatform-sdk-version=36 -Dandroid-stub=true
+  -Dandroid-strict=false -Dgallium-drivers= -Dvulkan-drivers=freedreno
+  -Dvulkan-beta=true -Dfreedreno-kmds=kgsl -Degl=disabled
+  -Dandroid-libbacktrace=disabled -Dzstd=disabled -Dxmlconfig=disabled
+  -Dllvm=disabled -Dvalgrind=disabled -Dlibunwind=disabled -Dbuild-tests=false
+  -Dwerror=false
+libvulkan_freedreno.so sha256 c9f873b5e861ded41a9a0467f108d5357928ac477d7627d8580336eb7f1d7e48
+Licences: Mesa is mostly MIT; individual files carry their own SPDX terms
+  (texts included). See mesa-docs-license.rst.

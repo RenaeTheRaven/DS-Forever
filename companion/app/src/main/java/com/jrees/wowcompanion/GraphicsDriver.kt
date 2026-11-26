@@ -52,6 +52,10 @@ object GraphicsDriver {
         // custom-thor: our own build of the same Mesa 26.3.1 with -Dandroid-strict=false (tools/turnip-test/custom-thor/): upstream's
         // API 29 strict build hides VK_KHR_load_store_op_none (Android allows it from API 35), which DXVK 3.1.1 requires. Same id.
         TEST_MESA("test-mesa-26.3.1", "Test: Mesa 26.3.1", "Turnip-Test-Mesa-26.3.1-nostrict", "turnip-test-mesa-26.3.1-nostrict.zip", "26.3.1-dsf-icd-nostrict"),
+        // custom-thor (2026-11-25): StevenMXZ's Turnip v27.0.0-R3 (Adreno-Tools-Drivers v40, Mesa main c5ef4bdf + their a6xx/a7xx/a8xx and
+        // gralloc/UBWC patches) rebuilt with the vk_icd exports (their release has only HMI) and android-strict off
+        // (tools/turnip-test/custom-thor/build_mesa27_r3.sh). Experimental.
+        TEST_MESA27("test-mesa-27.0-r3", "Test: Mesa 27 R3", "Turnip-Test-Mesa-27.0-R3-dsf", "turnip-test-mesa-27.0-r3.zip", "27.0.0-devel-r3-dsf"),
     }
 
     val DEFAULT = Choice.RECOMMENDED

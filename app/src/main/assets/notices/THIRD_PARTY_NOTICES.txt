@@ -583,3 +583,20 @@ when a player picks "Test: Mesa 26.3.1"; the default "Recommended" never uses it
 - Built by DS Forever from the official release tarball with ONE change, the patch above (it exports
   `vk_icdGetInstanceProcAddr`, `vk_icdGetPhysicalDeviceProcAddr` and `vk_icdNegotiateLoaderICDInterfaceVersion` next to `HMI`;
   no code change). Recipe: `tools/turnip-test/build_mesa.sh` and `pack.py`; the zip also carries the patch and `SOURCE.txt`.
+---
+
+## Mesa Turnip 27 R3, second opt-in test driver (custom-thor)
+
+**Component:** `turnip-test-mesa-27.0-r3.zip` (bundled component; unpacked to `contents/adrenotools/Turnip-Test-Mesa-27.0-R3-dsf/` only
+when a player picks "Test: Mesa 27 R3"; the default "Recommended" never uses it)
+
+| Part | Upstream | Revision | Licence |
+|---|---|---|---|
+| Mesa Turnip (`libvulkan_freedreno.so`, freedreno Vulkan, KGSL) | https://gitlab.freedesktop.org/mesa/mesa | main `c5ef4bdfabf2e1a76d5e41ab8e5d75ddbc121275` | Mostly MIT; individual files carry their own SPDX terms (`licenses/turnip-test-mesa-27.0-r3/`) |
+| StevenMXZ's Turnip patches (a6xx / a7xx / a8xx, Android gralloc / UBWC) | https://github.com/StevenMXZ/Adreno-Tools-Drivers | `4b796491db77b896852354e5484a0ac839e63adc` (release v40, "Turnip v27.0.0-R3") | GPL-3.0 (`licenses/turnip-test-mesa-27.0-r3/StevenMXZ-Adreno-Tools-Drivers-LICENSE.txt`, credits beside it) |
+| vk_icd export patch (`tools/turnip-test/mkpatch.py`) | this project | - | the patched files' terms (MIT) |
+| LLVM libc++ / libc++abi (linked statically by the NDK, `-static-libstdc++`) | Android NDK r27c | 27.2.12479018 | Apache-2.0 WITH LLVM-exception (`licenses/ndk/NDK-TOOLCHAIN-NOTICE.txt`) |
+
+- Built with their build_turnip.sh's patches and order, plus the vk_icd export and `-Dandroid-strict=false`. The whole source
+  difference from Mesa is `mesa27-r3-dsf.diff` (in the zip and the licence folder). Recipe: `tools/turnip-test/custom-thor/`.
+

@@ -21,7 +21,7 @@ COMPONENT_NAMES = (
 COMPONENT_PREFIX = "assets/bundled_components/"
 # OPT-IN TEST DRIVERS (2026-11-23; GraphicsDriver.kt): extra bundled components built by DS Forever itself (tools/turnip-test/),
 # pinned in their own tools/components-test-drivers.sha256 so the original manifest and fetch script stay byte-for-byte upstream's.
-TEST_DRIVERS = ("turnip-test-mesa-26.3.1-nostrict.zip",)
+TEST_DRIVERS = ("turnip-test-mesa-26.3.1-nostrict.zip", "turnip-test-mesa-27.0-r3.zip")
 BUNDLED = COMPONENT_NAMES + TEST_DRIVERS
 # The Proton package ships trimmed of its unused 32-bit Windows files (tools/trim_proton_i386.py, after WoW Forever for Android
 # v2.4.4 55b0bd23): tools/components.sha256 still pins the original download, tools/components-trimmed.sha256 the shipped file.
