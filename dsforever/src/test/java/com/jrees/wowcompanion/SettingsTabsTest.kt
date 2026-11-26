@@ -72,7 +72,7 @@ class SettingsTabsTest {
         val want: Map<G, List<String>> = mapOf(
             G.LOOK to listOf("Theme", "Language", "Voice typing", "Swap screens", "Restart DS Forever"),     // 11-16: Voice typing     // #232: Swap screens (only with a second screen)
             // the user, 2026-11-14 ("build it"): Windows ID under Game account
-            G.ACCOUNT to listOf("Battle.net login", "Game account", "Windows ID", "Browser login"),
+            G.ACCOUNT to listOf("Battle.net login", "Game account", "Windows ID", "Battle.net sign-in"),
             // the user's pick 2026-11-23 ("Both (Recommended)"): the opt-in test graphics driver, its own group under Account
             G.GRAPHICS to listOf("Graphics driver"),
             G.HELP to listOf("Problem report", "Reload game UI", "Status"),
@@ -97,7 +97,7 @@ class SettingsTabsTest {
                 "Player frame", "Target frame", "Controller UI", "Buffs", "XP bar",
                 // hub61: the damage meter, the Cooldown Manager and its four parts
                 "Damage meter", "Cooldown Manager", "Essential", "Utility", "Buff icons", "Buff bars"),
-            G.BUTTONS to listOf("ABXY location", "Button glyphs", "B: pet recall"),       // 2026-11-18: B: pet recall (was Smart pet / B: pet follow), a pet class only
+            G.BUTTONS to listOf("ABXY location", "Button glyphs", "Hold time", "B: pet recall"),   // 2026-11-24: hold to cast's hold time       // 2026-11-18: B: pet recall (was Smart pet / B: pet follow), a pet class only
             G.WHEELS to listOf("Pause menu: open", "Pause menu: pick", "Start over game windows", "Item wheel: open", "Item wheel: pick", "Spell wheel: open",
                 "Spell wheel: pick", "Left class radial: open", "Left class radial: pick", "Right class radial: open", "Right class radial: pick"),
             G.SMART_Y to listOf("Smart Y"),
@@ -172,6 +172,8 @@ class SettingsTabsTest {
             // the user, 2026-11-16 ("a pet class specific option where pressing B in the out of combat home menu basically stops the pet
             // attacking"): Controller > Buttons
             listOf("B: pet recall") +                   // 2026-11-18: B: pet recall (was Smart pet, its attack half gone)
+            // the user's pick 2026-11-24 (hold to cast, "At the hold time, Settings: 0.3/0.4/0.55 s"): Controller > Buttons
+            listOf("Hold time") +
             // the user's pick 2026-11-16 (voice to text): General > Look > Voice typing
             listOf("Voice typing") +
             // the user, 2026-11-16 ("we could make the per languege downloads part of the addons folder"): Add-ons > Voice
@@ -183,7 +185,7 @@ class SettingsTabsTest {
             // hub61 (the user, 2026-11-17: "DPS meters and also the cooldown manager"): Top screen > Game windows
             listOf("Damage meter", "Cooldown Manager", "Essential", "Utility", "Buff icons", "Buff bars") +
             // the user, 2026-11-18 (upstream v2.4.5's Browser login, opt-in): General > Account, under Windows ID
-            listOf("Browser login") +
+            listOf("Battle.net sign-in") +              // 2026-11-24: Browser login's words, the start screen Menu's too
             // the user, 2026-11-19 ("a simple button at the bottom that says 'Support the Project'"): General > Help, last
             listOf("Support the Project") +
             // the user, 2026-11-19 ("reset to defaults buttons, split into four"): General > Reset

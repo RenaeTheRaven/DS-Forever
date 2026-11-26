@@ -17,8 +17,9 @@ package com.jrees.wowcompanion
  *                                 rbm (movable Home, PadMap m178: the toolbar's mirror bit; a reset = Left is the chat again, mirror 0),
  *                                 ctop (movable Home phase 3, PadMap m179: the top-screen combat bar's flag; a reset = off, the band grows)
  *                                 ctcb (PadMap m187: "Cast bar in fights: Top screen"; a reset = Bottom screen)
+ *                                 ctsw (PadMap m190: the swing with our top cast bar; a reset = on)
  *                        NEVER   formSlotsBy, smartModel, cdLearn, petSpellBy, petDeadBy (learned / remembered game facts); dpadZL,
- *                                 srGone, srBy, srMacros, genUse, fix181, keyProbe, aclOurs, aclReset1 (one-time clean-ups / probes: a
+ *                                 srGone, srBy, srMacros, genUse, fix181, keyProbe, aclOurs, aclReset1, holdGuide (one-time clean-ups / probes: a
  *                                 reset would run them again); faceSwap, faceCd, combatFace (crash recovery / learned, never synced);
  *                                 macroRoom (the Macros room's last tab); attack (legacy shared record); padLayout, startOver, castBarTab,
  *                                 castBarShow (cb14: the add-on's copy of castBarCombat, home LAYOUTS), castBarPShow (cb15: the add-on's
@@ -40,7 +41,7 @@ package com.jrees.wowcompanion
  *               NEVER    browserLogin, windowsId (+ windowsIdRan*), graphicsDriverRan, gameAccountAsk, gameAccountPick, gameAccountHandover (the sign-in), polestarGuide, polestarOffBoot,
  *                        questTracking* (Polestar), theme_custom (the player's own made theme: Classic comes back, the made one stays),
  *                        swapScreensFails, settingsTab, the migration marks
- *  framegen     SETTINGS enabled, multiplier, flowScale, performance, fpsLimitContainer, fpsLimitAsk   NEVER fpsLimit108, fpsLimitNote
+ *  framegen     SETTINGS enabled, multiplier, flowScale, performance, fpsLimitContainer, fpsLimitAsk   NEVER fpsLimit108, fpsLimitNote, fpsLimit60
  *  gameui       SETTINGS mode.<element>, sw.pmode, castbar.hide   LAYOUTS (per char) sw.<part>.<who>, hud.<who>, prdy./prdw./prds.<who>,
  *                        mt.<part>.<who>
  *  cast         SETTINGS buttonLayout, abxyLocation
@@ -98,11 +99,12 @@ object ResetPlan {
 
     val SV_KEYS: List<SvKey> = listOf(
         *listOf("faceBy", "fightBy", "formFightBy", "cmdBy", "binds", "stickBy", "attackBy", "ccOff", "lowPickBy", "smartOn", "smartBuffs",
-            "partyBy", "radialPins", "sradials", "sradial", "castBar", "castBarFight", "castBarParty").map { SvKey(SPELLS, it, Kind.SKILLS, true) }.toTypedArray(),
+            "partyBy", "radialPins", "sradials", "sradial", "castBar", "castBarFight", "castBarParty", "holdBy").map { SvKey(SPELLS, it, Kind.SKILLS, true) }.toTypedArray(),
         SvKey(SPELLS, "dpad", Kind.LAYOUTS, true, default = true),
         SvKey(SPELLS, "rbm", Kind.LAYOUTS, true),                                   // movable Home: the DS toolbar's mirror bit (none = off)
         SvKey(SPELLS, "ctop", Kind.LAYOUTS, true),                                  // movable Home phase 3: the top-screen combat bar (none = off)
         SvKey(SPELLS, "ctcb", Kind.LAYOUTS, true),                                  // PadMap m187: "Cast bar in fights" (none = Bottom screen)
+        SvKey(SPELLS, "ctsw", Kind.LAYOUTS, true),                                  // PadMap m190: the swing with our top cast bar (none = on)
         *listOf("lay", "hubSw", "hubLy", "meters", "prdY", "prdS", "prdW").map { SvKey(DB, it, Kind.LAYOUTS, true) }.toTypedArray(),
         SvKey(DB, "bagBinds", Kind.SKILLS, true),
         *listOf("compass", "hideTips", "aggroRings", "lootTop").map { SvKey(DB, it, Kind.SETTINGS, false) }.toTypedArray(),
@@ -112,7 +114,7 @@ object ResetPlan {
     val SV_NEVER: Map<String, Set<String>> = mapOf(
         SPELLS to setOf("formSlotsBy", "smartModel", "cdLearn", "petSpellBy", "petDeadBy", "dpadZL", "srGone", "srBy", "srMacros", "genUse",
             "fix181", "keyProbe", "aclOurs", "aclReset1", "faceSwap", "faceCd", "combatFace", "macroRoom", "attack", "padLayout", "startOver",
-            "castBarTab", "castBarShow", "castBarPShow"),
+            "castBarTab", "castBarShow", "castBarPShow", "holdGuide"),       // m190: hold to cast's probe answer (a game fact)
         DB to setOf("pqol", "pskip", "npEnemies", "npFriends", "npFriendsOff", "npFriendsSet", "routeWp", "chatTop", "compassCal",
             "compassCam", "layV", "prdYv", "prdCurve", "camProbe", "calProbe", "qtDefaults", "chatStyleSet2", "cursorSoftSet",
             "realmOf", "realmFixBak", "who"),     // Safety k6: the realms each name was seen with, and the orphan keys' fold backups;
@@ -173,11 +175,11 @@ object ResetPlan {
             "gameAccountHandover", "polestarGuide", "polestarOffBoot", "questTracking", "questTrackingSafePath", "questTrackingPolestar1112", "questTrailRetire1112",
             "theme_custom", "swapScreensFails", "settingsTab"),
         exact("framegen", Kind.SETTINGS, "enabled", "multiplier", "flowScale", "performance", "fpsLimitContainer", "fpsLimitAsk"),
-        exact("framegen", null, "fpsLimit108", "fpsLimitNote"),
+        exact("framegen", null, "fpsLimit108", "fpsLimitNote", "fpsLimit60"),
         exact("gameui", Kind.SETTINGS, "sw.pmode", "castbar.hide"),
         char("gameui", Kind.SETTINGS, "mode."),
         char("gameui", Kind.LAYOUTS, "sw.*.", "hud.", "prdy.", "prdw.", "prds.", "mt.*."),
-        exact("cast", Kind.SETTINGS, "buttonLayout", "abxyLocation"),
+        exact("cast", Kind.SETTINGS, "buttonLayout", "abxyLocation", "holdTime"),     // m190: hold to cast's hold time
         exact("home", Kind.SETTINGS, "pauseOverGame", "rankBadges"),
         exact("home", Kind.LAYOUTS, "rest", "questMin", "questOverMap", "combatGrow", "swingTimer", "castBarSide", "castStrip", "castBarCombat",
             "castBarPartyShow",

@@ -56,11 +56,11 @@ object PerformanceTileModel {
 
     /** what the tiles show and their lines offer, read once per draw from FrameGen / Settings / the bake's status */
     data class State(
-        val limit: Int = 40,
+        val limit: Int = FrameGen.LIMIT_DEFAULT,
         /** a restart would change the running game's frame limit / frame generation (the game runs, no restart under way) */
         val limitWaits: Boolean = false, val fgWaits: Boolean = false,
         val hasDll: Boolean = false, val fgOn: Boolean = false, val multiplier: Int = 2, val flow: Float = FrameGen.FLOW_DEFAULT,
-        val perfMode: Boolean = true, val lastPick: String = "", val limitNote: Boolean = false,
+        val perfMode: Boolean = true, val lastPick: String = "",
         val lighter: Boolean = false, val lighterFixed: Boolean = false, val lowGfx: Boolean = false, val mapFull: Boolean = false,
         /** Settings > Performance > Map style when zoomed out: true = Terrain (the default), false = Painted */
         val mapTerrain: Boolean = true,
@@ -73,6 +73,12 @@ object PerformanceTileModel {
         /** [progress] the bake's phase only (the count is the tile's value and the ring, the deferred count its own line) */
         val indoorOn: Boolean = true, val ready: Int = 0, val total: Int = 0, val deferred: Int = 0, val progress: String = "",
         val terrain: String? = null,
+        /**
+         * 2026-11-24, BUILD NOW (the user: "I also want a button in game to force building in game"; the pick: "A 'Build now' button on
+         * the Indoor maps row next to its progress bar"): null = no such line (the game not running, Off, finished), false = Build now,
+         * true = Stop (it is armed: building while the player is idle, or paused)
+         */
+        val buildNow: Boolean? = null,
         val streamOn: Boolean = false,
         /** the stream's settings now (SetupBridge.streamSettings), null = Local */
         val stream: Stream? = null,
@@ -100,11 +106,20 @@ object PerformanceTileModel {
     const val L_FG = "fg"; const val L_MULT = "mult"; const val L_FLOW = "flow"; const val L_PERF = "perf"; const val L_DLL = "dll"
     const val L_LIGHTER = "lighter"; const val L_LOWGFX = "lowgfx"; const val L_MAP = "homemap"; const val L_STYLE = "homestyle"
     const val L_VRAM = "vram"; const val L_PAGEOUT = "pageout"
-    const val L_BUILD = "build"; const val L_DEFERRED = "deferred"
+    const val L_BUILD = "build"; const val L_DEFERRED = "deferred"; const val L_NOW = "buildnow"
     const val L_CODEC = "codec"; const val L_RES = "res"; const val L_FPS = "fps"; const val L_RATE = "rate"; const val L_SOUND = "sound"
     const val L_TOOLS = "tools"
 
     private val ON_OFF = listOf("On", "Off")
+    /** the Build now line's label (terse; es / fr in the app's i18n) */
+    const val NOW_LABEL = "During play"
+
+    /**
+     * 2026-11-24: the Build now line's state ([State.buildNow]): shown while the game runs (or while armed, so Stop is always there), the
+     * build On and not finished; null = no line
+     */
+    fun buildNowLine(indoorOn: Boolean, finished: Boolean, gameUp: Boolean, armed: Boolean): Boolean? =
+        if (!indoorOn || finished || (!gameUp && !armed)) null else armed
 
     /** [id]'s band lines now, for [s] (no dead stops: a line that cannot act is not there) */
     fun lines(id: String, s: State, deferredOpen: Boolean = false): List<Line> = when (id) {
@@ -143,6 +158,8 @@ object PerformanceTileModel {
         }
         INDOOR -> buildList {
             add(Line(L_BUILD, "Build in the background", null, ON_OFF, if (s.indoorOn) 0 else 1, Kind.CHOICE))
+            // 2026-11-24: Build now / Stop while the game runs (the build during play, only while the player is idle)
+            s.buildNow?.let { armed -> add(Line(L_NOW, NOW_LABEL, null, listOf(if (armed) "Stop" else "Build now"), -1, Kind.ACTION)) }
             if (s.deferred > 0) add(Line(L_DEFERRED, "Deferred", "${s.deferred}", listOf(if (deferredOpen) "Hide" else "List"), -1, Kind.ACTION))
         }
         // the old top-screen page's five rows (Video, Resolution, Frame rate, Bit rate, Sound) and its Defaults / Test connection
@@ -196,7 +213,6 @@ object PerformanceTileModel {
         LIMIT -> when {
             s.limitWaits || s.fgWaits -> ""
             s.limit > 0 && s.limit !in FrameGen.LIMITS -> "${s.limit} fps, set in the launcher's menu"
-            s.limitNote && s.limit == FrameGen.LIMIT_MIGRATED -> "Set to 40 for battery and heat"
             else -> ""
         }
         FG -> when {
@@ -208,7 +224,8 @@ object PerformanceTileModel {
             s.lighterFixed -> "Lighter mode: always on for this Thor"
             s.lowGfxChanged -> "Low-memory graphics: from the next game start"
             s.vramChanged -> "Video memory cap: from the next game start"
-            s.pageOutChanged -> "Compress idle memory, the game's too: from the next game start"
+            s.pageOutChanged -> if (GamePageOut.on) "Compress idle memory, the game's too: from the next game start"
+                else "Compress idle memory: from the next game start"
             else -> ""
         }
         INDOOR -> listOfNotNull(s.progress.takeIf { it.isNotEmpty() }, s.terrain).joinToString(" · ")
@@ -481,11 +498,12 @@ class PerformanceTiles(context: Context, private val host: SettingsView) : View(
             limitWaits = up && !restarting && FrameGen.limitNeedsRestart(FrameGen.launchedLimit, lim),
             fgWaits = FrameGen.showRestart(up, restarting, FrameGen.launched, FrameGen.current()),
             hasDll = FrameGen.hasDll(), fgOn = FrameGen.enabled, multiplier = FrameGen.multiplier, flow = FrameGen.flowScale,
-            perfMode = FrameGen.performance, lastPick = FrameGen.lastPick, limitNote = FrameGen.limitNote,
+            perfMode = FrameGen.performance, lastPick = FrameGen.lastPick,
             lighter = Settings.lighterMode, lighterFixed = DeviceTier.smallModel(), lowGfx = Settings.lowMemGraphics,
             mapFull = Settings.homeMapFull, mapTerrain = Settings.homeMapTerrain, lowGfxChanged = lowGfxChanged,
             vramCap = Settings.vramCap, vramChanged = vramChanged, pageOut = Settings.pageOut, pageOutChanged = pageOutChanged,
             indoorOn = Settings.indoorBuild, ready = p?.ready ?: 0, total = p?.total ?: 0,
+            buildNow = M.buildNowLine(Settings.indoorBuild, p?.phase == IndoorScheduler.Phase.DONE, up, IndoorSchedulerStep.armed),
             deferred = if (p == null || p.list.isEmpty()) 0 else maxOf(p.deferred, p.list.size),
             progress = phase(p, Settings.indoorBuild),
             terrain = Terrain.coverageNow()?.let { c -> val z = c.optInt("zones"); val t = c.optInt("total")
@@ -503,7 +521,8 @@ class PerformanceTiles(context: Context, private val host: SettingsView) : View(
         if (s == null || !buildOn) return ""
         return when (s.phase) {
             IndoorScheduler.Phase.CATALOGUE -> "listing buildings"
-            IndoorScheduler.Phase.BAKING -> if (s.now.isNotEmpty()) "building ${s.now}" else "building"
+            // 2026-11-24: beside the game (Build now) its own words, "building while you're idle"
+            IndoorScheduler.Phase.BAKING -> s.note.ifEmpty { if (s.now.isNotEmpty()) "building ${s.now}" else "building" }
             IndoorScheduler.Phase.PAUSED -> s.note.ifEmpty { "paused" }           // #568: the reason as it is
             IndoorScheduler.Phase.DONE -> "finished"
             IndoorScheduler.Phase.DEFERRED -> s.note.ifEmpty { "some to retry" }
@@ -657,6 +676,7 @@ class PerformanceTiles(context: Context, private val host: SettingsView) : View(
                 IndoorKeepAlive.update(context, why = "off in Settings")         // issue 568: the quiet service goes at once
             }
             M.L_DEFERRED -> deferredOpen = !deferredOpen
+            M.L_NOW -> if (IndoorSchedulerStep.armed) IndoorSchedulerStep.stopBuildNow() else IndoorSchedulerStep.buildNow(context)
             M.L_CODEC, M.L_RES, M.L_FPS, M.L_RATE, M.L_SOUND, M.L_TOOLS -> streamPress(line.key, k)
         }
     }

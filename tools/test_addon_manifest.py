@@ -50,8 +50,8 @@ def src(rel):
     return (ADDONS / rel).read_text(encoding="utf-8")
 
 
-check('local HV = "hub77"' in src("WowCompanionHub/Hub.lua"), "d. Hub hub77 (the 1523 merge of both hub76s)")
-check('local PV = "m189"' in src("WowCompanionSpells/PadMap.lua"), "d. PadMap m189 (the 1523 merge of the m187s / m188s)")
+check('local HV = "hub78"' in src("WowCompanionHub/Hub.lua"), "d. Hub hub78 (feat/top-castbar: the game's cast bar never shown for a fight)")
+check('local PV = "m196"' in src("WowCompanionSpells/PadMap.lua"), "d. PadMap m196 (the 1530 merge of test 1529, above feat/hold-cast's m194 / m195: both m192s and 1528b's m193 kept; m191 = the 1528 merge of feat/top-castbar's, feat/smarty-campfire's and feat/hold-cast's m190s)")
 check('local IV = "i173"' in src("WowCompanionInteract/Interact.lua"), "d. Interact i173")
 check("-- bags-kit6 " in src("WowCompanion/Bags.lua"), "d. Bags bags-kit6")
 
